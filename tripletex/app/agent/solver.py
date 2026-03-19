@@ -19,24 +19,24 @@ async def solve_task(request: SolveRequest) -> None:
     creds = request.tripletex_credentials
     tx = TripletexClient(creds.base_url, creds.session_token)
     llm = create_client()
+    settings = get_settings()
 
     try:
         # Build user message with prompt + attachments
         content = _build_user_content(request)
         messages = [{"role": "user", "content": content}]
 
-        for iteration in range(get_settings().max_agent_iterations):
+        for iteration in range(settings.max_agent_iterations):
             elapsed = time.monotonic() - start
-            if elapsed > get_settings().soft_timeout_seconds:
+            if elapsed > settings.soft_timeout_seconds:
                 logger.warning(f"Soft timeout at {elapsed:.0f}s, stopping agent")
                 break
 
             response = await chat(llm, messages, SYSTEM_PROMPT)
+            message = response.choices[0].message
 
             # Check if the model wants to use tools
-            tool_calls = [b for b in response.content if b.type == "tool_use"]
-
-            if not tool_calls:
+            if not message.tool_calls:
                 # Model is done (text-only response)
                 logger.info(
                     f"Agent done after {iteration + 1} iterations, "
@@ -45,39 +45,35 @@ async def solve_task(request: SolveRequest) -> None:
                 break
 
             # Add assistant response to conversation
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append(message)
 
             # Execute each tool call and collect results
-            tool_results = []
-            for tc in tool_calls:
-                result_str = await dispatch_tool(tx, tc.name, tc.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
+            for tc in message.tool_calls:
+                result_str = await dispatch_tool(tx, tc.function.name, tc.function.arguments)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
                     "content": result_str,
                 })
-
-            messages.append({"role": "user", "content": tool_results})
         else:
-            logger.warning(f"Agent hit max iterations ({get_settings().max_agent_iterations})")
+            logger.warning(f"Agent hit max iterations ({settings.max_agent_iterations})")
 
     finally:
         await tx.close()
 
 
-def _build_user_content(request: SolveRequest) -> list[dict]:
-    """Build the initial user message content blocks."""
-    content: list[dict] = []
+def _build_user_content(request: SolveRequest) -> str:
+    """Build the initial user message content."""
+    parts = []
 
-    # Process file attachments first (PDFs, images)
+    # Process file attachments (PDFs → text, images → described)
     if request.files:
         attachment_blocks = process_attachments(request.files)
-        content.extend(attachment_blocks)
+        for block in attachment_blocks:
+            if block["type"] == "text":
+                parts.append(block["text"])
+            elif block["type"] == "image":
+                parts.append("[Attached image — see file attachments]")
 
-    # Add the task prompt
-    content.append({
-        "type": "text",
-        "text": f"Complete this accounting task in Tripletex:\n\n{request.prompt}",
-    })
-
-    return content
+    parts.append(f"Complete this accounting task in Tripletex:\n\n{request.prompt}")
+    return "\n\n".join(parts)

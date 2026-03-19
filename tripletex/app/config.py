@@ -4,8 +4,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str
-    model_name: str = "claude-sonnet-4-20250514"
+    openai_api_key: str
+    openai_base_url: str = "https://api.openai.com/v1"
+    model_name: str = "gpt-4o"
     log_level: str = "INFO"
     max_agent_iterations: int = 15
     soft_timeout_seconds: int = 270

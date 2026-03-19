@@ -1,24 +1,26 @@
-"""Claude API client for tool-use conversations."""
+"""OpenAI-compatible API client for tool-use conversations."""
 
-import anthropic
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion
 
 from app.config import get_settings
 from app.agent.tools import TOOL_DEFINITIONS
 
 
-def create_client() -> anthropic.AsyncAnthropic:
-    return anthropic.AsyncAnthropic(api_key=get_settings().anthropic_api_key)
+def create_client() -> AsyncOpenAI:
+    s = get_settings()
+    return AsyncOpenAI(api_key=s.openai_api_key, base_url=s.openai_base_url)
 
 
 async def chat(
-    client: anthropic.AsyncAnthropic,
+    client: AsyncOpenAI,
     messages: list[dict],
     system: str,
-) -> anthropic.types.Message:
-    return await client.messages.create(
+) -> ChatCompletion:
+    full_messages = [{"role": "system", "content": system}, *messages]
+    return await client.chat.completions.create(
         model=get_settings().model_name,
         max_tokens=4096,
-        system=system,
-        messages=messages,
+        messages=full_messages,
         tools=TOOL_DEFINITIONS,
     )
