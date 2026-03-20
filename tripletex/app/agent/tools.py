@@ -285,6 +285,27 @@ async def dispatch_tool(
         return json.dumps({"error": str(e)})
 
 
+async def _ensure_bank_account(client: TripletexClient) -> None:
+    """Register a dummy bank account so invoices can be created."""
+    try:
+        # Check if a bank account already exists
+        result = await client.get("/bank", params={"fields": "id"})
+        if result.get("values"):
+            return
+    except Exception:
+        pass
+    # Register a standard Norwegian bank account
+    try:
+        await client.post("/bank", json={
+            "accountNumber": "12345678903",
+            "iban": "NO9312345678903",
+            "swiftBic": "DNBANOKK",
+        })
+        logger.info("Auto-registered bank account for invoice creation")
+    except Exception as e:
+        logger.warning(f"Failed to auto-register bank account: {e}")
+
+
 async def _execute(
     client: TripletexClient,
     name: str,
@@ -389,7 +410,14 @@ async def _execute(
         if "orders" not in args and ctx and ctx.last_order_id:
             args["orders"] = [{"id": ctx.last_order_id}]
             logger.info(f"Auto-injected order id={ctx.last_order_id} into invoice")
-        return await client.post("/invoice", json=args)
+        try:
+            return await client.post("/invoice", json=args)
+        except Exception as e:
+            if "bankkontonummer" in str(e).lower():
+                logger.info("Invoice requires bank account — auto-registering")
+                await _ensure_bank_account(client)
+                return await client.post("/invoice", json=args)
+            raise
 
     if name == "create_project":
         # Auto-inject projectManager if missing
@@ -452,14 +480,29 @@ async def _execute(
             if "invoiceDateTo" not in params and "invoiceDateTo" not in path:
                 params["invoiceDateTo"] = "2100-01-01"
                 logger.info("Auto-injected invoiceDateTo for invoice search")
-        # Guard: POST without body causes "Kan ikke være null" errors
-        if method == "POST" and not body:
-            raise ValueError(f"tripletex_api_call POST {path} requires a 'body' parameter with the JSON payload")
+        # Guard: POST/PUT without body causes "Kan ikke være null" errors
+        if method in ("POST", "PUT") and not body and "/:payment" not in path:
+            raise ValueError(f"tripletex_api_call {method} {path} requires a 'body' parameter with the JSON payload")
+        async def _run_with_bank_retry(coro_factory):
+            """Retry once after registering bank account if needed."""
+            try:
+                return await coro_factory()
+            except Exception as e:
+                if "bankkontonummer" in str(e).lower():
+                    logger.info("Bank account required — auto-registering via tripletex_api_call path")
+                    await _ensure_bank_account(client)
+                    return await coro_factory()
+                raise
+
         if method == "GET":
             return await client.get(path, params=params)
         if method == "POST":
+            if "/invoice" in path or "/:invoice" in path:
+                return await _run_with_bank_retry(lambda: client.post(path, json=body))
             return await client.post(path, json=body)
         if method == "PUT":
+            if "/invoice" in path or "/:invoice" in path:
+                return await _run_with_bank_retry(lambda: client.put(path, json=body, params=params))
             return await client.put(path, json=body, params=params)
         if method == "DELETE":
             return await client.delete(path)
