@@ -472,6 +472,9 @@ async def _execute(
         raw_path = args["path"]
         params = args.get("params") or {}
         body = args.get("body")
+        # Block unavailable endpoints to save API calls
+        if "/company" in raw_path:
+            raise ValueError("/company endpoint is not available in the Tripletex proxy. You do not need company info to complete tasks.")
         # Extract query params embedded in the path (e.g. /invoice/123/:payment?paymentDate=2026-03-20)
         parsed = urlparse(raw_path)
         path = parsed.path

@@ -21,7 +21,7 @@ Parse the task prompt (in any of 7 languages: Norwegian Bokmål, Nynorsk, Englis
 5. **REUSE RESPONSE IDs** — POST responses return `{{"value": {{"id": N, ...}}}}`. Use these IDs directly in subsequent calls. NEVER search for an entity you just created.
 6. **NO VERIFICATION** — Do not query back to verify entities you just created. Trust the creation response.
 7. When finished, respond only with "DONE".
-8. **UNAVAILABLE ENDPOINTS** — GET /company is NOT available (returns 405). Do not call it. For company info, use other endpoints.
+8. **UNAVAILABLE ENDPOINTS** — The /company endpoint is NOT available (any path including /company, /company/1, etc. returns 405/404). Do not call it. You do not need company info to complete tasks.
 
 ## Today's Date: {today}
 Use this for invoiceDate, orderDate, deliveryDate, and other date fields when the prompt doesn't specify a date.
