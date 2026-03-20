@@ -322,6 +322,17 @@ async def _execute(
     ctx: EntityContext | None = None,
 ) -> dict:
     if name == "create_employee":
+        email = args.get("email")
+        # Search first if email given — avoids 422 error on conflict
+        if email:
+            try:
+                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                values = result.get("values", [])
+                if values:
+                    logger.info(f"Found existing employee id={values[0]['id']} for email {email}")
+                    return {"value": values[0]}
+            except Exception:
+                pass
         if "userType" not in args:
             args["userType"] = "STANDARD"
         # Move startDate into an employments array if provided
@@ -333,23 +344,7 @@ async def _execute(
             val = args.get(ref_field)
             if isinstance(val, dict) and not val.get("id"):
                 del args[ref_field]
-        try:
-            return await client.post("/employee", json=args)
-        except Exception as e:
-            # Handle email conflict: search for existing employee
-            error_msg = str(e)
-            email = args.get("email")
-            if "422" in error_msg and email:
-                logger.info(f"Employee email conflict, searching for existing employee with email {email}")
-                try:
-                    result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
-                    values = result.get("values", [])
-                    if values:
-                        logger.info(f"Found existing employee id={values[0]['id']} for email {email}")
-                        return {"value": values[0]}
-                except Exception:
-                    pass
-            raise
+        return await client.post("/employee", json=args)
 
     if name == "update_employee":
         eid = args["employee_id"]
@@ -382,23 +377,18 @@ async def _execute(
         return await client.put(f"/customer/{cid}", json={"id": cid, **fields})
 
     if name == "create_product":
-        try:
-            return await client.post("/product", json=args)
-        except Exception as e:
-            # Handle product number conflict: search for existing product
-            error_msg = str(e)
-            product_number = args.get("number")
-            if "422" in error_msg and product_number:
-                logger.info(f"Product number {product_number} conflict, searching for existing product")
-                try:
-                    result = await client.get("/product", params={"number": product_number, "fields": "id,name,number"})
-                    values = result.get("values", [])
-                    if values:
-                        logger.info(f"Found existing product id={values[0]['id']} for number {product_number}")
-                        return {"value": values[0]}
-                except Exception:
-                    pass
-            raise
+        product_number = args.get("number")
+        # Search first if product number given — avoids 422 error on conflict
+        if product_number:
+            try:
+                result = await client.get("/product", params={"number": product_number, "fields": "id,name,number"})
+                values = result.get("values", [])
+                if values:
+                    logger.info(f"Found existing product id={values[0]['id']} for number {product_number}")
+                    return {"value": values[0]}
+            except Exception:
+                pass
+        return await client.post("/product", json=args)
 
     if name == "create_order":
         # Auto-inject customer reference if model omitted it
