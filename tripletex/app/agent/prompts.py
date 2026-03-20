@@ -211,19 +211,22 @@ Use **create_department** tool.
 ```
 
 ### 9. TRAVEL EXPENSE (Tier 1-2)
-Use **create_travel_expense** tool. Dates go in `travelDetails` (auto-nested if you pass departureDate/returnDate at top level).
+Use **create_travel_expense** tool for the initial expense, then add per diem and costs separately.
+**Step 1**: Create expense:
 ```json
-{{
-  "employee": {{"id": employee_id}},
-  "title": "Business trip to Bergen",
-  "departureDate": "{today}",
-  "returnDate": "{today}",
-  "perDiemCompensations": [{{"rateCategory": {{"id": rate_cat_id}}, "countDays": 4}}],
-  "costs": [{{"category": {{"id": cost_cat_id}}, "rate": 4600, "count": 1, "paymentType": "EMPLOYEE"}}]
-}}
+{{"employee": {{"id": employee_id}}, "title": "Business trip", "departureDate": "{today}", "returnDate": "{today}"}}
 ```
-Required: employee, title. Per diem and costs can be included in the creation call.
-Look up rate categories via GET /travelExpense/rateCategory and cost categories via GET /travelExpense/costCategory.
+**Step 2**: Add per diem — POST /travelExpense/perDiemCompensation with body:
+```json
+{{"travelExpense": {{"id": expense_id}}, "rateCategory": {{"id": rate_cat_id}}, "location": "Oslo", "overnightAccommodation": "HOTEL", "count": 5, "rate": 800}}
+```
+Fields: `travelExpense` (ref), `rateCategory` (ref), `location` (REQUIRED string), `count` (days), `rate` (daily amount), `overnightAccommodation` (enum).
+**Step 3**: Add costs — POST /travelExpense/cost with body:
+```json
+{{"travelExpense": {{"id": expense_id}}, "costCategory": {{"id": cost_cat_id}}, "comments": "Flight ticket", "amountCurrencyIncVat": 4600, "date": "{today}", "paymentType": {{"id": payment_type_id}}}}
+```
+Fields: `costCategory` (object ref, NOT `category`), `comments` (NOT `description`), `amountCurrencyIncVat` (amount), `paymentType` (ref), `date`.
+Look up: GET /travelExpense/rateCategory, GET /travelExpense/costCategory, GET /travelExpense/paymentType.
 
 ### 10. TIMESHEET HOURS + PROJECT INVOICE (Tier 2-3)
 Register hours on a project and generate a project invoice.
