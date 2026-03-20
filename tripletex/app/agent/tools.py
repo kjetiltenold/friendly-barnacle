@@ -482,6 +482,12 @@ async def _execute(
             if "invoiceDateTo" not in params and "invoiceDateTo" not in path:
                 params["invoiceDateTo"] = "2100-01-01"
                 logger.info("Auto-injected invoiceDateTo for invoice search")
+        # Strip 'row' from voucher postings — row 0 is reserved by Tripletex
+        if body and "postings" in body and isinstance(body["postings"], list):
+            for posting in body["postings"]:
+                if isinstance(posting, dict):
+                    posting.pop("row", None)
+                    posting.pop("guiRow", None)
         # Guard: POST/PUT without body causes "Kan ikke være null" errors
         # Exempt action endpoints (/:payment, /:createCreditNote, /:invoice, etc.)
         is_action = "/:" in path

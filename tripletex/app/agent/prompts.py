@@ -249,7 +249,10 @@ Fields: `displayName` (required), `dimensionIndex` (required — from step 1 res
   ]
 }}
 ```
-IMPORTANT: Voucher postings use `account` (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit.
+IMPORTANT for voucher postings:
+- Use `account` (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit.
+- Do NOT include `row` field — row 0 is reserved by Tripletex and will cause errors.
+- Each posting MUST have: `account` (object with id) and `amountGross` (number).
 Dimension values link to postings via `freeAccountingDimension1`, `freeAccountingDimension2`, or `freeAccountingDimension3` (matching dimensionIndex).
 
 ### 14. SUPPLIER / PURCHASE INVOICES (Tier 2-3)
@@ -266,7 +269,7 @@ Supplier invoices ("faktura fra leverandør", "factura del proveedor", "Lieferan
   ]
 }}
 ```
-IMPORTANT: Use `account` field (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit.
+IMPORTANT: Use `account` field (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit. Do NOT include `row` field.
 Account 2400 = "Leverandørgjeld" (accounts payable). Look up the expense account and VAT type IDs via GET /ledger/account and GET /ledger/vatType.
 When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
 
