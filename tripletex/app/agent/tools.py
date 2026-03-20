@@ -422,9 +422,9 @@ async def _execute(
         return await client.put(f"/employee/{eid}", json={"id": eid, **fields})
 
     if name == "create_customer":
-        # isCustomer is readOnly in the API — remove it to avoid confusion
-        # Tripletex auto-sets isCustomer based on context
-        args.pop("isCustomer", None)
+        # Ensure isCustomer is set unless this is a supplier-only entity
+        if "isCustomer" not in args and not args.get("isSupplier"):
+            args["isCustomer"] = True
         # Map address fields into Tripletex format
         # Handle flat address fields the model might send
         addr = args.pop("address", None)
