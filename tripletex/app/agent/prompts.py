@@ -151,12 +151,16 @@ Optional: number, priceExcludingVatCurrency, priceIncludingVatCurrency, costExcl
 }}
 ```
 
-### 5. REGISTER PAYMENT (Tier 2 — after invoice creation)
-Use **tripletex_api_call**: PUT /invoice/{{invoice_id}}/:payment
-This endpoint uses **query parameters**, not a JSON body:
-- `paymentDate` (string, required): YYYY-MM-DD
-- `paymentTypeId` (integer, required): Payment type ID — query GET /ledger/paymentType to find available types
-- `paidAmount` (number, required): Amount paid
+### 5. REGISTER PAYMENT ON EXISTING INVOICE (Tier 2)
+**Flow:**
+1. Find customer: search_entity entity_type="customer" params={{"organizationNumber": "XXXXX", "fields": "id,name"}}
+2. Find invoice: search_entity entity_type="invoice" params={{"customerId": customer_id, "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01", "fields": "id,invoiceNumber,amount,amountOutstanding"}}
+   **CRITICAL: GET /invoice REQUIRES `invoiceDateFrom` and `invoiceDateTo` — it will 422 without them. Use a wide date range like 2000-01-01 to 2100-01-01.**
+3. Get payment types: tripletex_api_call GET /invoice/paymentType
+4. Register payment: tripletex_api_call PUT /invoice/{{invoice_id}}/:payment with **params** (not body):
+   - `paymentDate`: "{today}"
+   - `paymentTypeId`: payment type ID from step 3
+   - `paidAmount`: the invoice amount
 
 ### 6. CREATE CREDIT NOTE (Tier 2)
 Use **tripletex_api_call**: PUT /invoice/{{invoice_id}}/:createCreditNote
@@ -200,11 +204,12 @@ Required: employee, title. Create employee first if needed.
 ### 10. REVERSE / CANCEL PAYMENT (Tier 2-3)
 Tripletex has NO direct payment delete. Payments are reversed by reversing their voucher.
 **Flow:**
-1. Find the customer: `search_entity` with entity_type="customer" and params like `{{"organizationNumber": "XXXXX", "fields": "id,name"}}`
-2. Find the invoice: `tripletex_api_call` GET /invoice with params `{{"customerId": customer_id, "fields": "id,invoiceNumber,amountOutstanding,voucher"}}`
-3. Get invoice details to find payment postings: `tripletex_api_call` GET /invoice/{{invoice_id}} with params `{{"fields": "*"}}`
-4. Find payment vouchers: look at the invoice's `postings` or `voucher` field. Payment vouchers can also be found via GET /ledger/voucher with params `{{"fields": "id,date,description,reverseVoucher"}}`
-5. Reverse the payment voucher: `tripletex_api_call` PUT /ledger/voucher/{{voucher_id}}/:reverse with params `{{"date": "{today}"}}`
+1. Find the customer: `search_entity` entity_type="customer" params={{"organizationNumber": "XXXXX", "fields": "id,name"}}
+2. Find the invoice: `search_entity` entity_type="invoice" params={{"customerId": customer_id, "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01", "fields": "id,invoiceNumber,amountOutstanding,voucher"}}
+   **CRITICAL: GET /invoice REQUIRES invoiceDateFrom and invoiceDateTo.**
+3. Get invoice details: `tripletex_api_call` GET /invoice/{{invoice_id}} params={{"fields": "*"}}
+4. Find payment vouchers from the invoice's `voucher` or `postings` fields. Or use GET /ledger/voucher.
+5. Reverse the payment voucher: `tripletex_api_call` PUT /ledger/voucher/{{voucher_id}}/:reverse with params={{"date": "{today}"}}
    - Note: this endpoint uses **query parameter** `date`, not a JSON body — use `params` not `body`
 
 ### 11. DELETE ENTITY

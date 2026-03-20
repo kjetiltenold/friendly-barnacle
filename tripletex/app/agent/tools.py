@@ -393,6 +393,14 @@ async def _execute(
     if name == "search_entity":
         entity_type = args["entity_type"]
         params = args.get("params", {})
+        # GET /invoice requires invoiceDateFrom and invoiceDateTo
+        if entity_type == "invoice":
+            if "invoiceDateFrom" not in params:
+                params["invoiceDateFrom"] = "2000-01-01"
+                logger.info("Auto-injected invoiceDateFrom=2000-01-01 for invoice search")
+            if "invoiceDateTo" not in params:
+                params["invoiceDateTo"] = "2100-01-01"
+                logger.info("Auto-injected invoiceDateTo=2100-01-01 for invoice search")
         return await client.get(f"/{entity_type}", params=params)
 
     if name == "get_entity":
@@ -404,10 +412,17 @@ async def _execute(
     if name == "tripletex_api_call":
         method = args["method"]
         path = args["path"]
-        params = args.get("params")
+        params = args.get("params") or {}
         body = args.get("body")
+        # Auto-inject required date range for invoice searches
+        if method == "GET" and "/invoice" in path and "/:payment" not in path:
+            if "invoiceDateFrom" not in params and "invoiceDateFrom" not in path:
+                params["invoiceDateFrom"] = "2000-01-01"
+                logger.info("Auto-injected invoiceDateFrom for invoice search")
+            if "invoiceDateTo" not in params and "invoiceDateTo" not in path:
+                params["invoiceDateTo"] = "2100-01-01"
+                logger.info("Auto-injected invoiceDateTo for invoice search")
         # Guard: POST without body causes "Kan ikke være null" errors
-        # PUT is allowed without body when using query params (e.g. /:payment, /:reverse, /:createCreditNote)
         if method == "POST" and not body:
             raise ValueError(f"tripletex_api_call POST {path} requires a 'body' parameter with the JSON payload")
         if method == "GET":
