@@ -302,7 +302,23 @@ async def _execute(
         return await client.put(f"/customer/{cid}", json={"id": cid, **fields})
 
     if name == "create_product":
-        return await client.post("/product", json=args)
+        try:
+            return await client.post("/product", json=args)
+        except Exception as e:
+            # Handle product number conflict: search for existing product
+            error_msg = str(e)
+            product_number = args.get("number")
+            if "422" in error_msg and product_number:
+                logger.info(f"Product number {product_number} conflict, searching for existing product")
+                try:
+                    result = await client.get("/product", params={"number": product_number, "fields": "id,name,number"})
+                    values = result.get("values", [])
+                    if values:
+                        logger.info(f"Found existing product id={values[0]['id']} for number {product_number}")
+                        return {"value": values[0]}
+                except Exception:
+                    pass
+            raise
 
     if name == "create_order":
         # Auto-inject customer reference if model omitted it
@@ -360,6 +376,9 @@ async def _execute(
         path = args["path"]
         params = args.get("params")
         body = args.get("body")
+        # Guard: POST/PUT without a body causes "Kan ikke være null" errors
+        if method in ("POST", "PUT") and not body:
+            raise ValueError(f"tripletex_api_call {method} {path} requires a 'body' parameter with the JSON payload")
         if method == "GET":
             return await client.get(path, params=params)
         if method == "POST":
