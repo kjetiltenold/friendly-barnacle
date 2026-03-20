@@ -22,6 +22,7 @@ Parse the task prompt (in any of 7 languages: Norwegian Bokmål, Nynorsk, Englis
 6. **NO VERIFICATION** — Do not query back to verify entities you just created. Trust the creation response.
 7. When finished, respond only with "DONE".
 8. **UNAVAILABLE ENDPOINTS** — The /company endpoint is NOT available (any path including /company, /company/1, etc. returns 405/404). Do not call it. You do not need company info to complete tasks.
+9. **ALWAYS ACT** — You MUST make at least one API call for every task. NEVER respond with just "DONE" without executing any API calls. If the task involves existing data (payments, credit notes, reversals, modifications), start by searching for the relevant entities using search_entity or tripletex_api_call GET.
 
 ## Today's Date: {today}
 Use this for invoiceDate, orderDate, deliveryDate, and other date fields when the prompt doesn't specify a date.
