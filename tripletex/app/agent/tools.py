@@ -189,12 +189,17 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["name"],
     }),
-    _tool("create_travel_expense", "Create a travel expense report in Tripletex. Only send employee and title — dates are NOT supported as direct fields.", {
+    _tool("create_travel_expense", "Create a travel expense report in Tripletex.", {
         "type": "object",
         "properties": {
             "employee": {"type": "object", "description": "{\"id\": employee_id}"},
             "project": {"type": "object", "description": "{\"id\": project_id}"},
             "title": {"type": "string"},
+            "departureDate": {"type": "string", "description": "YYYY-MM-DD (auto-nested into travelDetails)"},
+            "returnDate": {"type": "string", "description": "YYYY-MM-DD (auto-nested into travelDetails)"},
+            "travelDetails": {"type": "object", "description": "Travel details: departureDate, returnDate, destination, purpose, isDayTrip, isForeignTravel"},
+            "perDiemCompensations": {"type": "array", "description": "Per diem compensations array"},
+            "costs": {"type": "array", "description": "Cost items array"},
         },
         "required": ["employee", "title"],
     }),
@@ -313,49 +318,60 @@ async def _ensure_department(client: TripletexClient) -> int | None:
 
 
 async def _ensure_bank_account(client: TripletexClient) -> None:
-    """Register a bank account on the company so invoices can be created."""
-    company_id = None
-    company_name = "Company"
+    """Register a bank account so invoices can be created.
 
-    # Approach 1: Get company from session token info
+    Uses the ledger account system — find a bank account in the chart
+    of accounts and ensure it has a bank account number set.
+    """
+    # Approach 1: Find an existing bank account in the chart of accounts
     try:
-        result = await client.get("/token/session/>whoAmI", params={"fields": "company"})
-        company_data = result.get("value", result).get("company", {})
-        if company_data.get("id"):
-            company_id = company_data["id"]
-            company_name = company_data.get("name", "Company")
-            logger.info(f"Found company id={company_id} from whoAmI")
-    except Exception as e:
-        logger.info(f"whoAmI failed: {e}")
-
-    # Approach 2: Try common company IDs
-    if company_id is None:
-        for try_id in range(1, 10):
-            try:
-                result = await client.get(f"/company/{try_id}", params={"fields": "id,name"})
-                val = result.get("value", result)
-                if val.get("id"):
-                    company_id = val["id"]
-                    company_name = val.get("name", "Company")
-                    logger.info(f"Found company id={company_id} at /company/{try_id}")
-                    break
-            except Exception:
-                continue
-
-    if company_id is None:
-        logger.warning("Could not find company to set bank account")
-        return
-
-    # Set bank account number on the company
-    try:
-        await client.put(f"/company/{company_id}", json={
-            "id": company_id,
-            "name": company_name,
-            "bankAccountNumber": "12345678903",
+        result = await client.get("/ledger/account", params={
+            "fields": "id,number,name,isBankAccount,bankAccountNumber",
+            "isBankAccount": "true",
+            "count": 5,
         })
-        logger.info(f"Set bank account number on company id={company_id}")
+        values = result.get("values", [])
+        # Find one without a bank account number, or use any bank account
+        for acct in values:
+            if acct.get("isBankAccount") and not acct.get("bankAccountNumber"):
+                acct_id = acct["id"]
+                logger.info(f"Found bank account id={acct_id} number={acct.get('number')} without bank account number")
+                await client.put(f"/ledger/account/{acct_id}", json={
+                    "id": acct_id,
+                    "number": acct.get("number"),
+                    "name": acct.get("name", "Bank"),
+                    "isBankAccount": True,
+                    "bankAccountNumber": "12345678903",
+                })
+                logger.info(f"Set bankAccountNumber on ledger account id={acct_id}")
+                return
+        if values:
+            logger.info("Bank accounts found but all have numbers set already")
+            return
     except Exception as e:
-        logger.warning(f"Failed to set company bank account: {e}")
+        logger.info(f"Bank account lookup failed: {e}")
+
+    # Approach 2: Find account 1920 (standard bank account) and set it up
+    try:
+        result = await client.get("/ledger/account", params={
+            "number": "1920",
+            "fields": "id,number,name,isBankAccount,bankAccountNumber",
+        })
+        values = result.get("values", [])
+        if values:
+            acct = values[0]
+            acct_id = acct["id"]
+            await client.put(f"/ledger/account/{acct_id}", json={
+                "id": acct_id,
+                "number": acct.get("number", 1920),
+                "name": acct.get("name", "Bank"),
+                "isBankAccount": True,
+                "bankAccountNumber": "12345678903",
+            })
+            logger.info(f"Set bankAccountNumber on account 1920 (id={acct_id})")
+            return
+    except Exception as e:
+        logger.warning(f"Failed to set bank account on 1920: {e}")
 
 
 async def _execute(
@@ -496,10 +512,16 @@ async def _execute(
         if "employee" not in args and ctx and ctx.last_employee_id:
             args["employee"] = {"id": ctx.last_employee_id}
             logger.info(f"Auto-injected employee id={ctx.last_employee_id} into travel expense")
-        # Fix legacy field names
-        # Strip date fields — they don't exist on travelExpense object
+        # Move date fields into nested travelDetails object
+        travel_details = args.pop("travelDetails", {})
         for date_field in ("departureDate", "returnDate", "departureDateTime", "returnDateTime"):
-            args.pop(date_field, None)
+            val = args.pop(date_field, None)
+            if val:
+                # Normalize field names
+                normalized = date_field.replace("DateTime", "Date")
+                travel_details[normalized] = val
+        if travel_details:
+            args["travelDetails"] = travel_details
         return await client.post("/travelExpense", json=args)
 
     if name == "search_entity":

@@ -204,17 +204,20 @@ Use **create_department** tool.
 {{"name": "Salgsavdeling", "departmentNumber": "1"}}
 ```
 
-### 9. TRAVEL EXPENSE (Tier 1-2 — 1-2 calls)
-Use **create_travel_expense** tool.
+### 9. TRAVEL EXPENSE (Tier 1-2)
+Use **create_travel_expense** tool. Dates go in `travelDetails` (auto-nested if you pass departureDate/returnDate at top level).
 ```json
 {{
   "employee": {{"id": employee_id}},
   "title": "Business trip to Bergen",
-  "departureDateTime": "{today}T08:00:00",
-  "returnDateTime": "{today}T18:00:00"
+  "departureDate": "{today}",
+  "returnDate": "{today}",
+  "perDiemCompensations": [{{"rateCategory": {{"id": rate_cat_id}}, "countDays": 4}}],
+  "costs": [{{"category": {{"id": cost_cat_id}}, "rate": 4600, "count": 1, "paymentType": "EMPLOYEE"}}]
 }}
 ```
-Required: employee, title. Create employee first if needed.
+Required: employee, title. Per diem and costs can be included in the creation call.
+Look up rate categories via GET /travelExpense/rateCategory and cost categories via GET /travelExpense/costCategory.
 
 ### 10. TIMESHEET HOURS + PROJECT INVOICE (Tier 2-3)
 Register hours on a project and generate a project invoice.
@@ -323,12 +326,14 @@ When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat
 ### 15. SALARY / PAYROLL (Tier 2-3)
 Payroll tasks ("nómina", "lønn", "Gehalt", "salaire", "salário") — use tripletex_api_call for all steps:
 **Step 1**: Find employee — use create_employee (search-first by email)
-**Step 2**: Get salary type IDs — GET /salary/type?fields=*&employeeId=EMPLOYEE_ID
-**Step 3**: Discover salary/transaction fields — the body fields for POST /salary/transaction are NOT standard.
-First do GET /salary/transaction?employeeId=EMPLOYEE_ID&fields=* to see an example object and discover the correct field names.
-Then POST /salary/transaction?employeeId=EMPLOYEE_ID with the discovered field names.
+**Step 2**: Get salary type IDs — GET /salary/type?fields=id,number,name&employeeId=EMPLOYEE_ID
+**Step 3**: Create salary transaction — POST /salary/transaction with body:
+```json
+{{"date": "{today}", "year": 2026, "month": 3, "payslips": [{{"employee": {{"id": emp_id}}, "specifications": [{{"salaryType": {{"id": base_type_id}}, "rate": base_salary, "count": 1}}, {{"salaryType": {{"id": bonus_type_id}}, "rate": bonus_amount, "count": 1}}]}}]}}
+```
+The body uses: `date`, `year`, `month`, `payslips` (array of payslip objects with `employee` and `specifications`).
+Each specification has: `salaryType` (object with id), `rate` (amount), `count`.
 **Step 4**: Generate payslip — PUT /salary/payslip/:createPayslips (query params: employeeId, month, year)
-Look up salary types via GET /salary/type.
 
 ### 16. VOUCHER / LEDGER OPERATIONS (Tier 3)
 Use tripletex_api_call for:
