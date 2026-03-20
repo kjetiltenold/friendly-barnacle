@@ -292,7 +292,28 @@ async def _execute(
         start_date = args.pop("startDate", None)
         if start_date and "employments" not in args:
             args["employments"] = [{"startDate": start_date}]
-        return await client.post("/employee", json=args)
+        # Strip empty/invalid nested objects that cause validation errors
+        for ref_field in ("department", "employeeCategory"):
+            val = args.get(ref_field)
+            if isinstance(val, dict) and not val.get("id"):
+                del args[ref_field]
+        try:
+            return await client.post("/employee", json=args)
+        except Exception as e:
+            # Handle email conflict: search for existing employee
+            error_msg = str(e)
+            email = args.get("email")
+            if "422" in error_msg and email:
+                logger.info(f"Employee email conflict, searching for existing employee with email {email}")
+                try:
+                    result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                    values = result.get("values", [])
+                    if values:
+                        logger.info(f"Found existing employee id={values[0]['id']} for email {email}")
+                        return {"value": values[0]}
+                except Exception:
+                    pass
+            raise
 
     if name == "update_employee":
         eid = args["employee_id"]
