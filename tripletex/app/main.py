@@ -1,10 +1,16 @@
 import json
 import logging
+from pathlib import Path
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -164,3 +170,9 @@ async def fallback_handler(request: Request, exc: Exception):
     )
     logger.exception("Unhandled exception")
     return JSONResponse(status_code=200, content={"status": "completed"})
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

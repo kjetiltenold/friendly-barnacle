@@ -2,8 +2,10 @@
 
 import logging
 import time
+from typing import Any
 
 from app.config import get_settings
+from app.endpoint_search import EndpointSearchClient
 from app.models import SolveRequest
 from app.tripletex.client import TripletexClient
 from app.attachments.parser import process_attachments
@@ -20,11 +22,12 @@ async def solve_task(request: SolveRequest) -> None:
     tx = TripletexClient(creds.base_url, creds.session_token)
     llm = create_client()
     settings = get_settings()
+    endpoint_search = EndpointSearchClient.from_settings(settings)
 
     try:
         # Build user message with prompt + attachments
         content = _build_user_content(request)
-        messages = [{"role": "user", "content": content}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
 
         for iteration in range(settings.max_agent_iterations):
             elapsed = time.monotonic() - start
@@ -45,11 +48,35 @@ async def solve_task(request: SolveRequest) -> None:
                 break
 
             # Add assistant response to conversation
-            messages.append(message)
+            messages.append({
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in message.tool_calls
+                    if tc.type == "function"
+                ],
+            })
 
             # Execute each tool call and collect results
             for tc in message.tool_calls:
-                result_str = await dispatch_tool(tx, tc.function.name, tc.function.arguments)
+                if tc.type != "function":
+                    logger.warning(f"Skipping unsupported tool call type: {tc.type}")
+                    continue
+
+                result_str = await dispatch_tool(
+                    tx,
+                    tc.function.name,
+                    tc.function.arguments,
+                    endpoint_search=endpoint_search,
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -59,6 +86,8 @@ async def solve_task(request: SolveRequest) -> None:
             logger.warning(f"Agent hit max iterations ({settings.max_agent_iterations})")
 
     finally:
+        if endpoint_search is not None:
+            await endpoint_search.close()
         await tx.close()
 
 

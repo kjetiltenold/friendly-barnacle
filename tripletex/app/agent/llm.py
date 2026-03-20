@@ -4,7 +4,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
 from app.config import get_settings
-from app.agent.tools import TOOL_DEFINITIONS
+from app.agent.tools import get_tool_definitions
 
 
 def create_client() -> AsyncOpenAI:
@@ -22,5 +22,5 @@ async def chat(
         model=get_settings().model_name,
         max_tokens=4096,
         messages=full_messages,
-        tools=TOOL_DEFINITIONS,
+        tools=get_tool_definitions(),
     )

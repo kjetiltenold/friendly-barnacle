@@ -46,5 +46,6 @@ All API calls are pre-authenticated. Just use the tools.
 
 ### Required Field Patterns
 - Most POST endpoints require specific fields — the tool schemas guide you
+- If you are unsure which raw Tripletex endpoint matches the task, use the endpoint search tool before guessing a path
 - Use the tripletex_api_call tool as a fallback for endpoints not covered by specific tools
 """

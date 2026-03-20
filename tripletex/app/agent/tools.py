@@ -3,6 +3,8 @@
 import json
 import logging
 
+from app.config import get_settings
+from app.endpoint_search import EndpointSearchClient
 from app.tripletex.client import TripletexClient
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,7 @@ def _tool(name: str, description: str, parameters: dict) -> dict:
     }
 
 
-TOOL_DEFINITIONS = [
+BASE_TOOL_DEFINITIONS = [
     _tool("create_employee", "Create a new employee in Tripletex.", {
         "type": "object",
         "properties": {
@@ -185,19 +187,60 @@ TOOL_DEFINITIONS = [
     }),
 ]
 
+ENDPOINT_SEARCH_TOOL = _tool(
+    "find_tripletex_endpoints",
+    "Search the indexed Tripletex endpoint catalog for the best-matching raw API endpoints before using tripletex_api_call.",
+    {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "Describe the action you need to perform, including the entity and the intended outcome.",
+            },
+            "method": {
+                "type": "string",
+                "enum": ["GET", "POST", "PUT", "DELETE"],
+                "description": "Optional HTTP method to narrow the search.",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Optional number of matches to return. Defaults to the configured endpoint search result count.",
+            },
+        },
+        "required": ["task"],
+    },
+)
 
-async def dispatch_tool(client: TripletexClient, name: str, args_json: str) -> str:
+
+def get_tool_definitions() -> list[dict]:
+    definitions = list(BASE_TOOL_DEFINITIONS)
+    if get_settings().azure_search_configured:
+        definitions.append(ENDPOINT_SEARCH_TOOL)
+    return definitions
+
+
+async def dispatch_tool(
+    client: TripletexClient,
+    name: str,
+    args_json: str,
+    endpoint_search: EndpointSearchClient | None = None,
+) -> str:
     """Execute a tool call and return the result as a JSON string."""
     try:
         args = json.loads(args_json)
-        result = await _execute(client, name, args)
+        result = await _execute(client, name, args, endpoint_search=endpoint_search)
         return json.dumps(result, default=str, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"Tool {name} failed: {e}")
         return json.dumps({"error": str(e)})
 
 
-async def _execute(client: TripletexClient, name: str, args: dict) -> dict:
+async def _execute(
+    client: TripletexClient,
+    name: str,
+    args: dict,
+    endpoint_search: EndpointSearchClient | None,
+) -> dict:
     if name == "create_employee":
         return await client.post("/employee", json=args)
 
@@ -258,5 +301,14 @@ async def _execute(client: TripletexClient, name: str, args: dict) -> dict:
             return await client.put(path, json=body)
         if method == "DELETE":
             return await client.delete(path)
+
+    if name == "find_tripletex_endpoints":
+        if endpoint_search is None:
+            raise RuntimeError("Azure AI Search is not configured for endpoint discovery")
+        return await endpoint_search.search_endpoints(
+            task=args["task"],
+            method=args.get("method"),
+            top_k=args.get("top_k"),
+        )
 
     raise ValueError(f"Unknown tool: {name}")
