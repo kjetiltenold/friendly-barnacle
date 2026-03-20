@@ -193,6 +193,7 @@ This creates:
 - `dist/submission.zip`
 
 Upload `dist/submission.zip` on the competition submit page.
+The submission builder defaults to a more conservative inference setup than the original baseline: `imgsz=768`, `conf=0.18`, `iou=0.5`, `max_det=220`, and `half=True` on CUDA. These settings reduced duplicate boxes in our local previews without obviously hurting product coverage.
 
 ## Scripts
 

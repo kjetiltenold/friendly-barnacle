@@ -31,11 +31,11 @@ def load_config(root: Path):
     if not config_path.exists():
         return {
             "weights": "best.pt",
-            "imgsz": 1280,
-            "conf": 0.05,
-            "iou": 0.6,
-            "max_det": 300,
-            "half": False,
+            "imgsz": 768,
+            "conf": 0.18,
+            "iou": 0.5,
+            "max_det": 220,
+            "half": True,
         }
     return json.loads(config_path.read_text(encoding="utf-8"))
 
@@ -91,10 +91,10 @@ def main():
         predict_kwargs = {
             "source": str(image_path),
             "device": device,
-            "imgsz": int(config.get("imgsz", 1280)),
-            "conf": float(config.get("conf", 0.05)),
-            "iou": float(config.get("iou", 0.6)),
-            "max_det": int(config.get("max_det", 300)),
+            "imgsz": int(config.get("imgsz", 768)),
+            "conf": float(config.get("conf", 0.18)),
+            "iou": float(config.get("iou", 0.5)),
+            "max_det": int(config.get("max_det", 220)),
             "verbose": False,
         }
         if bool(config.get("half", False)) and torch.cuda.is_available():

@@ -30,11 +30,16 @@ def parse_args():
         default=Path("dist/submission.zip"),
         help="Path to the final submission zip.",
     )
-    parser.add_argument("--imgsz", type=int, default=1280)
-    parser.add_argument("--conf", type=float, default=0.05)
-    parser.add_argument("--iou", type=float, default=0.6)
-    parser.add_argument("--max-det", type=int, default=300)
-    parser.add_argument("--half", action="store_true", help="Enable half precision in inference.")
+    parser.add_argument("--imgsz", type=int, default=768)
+    parser.add_argument("--conf", type=float, default=0.18)
+    parser.add_argument("--iou", type=float, default=0.5)
+    parser.add_argument("--max-det", type=int, default=220)
+    parser.add_argument(
+        "--half",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable half precision in inference.",
+    )
     return parser.parse_args()
 
 
