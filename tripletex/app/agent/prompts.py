@@ -236,8 +236,12 @@ Note: uses `activity` (NOT `name`).
 {{"employee": {{"id": emp_id}}, "project": {{"id": proj_id}}, "activity": {{"id": activity_id}}, "date": "{today}", "hours": 8}}
 ```
 IMPORTANT: `activity` is REQUIRED and cannot be null. Max 24 hours per entry — split across multiple days if needed (e.g. 28 hours = 4 entries × 7 hours).
-**Step 6**: Set hourly rate on project — PUT /project/{{project_id}} with hourly rate fields.
-**Step 7**: Generate project invoice — PUT /project/{{project_id}}/:invoice with params: invoiceDate={today}
+**Step 6**: Set hourly rate on project — GET /project/hourlyRates then PUT /project/hourlyRates/{{rate_id}} with fixedRate.
+**Step 7**: Generate project invoice — create an order+invoice for the billable amount:
+- Calculate total: hours × hourly rate
+- Use create_order with customer, orderLines referencing the project work
+- Use create_invoice from the order
+Note: PUT /project/{{id}}/:invoice does NOT exist (returns 404). Use the standard order→invoice flow.
 
 ### 11. REVERSE / CANCEL PAYMENT (Tier 2-3)
 Tripletex has NO direct payment delete. Payments are reversed by reversing their voucher.
