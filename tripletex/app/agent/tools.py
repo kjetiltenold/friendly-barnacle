@@ -315,24 +315,36 @@ async def _ensure_department(client: TripletexClient) -> int | None:
 
 
 async def _ensure_bank_account(client: TripletexClient) -> None:
-    """Register a dummy bank account so invoices can be created."""
-    try:
-        # Check if a bank account already exists
-        result = await client.get("/bank", params={"fields": "id"})
-        if result.get("values"):
-            return
-    except Exception:
-        pass
-    # Register a standard Norwegian bank account
+    """Register a bank account on the company so invoices can be created."""
+    # Try to create a bank record first
     try:
         await client.post("/bank", json={
             "accountNumber": "12345678903",
             "iban": "NO9312345678903",
             "swiftBic": "DNBANOKK",
         })
-        logger.info("Auto-registered bank account for invoice creation")
+        logger.info("Created bank record")
+    except Exception:
+        pass  # May already exist
+    # Set the bank account number on the company — this is what Tripletex checks
+    try:
+        # Get company ID via /company/withLoginAccess
+        result = await client.get("/company/withLoginAccess", params={"fields": "id,name"})
+        values = result.get("values", [])
+        if not values:
+            logger.warning("Could not find company to set bank account")
+            return
+        company = values[0]
+        company_id = company["id"]
+        # Update company with bank account number
+        await client.put(f"/company/{company_id}", json={
+            "id": company_id,
+            "name": company.get("name", "Company"),
+            "bankAccountNumber": "12345678903",
+        })
+        logger.info(f"Set bank account number on company id={company_id}")
     except Exception as e:
-        logger.warning(f"Failed to auto-register bank account: {e}")
+        logger.warning(f"Failed to set company bank account: {e}")
 
 
 async def _execute(
