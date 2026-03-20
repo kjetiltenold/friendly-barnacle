@@ -194,12 +194,8 @@ Note: Create employee first for projectManager if needed.
 If the prompt mentions "fastpris"/"fixed price"/"prix fixe"/"precio fijo"/"Festpreis":
 1. Create customer + find/create employee
 2. Create project with create_project
-3. Set fixed price on project — tripletex_api_call PUT /project/{{project_id}} with body:
-```json
-{{"id": project_id, "name": "...", "number": "...", "projectManager": {{"id": emp_id}}, "fixedPrice": 274950}}
-```
-Note: PUT requires ALL required fields repeated in body, not just the changed field.
-4. Create order for the milestone percentage (e.g. 50% of fixedPrice)
+3. The project `fixedPrice` field does NOT exist on the project object. Instead, just calculate the milestone amount directly.
+4. Create order for the milestone amount (e.g. 50% of 274950 = 137475) with an order line describing the fixed price milestone
 5. Create invoice from order
 
 ### 8. CREATE DEPARTMENT (Tier 1 — 1-2 calls)

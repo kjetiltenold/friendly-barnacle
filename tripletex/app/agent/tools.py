@@ -314,30 +314,41 @@ async def _ensure_department(client: TripletexClient) -> int | None:
 
 async def _ensure_bank_account(client: TripletexClient) -> None:
     """Register a bank account on the company so invoices can be created."""
-    # Try to create a bank record first
+    # Try multiple approaches to find the company and set bank account
+    company_id = None
+
+    # Approach 1: Try /company/1 (common default ID)
+    for try_id in [1, 2]:
+        try:
+            result = await client.get(f"/company/{try_id}", params={"fields": "id,name"})
+            company_id = result.get("value", result).get("id", try_id)
+            company_name = result.get("value", result).get("name", "Company")
+            logger.info(f"Found company id={company_id} name={company_name}")
+            break
+        except Exception:
+            continue
+
+    if company_id is None:
+        # Approach 2: Try to get company from employee's company reference
+        try:
+            result = await client.get("/employee", params={"fields": "id,company", "count": 1})
+            values = result.get("values", [])
+            if values and "company" in values[0]:
+                company_id = values[0]["company"].get("id")
+                company_name = values[0]["company"].get("name", "Company")
+                logger.info(f"Found company id={company_id} from employee")
+        except Exception:
+            pass
+
+    if company_id is None:
+        logger.warning("Could not find company to set bank account")
+        return
+
+    # Set bank account number on the company
     try:
-        await client.post("/bank", json={
-            "accountNumber": "12345678903",
-            "iban": "NO9312345678903",
-            "swiftBic": "DNBANOKK",
-        })
-        logger.info("Created bank record")
-    except Exception:
-        pass  # May already exist
-    # Set the bank account number on the company — this is what Tripletex checks
-    try:
-        # Get company ID via /company/withLoginAccess
-        result = await client.get("/company/withLoginAccess", params={"fields": "id,name"})
-        values = result.get("values", [])
-        if not values:
-            logger.warning("Could not find company to set bank account")
-            return
-        company = values[0]
-        company_id = company["id"]
-        # Update company with bank account number
         await client.put(f"/company/{company_id}", json={
             "id": company_id,
-            "name": company.get("name", "Company"),
+            "name": company_name,
             "bankAccountNumber": "12345678903",
         })
         logger.info(f"Set bank account number on company id={company_id}")
