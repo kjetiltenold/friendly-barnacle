@@ -243,11 +243,12 @@ Fields: `displayName` (required), `dimensionIndex` (required — from step 1 res
   "date": "{today}",
   "description": "Journal entry",
   "postings": [
-    {{"debit": {{"id": account_id}}, "amount": 16800, "freeAccountingDimension1": {{"id": dimension_value_id}}}},
-    {{"credit": {{"id": contra_account_id}}, "amount": 16800}}
+    {{"account": {{"id": account_id}}, "amountGross": 16800, "freeAccountingDimension1": {{"id": dimension_value_id}}}},
+    {{"account": {{"id": contra_account_id}}, "amountGross": -16800}}
   ]
 }}
 ```
+IMPORTANT: Voucher postings use `account` (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit.
 Dimension values link to postings via `freeAccountingDimension1`, `freeAccountingDimension2`, or `freeAccountingDimension3` (matching dimensionIndex).
 
 ### 14. SUPPLIER / PURCHASE INVOICES (Tier 2-3)
@@ -259,11 +260,12 @@ Supplier invoices ("faktura fra leverandør", "factura del proveedor", "Lieferan
   "date": "{today}",
   "description": "INV-2026-XXXX",
   "postings": [
-    {{"debit": {{"id": expense_account_id}}, "amountGross": amount_excl_vat, "vatType": {{"id": vat_type_id}}}},
-    {{"credit": {{"id": 2400}}, "amountGross": amount_incl_vat}}
+    {{"account": {{"id": expense_account_id}}, "amountGross": amount_excl_vat, "vatType": {{"id": vat_type_id}}}},
+    {{"account": {{"id": 2400}}, "amountGross": -amount_incl_vat}}
   ]
 }}
 ```
+IMPORTANT: Use `account` field (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit.
 Account 2400 = "Leverandørgjeld" (accounts payable). Look up the expense account and VAT type IDs via GET /ledger/account and GET /ledger/vatType.
 When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
 
