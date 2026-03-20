@@ -8,7 +8,8 @@ It gives you:
 - Local caching for round details, observations, and generated predictions
 - A baseline heuristic predictor that blends map priors with observed viewport outcomes
 - A lightweight cross-seed feature model so observations on one seed can still inform the others
-- An uncertainty-driven query planner that recommends and executes high-value viewport batches
+- A staged query planner that starts with balanced cross-seed exploration, then infers, then concentrates late queries
+- Offline analysis tools to fetch completed-round ground truth, evaluate the model, and tune saved weights
 - A Streamlit app for exploring seeds, querying the simulator, previewing predictions, and submitting them
 - A small CLI for scripting the same workflow
 
@@ -67,6 +68,24 @@ Spend the rest of the live round budget, rebuild, and resubmit:
 astar-island autoquery --use-remaining --replan-every 5 --build --submit
 ```
 
+Backfill completed-round analysis data for offline evaluation:
+
+```bash
+astar-island sync-analysis
+```
+
+Evaluate the current saved model weights on cached completed rounds:
+
+```bash
+astar-island evaluate
+```
+
+Tune model weights on cached completed rounds and save the result:
+
+```bash
+astar-island tune --save
+```
+
 Submit the cached predictions:
 
 ```bash
@@ -79,6 +98,7 @@ astar-island submit --all-seeds
 - `src/astar_island/cache.py`: local JSON cache for round data, observations, and predictions
 - `src/astar_island/baseline.py`: probabilistic predictor and observation fusion
 - `src/astar_island/planner.py`: uncertainty-driven query planning and batch execution
+- `src/astar_island/analysis.py`: offline scoring, evaluation, and parameter tuning
 - `src/astar_island/app.py`: Streamlit UI
 - `src/astar_island/cli.py`: CLI for scripted workflows
 
@@ -86,6 +106,7 @@ astar-island submit --all-seeds
 
 - The baseline is intentionally conservative and always applies a probability floor before normalization.
 - Cached data is written to `.data/` by default.
+- Tuned model weights, when present, are loaded automatically from `.data/model_params.json`.
 - The app assumes a Bearer token, but you can adapt the client to cookie auth if you prefer.
 
 ## Tests

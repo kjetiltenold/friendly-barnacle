@@ -13,8 +13,7 @@ from astar_island.baseline import (
     normalize_probabilities,
 )
 from astar_island.cache import CacheStore
-from astar_island.planner import plan_query_batch
-from astar_island.planner import run_iterative_autopilot
+from astar_island.planner import determine_stage, plan_query_batch, run_iterative_autopilot
 from astar_island.types import InitialState, RoundDetail, Settlement, SimulationResult, Viewport
 
 
@@ -124,6 +123,18 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue(all(0 <= item.x <= 2 for item in plan))
         self.assertTrue(all(0 <= item.y <= 2 for item in plan))
 
+    def test_staged_planner_balances_early_exploration_across_seeds(self) -> None:
+        detail = make_round_detail()
+        plan = plan_query_batch(detail, [], count=2, viewport_w=2, viewport_h=2, stage="explore")
+        self.assertEqual(len(plan), 2)
+        self.assertEqual({item.seed_index for item in plan}, {0, 1})
+        self.assertTrue(all(item.stage == "explore" for item in plan))
+
+    def test_determine_stage_uses_progression(self) -> None:
+        self.assertEqual(determine_stage(existing_queries=0, requested_queries=50), "explore")
+        self.assertEqual(determine_stage(existing_queries=15, requested_queries=35), "infer")
+        self.assertEqual(determine_stage(existing_queries=40, requested_queries=10), "exploit")
+
     def test_iterative_autopilot_executes_and_caches_results(self) -> None:
         detail = make_round_detail()
 
@@ -165,6 +176,8 @@ class BaselineTests(unittest.TestCase):
             )
             self.assertEqual(run.executed_queries, 3)
             self.assertEqual(len(cache.load_observations(detail.id)), 3)
+            self.assertTrue(run.batch_stages)
+            self.assertEqual(run.batch_stages[0], "explore")
 
 
 if __name__ == "__main__":

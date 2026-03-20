@@ -48,6 +48,18 @@ class SeedFeatureMaps:
 
 
 @dataclass(slots=True)
+class ModelParameters:
+    prior_weight: float = 2.5
+    exact_weight: float = 6.0
+    spatial_weight: float = 1.0
+    global_scale: float = 1.0
+    code_scale: float = 0.9
+    frontier_scale: float = 1.1
+    context_scale: float = 1.2
+    region_scale: float = 0.9
+
+
+@dataclass(slots=True)
 class LearnedTables:
     global_counts: FloatGrid
     code_counts: dict[str, FloatGrid]
@@ -361,12 +373,17 @@ def table_distribution(counts: FloatGrid | None, *, cap: float, scale: float) ->
 def feature_pseudocounts_for_seed(
     feature_maps: SeedFeatureMaps,
     tables: LearnedTables,
+    params: ModelParameters,
 ) -> tuple[FloatGrid, FloatGrid]:
     height, width = feature_maps.initial_grid.shape
     pseudocounts = np.zeros((height, width, 6), dtype=float)
     support = np.zeros((height, width), dtype=float)
 
-    global_distribution, global_strength = table_distribution(tables.global_counts, cap=1.5, scale=1.0)
+    global_distribution, global_strength = table_distribution(
+        tables.global_counts,
+        cap=1.5,
+        scale=params.global_scale,
+    )
 
     for y in range(height):
         for x in range(width):
@@ -378,10 +395,10 @@ def feature_pseudocounts_for_seed(
             cell_support += global_strength
 
             for table, key, cap, scale in (
-                (tables.code_counts, code_key, 1.5, 0.9),
-                (tables.frontier_counts, frontier_key, 2.5, 1.1),
-                (tables.context_counts, context_key, 3.0, 1.2),
-                (tables.region_counts, region_key, 2.0, 0.9),
+                (tables.code_counts, code_key, 1.5, params.code_scale),
+                (tables.frontier_counts, frontier_key, 2.5, params.frontier_scale),
+                (tables.context_counts, context_key, 3.0, params.context_scale),
+                (tables.region_counts, region_key, 2.0, params.region_scale),
             ):
                 distribution, strength = table_distribution(table.get(key), cap=cap, scale=scale)
                 total += distribution
@@ -436,7 +453,9 @@ def build_seed_prediction(
     *,
     feature_maps_by_seed: dict[int, SeedFeatureMaps] | None = None,
     tables: LearnedTables | None = None,
+    params: ModelParameters | None = None,
 ) -> PredictionPreview:
+    model_params = params or ModelParameters()
     feature_maps_lookup = feature_maps_by_seed or build_feature_maps_for_round(detail)
     feature_maps = feature_maps_lookup[seed_index]
     prior = normalize_probabilities(
@@ -453,20 +472,20 @@ def build_seed_prediction(
     )
     exact_counts, coverage, sample_counts = aggregate_observation_counts(observations, detail.map_height, detail.map_width)
     learned_tables = tables or build_feature_model(detail, observations, feature_maps_lookup)
-    feature_counts, feature_support = feature_pseudocounts_for_seed(feature_maps, learned_tables)
+    feature_counts, feature_support = feature_pseudocounts_for_seed(feature_maps, learned_tables, model_params)
     spatial_counts, spatial_support = spatial_pseudocounts(exact_counts, sample_counts, feature_maps)
 
     posterior = normalize_probabilities(
-        (prior * 2.5)
+        (prior * model_params.prior_weight)
         + feature_counts
-        + spatial_counts
-        + (exact_counts * 6.0)
+        + (spatial_counts * model_params.spatial_weight)
+        + (exact_counts * model_params.exact_weight)
     )
     entropy_grid = -np.sum(posterior * np.log(posterior), axis=-1)
     dynamic_grid = posterior[..., 1] + posterior[..., 2] + posterior[..., 3] + (0.35 * posterior[..., 4])
     argmax_grid = np.argmax(posterior, axis=-1)
     confidence_grid = np.max(posterior, axis=-1)
-    support_grid = feature_support + spatial_support + (sample_counts * 6.0)
+    support_grid = feature_support + (spatial_support * model_params.spatial_weight) + (sample_counts * model_params.exact_weight)
 
     return PredictionPreview(
         prediction=posterior,
@@ -480,7 +499,13 @@ def build_seed_prediction(
     )
 
 
-def build_all_predictions(detail: RoundDetail, observations: list[SimulationResult]) -> dict[int, PredictionPreview]:
+def build_all_predictions(
+    detail: RoundDetail,
+    observations: list[SimulationResult],
+    *,
+    params: ModelParameters | None = None,
+) -> dict[int, PredictionPreview]:
+    model_params = params or ModelParameters()
     feature_maps_by_seed = build_feature_maps_for_round(detail)
     tables = build_feature_model(detail, observations, feature_maps_by_seed)
     predictions: dict[int, PredictionPreview] = {}
@@ -493,6 +518,7 @@ def build_all_predictions(detail: RoundDetail, observations: list[SimulationResu
             seed_index,
             feature_maps_by_seed=feature_maps_by_seed,
             tables=tables,
+            params=model_params,
         )
 
     return predictions

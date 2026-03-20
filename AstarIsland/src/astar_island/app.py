@@ -9,18 +9,18 @@ import streamlit as st
 
 try:
     from .api import AstarIslandApiError, AstarIslandClient
-    from .baseline import build_all_predictions, overlay_initial_settlements
+    from .baseline import ModelParameters, build_all_predictions, overlay_initial_settlements
     from .cache import CacheStore
     from .config import AppConfig
-    from .planner import PlannedQuery, execute_query_plan, plan_query_batch, run_iterative_autopilot
+    from .planner import PlannedQuery, determine_stage, execute_query_plan, plan_query_batch, run_iterative_autopilot
     from .visuals import confidence_to_image, grid_to_image, mask_to_image
 except ImportError:
     # Streamlit runs the target file as a script, so absolute imports are the safe fallback.
     from astar_island.api import AstarIslandApiError, AstarIslandClient
-    from astar_island.baseline import build_all_predictions, overlay_initial_settlements
+    from astar_island.baseline import ModelParameters, build_all_predictions, overlay_initial_settlements
     from astar_island.cache import CacheStore
     from astar_island.config import AppConfig
-    from astar_island.planner import PlannedQuery, execute_query_plan, plan_query_batch, run_iterative_autopilot
+    from astar_island.planner import PlannedQuery, determine_stage, execute_query_plan, plan_query_batch, run_iterative_autopilot
     from astar_island.visuals import confidence_to_image, grid_to_image, mask_to_image
 
 
@@ -80,6 +80,10 @@ def submit_cached_predictions(client: AstarIslandClient, cache: CacheStore, roun
             time.sleep(0.6)
 
 
+def active_model_parameters(cache: CacheStore) -> ModelParameters:
+    return cache.load_model_parameters() or ModelParameters()
+
+
 def main() -> None:
     st.set_page_config(page_title="Astar Island", layout="wide")
     st.title("Astar Island Explorer")
@@ -123,9 +127,18 @@ def main() -> None:
 
     remaining_budget = None if budget is None else max(0, budget.queries_max - budget.queries_used)
     can_query = bool(client.config.access_token) and (remaining_budget is None or remaining_budget > 0)
+    model_params = active_model_parameters(cache)
+    st.sidebar.caption(
+        "Model weights: "
+        f"prior={model_params.prior_weight:.2f}, exact={model_params.exact_weight:.2f}, spatial={model_params.spatial_weight:.2f}"
+    )
     seed_index = st.selectbox("Seed", list(range(detail.seeds_count)), index=0)
     observations = cache.load_observations(detail.id)
-    predictions = build_all_predictions(detail, observations)
+    current_stage = determine_stage(
+        existing_queries=len(observations),
+        requested_queries=max(1, remaining_budget or 1),
+    )
+    predictions = build_all_predictions(detail, observations, params=model_params)
     preview = predictions[seed_index]
     plan_state_key = f"query-plan-{detail.id}"
 
@@ -189,12 +202,13 @@ def main() -> None:
             viewport_w=int(w),
             viewport_h=int(h),
             seed_indices=[seed_index],
+            params=model_params,
         )
         if suggested_plan:
             suggestion = suggested_plan[0]
             st.caption(
                 "Suggested next viewport: "
-                f"seed {suggestion.seed_index}, x={suggestion.x}, y={suggestion.y}, "
+                f"[{suggestion.stage}] seed {suggestion.seed_index}, x={suggestion.x}, y={suggestion.y}, "
                 f"score={suggestion.adjusted_score:.2f}"
             )
 
@@ -204,6 +218,7 @@ def main() -> None:
             st.info("Add an access token in the sidebar to run automated queries.")
         elif remaining_budget == 0:
             st.warning("Your team has no remaining query budget for the active round.")
+        st.caption(f"Current staged planner phase: `{current_stage}`")
         planner_col1, planner_col2, planner_col3 = st.columns(3)
         batch_max = 10 if remaining_budget is None else max(1, remaining_budget)
         batch_size = planner_col1.number_input("Batch size", min_value=1, max_value=batch_max, value=min(5, batch_max))
@@ -227,6 +242,10 @@ def main() -> None:
 
         button_col1, button_col2, button_col3 = st.columns(3)
         if button_col1.button("Plan automated batch", key="plan-batch"):
+            stage = determine_stage(
+                existing_queries=len(observations),
+                requested_queries=int(target_queries),
+            )
             plan = plan_query_batch(
                 detail,
                 observations,
@@ -234,6 +253,8 @@ def main() -> None:
                 viewport_w=int(batch_w),
                 viewport_h=int(batch_h),
                 seed_indices=selected_seeds or None,
+                params=model_params,
+                stage=stage,
             )
             st.session_state[plan_state_key] = serialize_plan(plan)
 
@@ -249,17 +270,24 @@ def main() -> None:
                     viewport_h=int(batch_h),
                     seed_indices=selected_seeds or None,
                     replan_every=int(batch_size),
+                    params=model_params,
                 )
                 st.session_state[plan_state_key] = serialize_plan(run.batches[-1] if run.batches else [])
                 if run.executed_queries == 0:
                     st.warning("Planner did not find any useful queries.")
                 else:
                     if auto_cache_after_run:
-                        updated_predictions = build_all_predictions(detail, cache.load_observations(detail.id))
+                        updated_predictions = build_all_predictions(
+                            detail,
+                            cache.load_observations(detail.id),
+                            params=model_params,
+                        )
                         cache_predictions(cache, detail.id, updated_predictions)
                         if auto_submit_after_run:
                             submit_cached_predictions(client, cache, detail.id, detail.seeds_count)
                     st.success(f"Executed {run.executed_queries} queries across {len(run.batches)} replanned batches.")
+                    if run.batch_stages:
+                        st.caption(f"Stages used: {', '.join(run.batch_stages)}")
                     st.rerun()
             except AstarIslandApiError as exc:
                 st.error(str(exc))
@@ -276,17 +304,24 @@ def main() -> None:
                     viewport_h=int(batch_h),
                     seed_indices=selected_seeds or None,
                     replan_every=int(batch_size),
+                    params=model_params,
                 )
                 st.session_state[plan_state_key] = serialize_plan(run.batches[-1] if run.batches else [])
                 if run.executed_queries == 0:
                     st.warning("Planner did not find any useful queries.")
                 else:
                     if auto_cache_after_run:
-                        updated_predictions = build_all_predictions(detail, cache.load_observations(detail.id))
+                        updated_predictions = build_all_predictions(
+                            detail,
+                            cache.load_observations(detail.id),
+                            params=model_params,
+                        )
                         cache_predictions(cache, detail.id, updated_predictions)
                         if auto_submit_after_run:
                             submit_cached_predictions(client, cache, detail.id, detail.seeds_count)
                     st.success(f"Executed {run.executed_queries} queries across {len(run.batches)} replanned batches.")
+                    if run.batch_stages:
+                        st.caption(f"Stages used: {', '.join(run.batch_stages)}")
                     st.rerun()
             except AstarIslandApiError as exc:
                 st.error(str(exc))
@@ -300,7 +335,11 @@ def main() -> None:
                     plan = deserialize_plan(plan_payload)
                     results = execute_query_plan(client, cache, detail.id, plan)
                     if auto_cache_after_run:
-                        updated_predictions = build_all_predictions(detail, cache.load_observations(detail.id))
+                        updated_predictions = build_all_predictions(
+                            detail,
+                            cache.load_observations(detail.id),
+                            params=model_params,
+                        )
                         cache_predictions(cache, detail.id, updated_predictions)
                         if auto_submit_after_run:
                             submit_cached_predictions(client, cache, detail.id, detail.seeds_count)

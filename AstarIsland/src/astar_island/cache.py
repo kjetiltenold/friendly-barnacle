@@ -5,7 +5,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .types import RoundDetail, SimulationResult
+from .baseline import ModelParameters
+from .types import RoundAnalysis, RoundDetail, SimulationResult
 
 
 class CacheStore:
@@ -77,3 +78,42 @@ class CacheStore:
             return None
         payload = json.loads(path.read_text())
         return payload["prediction"]
+
+    def save_round_analysis(self, round_id: str, seed_index: int, analysis: RoundAnalysis) -> Path:
+        path = self._round_dir(round_id) / f"analysis_seed_{seed_index}.json"
+        path.write_text(json.dumps(asdict(analysis)))
+        return path
+
+    def load_round_analysis(self, round_id: str, seed_index: int) -> RoundAnalysis | None:
+        path = self._round_dir(round_id) / f"analysis_seed_{seed_index}.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text())
+        return RoundAnalysis.from_api(payload)
+
+    def load_all_round_analyses(self, round_id: str) -> dict[int, RoundAnalysis]:
+        analyses: dict[int, RoundAnalysis] = {}
+        round_dir = self._round_dir(round_id)
+        for path in sorted(round_dir.glob("analysis_seed_*.json")):
+            seed_index = int(path.stem.split("_")[-1])
+            analyses[seed_index] = RoundAnalysis.from_api(json.loads(path.read_text()))
+        return analyses
+
+    def save_model_parameters(self, params: ModelParameters) -> Path:
+        path = self.root / "model_params.json"
+        path.write_text(json.dumps(asdict(params), indent=2))
+        return path
+
+    def load_model_parameters(self) -> ModelParameters | None:
+        path = self.root / "model_params.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text())
+        return ModelParameters(**payload)
+
+    def save_report(self, name: str, payload: dict[str, Any]) -> Path:
+        reports_dir = self.root / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        path = reports_dir / f"{name}.json"
+        path.write_text(json.dumps(payload, indent=2))
+        return path

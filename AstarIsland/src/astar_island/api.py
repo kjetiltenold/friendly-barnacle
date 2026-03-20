@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 from .config import AppConfig
-from .types import Budget, RoundDetail, RoundSummary, SimulationResult
+from .types import Budget, RoundAnalysis, RoundDetail, RoundSummary, SimulationResult, TeamRoundSummary
 
 
 class AstarIslandApiError(RuntimeError):
@@ -71,6 +71,10 @@ class AstarIslandClient:
         payload = self._request("GET", "budget", auth_required=True)
         return Budget.from_api(payload)
 
+    def get_my_rounds(self) -> list[TeamRoundSummary]:
+        payload = self._request("GET", "my-rounds", auth_required=True)
+        return [TeamRoundSummary.from_api(item) for item in payload]
+
     def simulate(
         self,
         *,
@@ -112,3 +116,11 @@ class AstarIslandClient:
                 "prediction": prediction,
             },
         )
+
+    def get_round_analysis(self, *, round_id: str, seed_index: int) -> RoundAnalysis:
+        payload = self._request(
+            "GET",
+            f"analysis/{round_id}/{seed_index}",
+            auth_required=True,
+        )
+        return RoundAnalysis.from_api(payload)

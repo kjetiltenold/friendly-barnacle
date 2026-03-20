@@ -76,6 +76,51 @@ class RoundSummary:
 
 
 @dataclass(slots=True)
+class TeamRoundSummary:
+    id: str
+    round_number: int
+    status: str
+    map_width: int
+    map_height: int
+    seeds_count: int
+    round_weight: float | None = None
+    round_score: float | None = None
+    seed_scores: list[float] | None = None
+    seeds_submitted: int | None = None
+    rank: int | None = None
+    total_teams: int | None = None
+    queries_used: int | None = None
+    queries_max: int | None = None
+    initial_grid: list[list[int]] | None = None
+    event_date: str | None = None
+    started_at: str | None = None
+    closes_at: str | None = None
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> "TeamRoundSummary":
+        return cls(
+            id=payload["id"],
+            round_number=payload["round_number"],
+            status=payload["status"],
+            map_width=payload["map_width"],
+            map_height=payload["map_height"],
+            seeds_count=payload["seeds_count"],
+            round_weight=payload.get("round_weight"),
+            round_score=payload.get("round_score"),
+            seed_scores=payload.get("seed_scores"),
+            seeds_submitted=payload.get("seeds_submitted"),
+            rank=payload.get("rank"),
+            total_teams=payload.get("total_teams"),
+            queries_used=payload.get("queries_used"),
+            queries_max=payload.get("queries_max"),
+            initial_grid=payload.get("initial_grid"),
+            event_date=payload.get("event_date"),
+            started_at=payload.get("started_at"),
+            closes_at=payload.get("closes_at"),
+        )
+
+
+@dataclass(slots=True)
 class RoundDetail:
     id: str
     round_number: int
@@ -162,4 +207,25 @@ class SimulationResult:
             queries_used=payload["queries_used"],
             queries_max=payload["queries_max"],
             captured_at=captured_at,
+        )
+
+
+@dataclass(slots=True)
+class RoundAnalysis:
+    prediction: list[list[list[float]]]
+    ground_truth: list[list[list[float]]]
+    score: float | None
+    width: int
+    height: int
+    initial_grid: list[list[int]] | None = None
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> "RoundAnalysis":
+        return cls(
+            prediction=payload["prediction"],
+            ground_truth=payload["ground_truth"],
+            score=payload.get("score"),
+            width=payload["width"],
+            height=payload["height"],
+            initial_grid=payload.get("initial_grid"),
         )
