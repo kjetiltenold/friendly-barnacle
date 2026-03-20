@@ -1,11 +1,53 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-from astar_island.baseline import aggregate_observation_counts, build_prior, normalize_probabilities
-from astar_island.types import InitialState, Settlement, SimulationResult, Viewport
+from astar_island.baseline import (
+    aggregate_observation_counts,
+    build_all_predictions,
+    build_prior,
+    normalize_probabilities,
+)
+from astar_island.cache import CacheStore
+from astar_island.planner import plan_query_batch
+from astar_island.planner import run_iterative_autopilot
+from astar_island.types import InitialState, RoundDetail, Settlement, SimulationResult, Viewport
+
+
+def make_round_detail() -> RoundDetail:
+    initial_states = [
+        InitialState(
+            grid=[
+                [10, 10, 10, 10],
+                [10, 11, 11, 10],
+                [10, 11, 4, 10],
+                [10, 10, 10, 10],
+            ],
+            settlements=[Settlement(x=1, y=1, has_port=False, alive=True)],
+        ),
+        InitialState(
+            grid=[
+                [10, 10, 10, 10],
+                [10, 11, 11, 10],
+                [10, 11, 11, 10],
+                [10, 10, 10, 10],
+            ],
+            settlements=[Settlement(x=2, y=2, has_port=True, alive=True)],
+        ),
+    ]
+    return RoundDetail(
+        id="round",
+        round_number=1,
+        status="active",
+        map_width=4,
+        map_height=4,
+        seeds_count=2,
+        initial_states=initial_states,
+    )
 
 
 class BaselineTests(unittest.TestCase):
@@ -24,7 +66,7 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(prior.shape, (3, 3, 6))
         self.assertAlmostEqual(float(prior[1, 1].sum()), 1.0)
 
-    def test_observation_counts_mark_coverage(self) -> None:
+    def test_observation_counts_mark_coverage_and_samples(self) -> None:
         observation = SimulationResult(
             round_id="round",
             seed_index=0,
@@ -36,10 +78,93 @@ class BaselineTests(unittest.TestCase):
             queries_used=1,
             queries_max=50,
         )
-        counts, coverage = aggregate_observation_counts([observation], height=4, width=4)
+        counts, coverage, samples = aggregate_observation_counts([observation], height=4, width=4)
         self.assertEqual(int(coverage.sum()), 4)
+        self.assertEqual(int(samples.sum()), 4)
         self.assertEqual(int(counts[1, 1, 1]), 1)
         self.assertEqual(int(counts[1, 2, 2]), 1)
+
+    def test_prediction_preview_includes_entropy_support_and_samples(self) -> None:
+        detail = make_round_detail()
+        observation = SimulationResult(
+            round_id="round",
+            seed_index=0,
+            grid=[[1, 2], [3, 4]],
+            settlements=[],
+            viewport=Viewport(x=1, y=1, w=2, h=2),
+            width=4,
+            height=4,
+            queries_used=1,
+            queries_max=50,
+        )
+        predictions = build_all_predictions(detail, [observation])
+        preview = predictions[0]
+        self.assertEqual(preview.prediction.shape, (4, 4, 6))
+        self.assertEqual(preview.entropy_grid.shape, (4, 4))
+        self.assertEqual(preview.support_grid.shape, (4, 4))
+        self.assertEqual(preview.sample_count_grid.shape, (4, 4))
+        self.assertGreater(float(preview.sample_count_grid[1, 1]), 0.0)
+
+    def test_planner_returns_ranked_queries(self) -> None:
+        detail = make_round_detail()
+        observation = SimulationResult(
+            round_id="round",
+            seed_index=0,
+            grid=[[1, 2], [3, 4]],
+            settlements=[],
+            viewport=Viewport(x=1, y=1, w=2, h=2),
+            width=4,
+            height=4,
+            queries_used=1,
+            queries_max=50,
+        )
+        plan = plan_query_batch(detail, [observation], count=2, viewport_w=2, viewport_h=2)
+        self.assertLessEqual(len(plan), 2)
+        self.assertTrue(all(item.adjusted_score >= 0.0 for item in plan))
+        self.assertTrue(all(0 <= item.x <= 2 for item in plan))
+        self.assertTrue(all(0 <= item.y <= 2 for item in plan))
+
+    def test_iterative_autopilot_executes_and_caches_results(self) -> None:
+        detail = make_round_detail()
+
+        class FakeClient:
+            def simulate(
+                self,
+                *,
+                round_id: str,
+                seed_index: int,
+                viewport_x: int,
+                viewport_y: int,
+                viewport_w: int,
+                viewport_h: int,
+            ) -> SimulationResult:
+                grid = [[1 for _ in range(viewport_w)] for _ in range(viewport_h)]
+                return SimulationResult(
+                    round_id=round_id,
+                    seed_index=seed_index,
+                    grid=grid,
+                    settlements=[],
+                    viewport=Viewport(x=viewport_x, y=viewport_y, w=viewport_w, h=viewport_h),
+                    width=detail.map_width,
+                    height=detail.map_height,
+                    queries_used=1,
+                    queries_max=50,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = CacheStore(Path(tmpdir))
+            run = run_iterative_autopilot(
+                FakeClient(),
+                cache,
+                detail,
+                round_id=detail.id,
+                total_queries=3,
+                viewport_w=2,
+                viewport_h=2,
+                replan_every=1,
+            )
+            self.assertEqual(run.executed_queries, 3)
+            self.assertEqual(len(cache.load_observations(detail.id)), 3)
 
 
 if __name__ == "__main__":

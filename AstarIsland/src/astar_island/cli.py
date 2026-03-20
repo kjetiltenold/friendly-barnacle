@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from .api import AstarIslandClient, AstarIslandApiError
 from .baseline import build_all_predictions
 from .cache import CacheStore
 from .config import AppConfig
+from .planner import plan_query_batch, run_iterative_autopilot
 
 
 def build_runtime(args: argparse.Namespace) -> tuple[AstarIslandClient, CacheStore]:
@@ -84,6 +86,84 @@ def command_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_seed_list(raw: str | None) -> list[int] | None:
+    if not raw:
+        return None
+    return [int(item.strip()) for item in raw.split(",") if item.strip()]
+
+
+def command_autoquery(args: argparse.Namespace) -> int:
+    client, cache = build_runtime(args)
+    round_id = resolve_round_id(client, args.round_id)
+    detail = cache.load_round_detail(round_id) or client.get_round_detail(round_id)
+    cache.save_round_detail(detail)
+    observations = cache.load_observations(round_id)
+    seed_indices = parse_seed_list(args.seeds)
+    budget = client.get_budget() if (client.config.access_token and args.use_remaining) else None
+    count = max(0, (budget.queries_max - budget.queries_used) if budget else args.count)
+
+    if args.dry_run:
+        plan = plan_query_batch(
+            detail,
+            observations,
+            count=count,
+            viewport_w=args.w,
+            viewport_h=args.h,
+            seed_indices=seed_indices,
+        )
+        if not plan:
+            raise AstarIslandApiError("Planner did not produce any useful queries.")
+        print(json.dumps([asdict(item) for item in plan], indent=2))
+        return 0
+
+    run = run_iterative_autopilot(
+        client,
+        cache,
+        detail,
+        round_id=round_id,
+        total_queries=count,
+        viewport_w=args.w,
+        viewport_h=args.h,
+        seed_indices=seed_indices,
+        replan_every=args.replan_every,
+        pause_seconds=args.pause_seconds,
+    )
+    if run.executed_queries == 0:
+        raise AstarIslandApiError("Planner did not produce any useful queries.")
+
+    print(
+        json.dumps(
+            {
+                "requested_queries": run.requested_queries,
+                "executed_queries": run.executed_queries,
+                "batches": [[asdict(item) for item in batch] for batch in run.batches],
+            },
+            indent=2,
+        )
+    )
+
+    if args.build:
+        updated_observations = cache.load_observations(round_id)
+        predictions = build_all_predictions(detail, updated_observations)
+        for seed_index, preview in predictions.items():
+            path = cache.save_prediction(round_id, seed_index, preview.prediction.tolist())
+            print(f"Updated prediction for seed {seed_index} -> {path}")
+
+    if args.submit:
+        detail = cache.load_round_detail(round_id) or detail
+        for seed_index in range(detail.seeds_count):
+            prediction = cache.load_prediction(round_id, seed_index)
+            if prediction is None:
+                raise AstarIslandApiError(
+                    f"Missing cached prediction for seed {seed_index}. Run with --build before --submit."
+                )
+            response = client.submit_prediction(round_id=round_id, seed_index=seed_index, prediction=prediction)
+            print(json.dumps(response, indent=2))
+            if seed_index < detail.seeds_count - 1:
+                time.sleep(0.6)
+    return 0
+
+
 def command_submit(args: argparse.Namespace) -> int:
     client, cache = build_runtime(args)
     round_id = resolve_round_id(client, args.round_id)
@@ -104,6 +184,8 @@ def command_submit(args: argparse.Namespace) -> int:
             )
         response = client.submit_prediction(round_id=round_id, seed_index=seed_index, prediction=prediction)
         print(json.dumps(response, indent=2))
+        if seed_index != seed_indices[-1]:
+            time.sleep(0.6)
     return 0
 
 
@@ -135,6 +217,20 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser_cmd.add_argument("--round-id")
     build_parser_cmd.add_argument("--seed", type=int)
     build_parser_cmd.set_defaults(func=command_build)
+
+    autoquery_parser = subparsers.add_parser("autoquery", help="Plan and optionally execute automated queries")
+    autoquery_parser.add_argument("--round-id")
+    autoquery_parser.add_argument("--count", type=int, default=5)
+    autoquery_parser.add_argument("--w", type=int, default=15)
+    autoquery_parser.add_argument("--h", type=int, default=15)
+    autoquery_parser.add_argument("--seeds", help="Comma-separated seed indices, for example 0,1,3")
+    autoquery_parser.add_argument("--replan-every", type=int, default=5)
+    autoquery_parser.add_argument("--use-remaining", action="store_true")
+    autoquery_parser.add_argument("--pause-seconds", type=float, default=0.25)
+    autoquery_parser.add_argument("--dry-run", action="store_true")
+    autoquery_parser.add_argument("--build", action="store_true")
+    autoquery_parser.add_argument("--submit", action="store_true")
+    autoquery_parser.set_defaults(func=command_autoquery)
 
     submit_parser = subparsers.add_parser("submit", help="Submit cached predictions")
     submit_parser.add_argument("--round-id")

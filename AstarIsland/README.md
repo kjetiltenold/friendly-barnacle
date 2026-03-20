@@ -8,6 +8,7 @@ It gives you:
 - Local caching for round details, observations, and generated predictions
 - A baseline heuristic predictor that blends map priors with observed viewport outcomes
 - A lightweight cross-seed feature model so observations on one seed can still inform the others
+- An uncertainty-driven query planner that recommends and executes high-value viewport batches
 - A Streamlit app for exploring seeds, querying the simulator, previewing predictions, and submitting them
 - A small CLI for scripting the same workflow
 
@@ -54,6 +55,18 @@ Build predictions for all seeds:
 astar-island build
 ```
 
+Plan and run an automated query batch, then refresh predictions:
+
+```bash
+astar-island autoquery --count 8 --build
+```
+
+Spend the rest of the live round budget, rebuild, and resubmit:
+
+```bash
+astar-island autoquery --use-remaining --replan-every 5 --build --submit
+```
+
 Submit the cached predictions:
 
 ```bash
@@ -64,7 +77,8 @@ astar-island submit --all-seeds
 
 - `src/astar_island/api.py`: API client and HTTP error handling
 - `src/astar_island/cache.py`: local JSON cache for round data, observations, and predictions
-- `src/astar_island/baseline.py`: heuristic predictor and observation fusion
+- `src/astar_island/baseline.py`: probabilistic predictor and observation fusion
+- `src/astar_island/planner.py`: uncertainty-driven query planning and batch execution
 - `src/astar_island/app.py`: Streamlit UI
 - `src/astar_island/cli.py`: CLI for scripted workflows
 
