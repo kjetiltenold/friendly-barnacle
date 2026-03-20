@@ -132,7 +132,7 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["name"],
     }),
-    _tool("create_order", "Create a sales order. MUST include customer reference from a previous create_customer call. Required before creating an invoice.", {
+    _tool("create_order", "Create a sales order. MUST include customer, product references, and vatType on EVERY order line.", {
         "type": "object",
         "properties": {
             "customer": {"type": "object", "description": "REQUIRED — customer reference object, e.g. {\"id\": 123} using the id from create_customer response"},
@@ -140,11 +140,11 @@ BASE_TOOL_DEFINITIONS = [
             "deliveryDate": {"type": "string", "description": "YYYY-MM-DD"},
             "orderLines": {
                 "type": "array",
-                "description": "Line items. Each should reference a product OR have a description with price.",
+                "description": "EVERY line MUST have product ref AND vatType ref. Look up vatType IDs from GET /ledger/vatType first.",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "product": {"type": "object", "description": "Product reference {\"id\": product_id} from create_product response"},
+                        "product": {"type": "object", "description": "REQUIRED — Product reference {\"id\": product_id} from create_product response"},
                         "description": {"type": "string"},
                         "count": {"type": "number"},
                         "unitPriceExcludingVatCurrency": {"type": "number"},
