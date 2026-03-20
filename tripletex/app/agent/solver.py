@@ -1,5 +1,6 @@
 """Main agent orchestrator — interprets task prompts and executes Tripletex API calls."""
 
+import datetime
 import logging
 import time
 from typing import Any
@@ -11,7 +12,7 @@ from app.tripletex.client import TripletexClient
 from app.attachments.parser import process_attachments
 from app.agent.llm import create_client, chat
 from app.agent.tools import dispatch_tool
-from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.prompts import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ async def solve_task(request: SolveRequest) -> None:
     endpoint_search = EndpointSearchClient.from_settings(settings)
 
     try:
+        # Build system prompt with today's date
+        today = datetime.date.today().isoformat()
+        system_prompt = get_system_prompt(today)
+
         # Build user message with prompt + attachments
         content = _build_user_content(request)
         messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
@@ -35,7 +40,7 @@ async def solve_task(request: SolveRequest) -> None:
                 logger.warning(f"Soft timeout at {elapsed:.0f}s, stopping agent")
                 break
 
-            response = await chat(llm, messages, SYSTEM_PROMPT)
+            response = await chat(llm, messages, system_prompt)
             message = response.choices[0].message
 
             # Check if the model wants to use tools
@@ -91,18 +96,35 @@ async def solve_task(request: SolveRequest) -> None:
         await tx.close()
 
 
-def _build_user_content(request: SolveRequest) -> str:
-    """Build the initial user message content."""
-    parts = []
+def _build_user_content(request: SolveRequest) -> str | list[dict]:
+    """Build the initial user message content.
 
-    # Process file attachments (PDFs → text, images → described)
+    Returns a plain string when there are no images, or a list of
+    OpenAI-format content blocks when images are present (multimodal).
+    """
+    text_parts: list[str] = []
+    image_blocks: list[dict] = []
+
     if request.files:
         attachment_blocks = process_attachments(request.files)
         for block in attachment_blocks:
             if block["type"] == "text":
-                parts.append(block["text"])
+                text_parts.append(block["text"])
             elif block["type"] == "image":
-                parts.append("[Attached image — see file attachments]")
+                # Convert from Anthropic image format to OpenAI image_url format
+                source = block["source"]
+                mime = source["media_type"]
+                data = source["data"]
+                image_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{data}"},
+                })
 
-    parts.append(f"Complete this accounting task in Tripletex:\n\n{request.prompt}")
-    return "\n\n".join(parts)
+    text_parts.append(f"Complete this accounting task in Tripletex:\n\n{request.prompt}")
+    full_text = "\n\n".join(text_parts)
+
+    if not image_blocks:
+        return full_text
+
+    # Multimodal: text + images as content block list
+    return [{"type": "text", "text": full_text}, *image_blocks]
