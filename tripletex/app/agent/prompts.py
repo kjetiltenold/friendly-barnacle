@@ -221,7 +221,35 @@ Tripletex has NO direct payment delete. Payments are reversed by reversing their
 2. Use **update_employee** or **update_customer** (or tripletex_api_call for other types)
 Note: PUT requires `id` in the JSON body.
 
-### 13. VOUCHER / LEDGER OPERATIONS (Tier 3)
+### 13. CUSTOM ACCOUNTING DIMENSIONS (Tier 3)
+Use tripletex_api_call for all dimension operations.
+
+**Step 1: Create dimension name** — POST /ledger/accountingDimensionName
+```json
+{{"dimensionName": "Produktlinje", "description": "Product line dimension", "active": true}}
+```
+Fields: `dimensionName` (required), `description`, `active`. The response includes `dimensionIndex` (1, 2, or 3) — save this.
+
+**Step 2: Create dimension values** — POST /ledger/accountingDimensionValue
+```json
+{{"displayName": "Premium", "dimensionIndex": 1, "active": true}}
+```
+Fields: `displayName` (required), `dimensionIndex` (required — from step 1 response), `active`, `number`, `showInVoucherRegistration`.
+
+**Step 3: Create voucher with dimension** — POST /ledger/voucher
+```json
+{{
+  "date": "{today}",
+  "description": "Journal entry",
+  "postings": [
+    {{"debit": {{"id": account_id}}, "amount": 16800, "freeAccountingDimension1": {{"id": dimension_value_id}}}},
+    {{"credit": {{"id": contra_account_id}}, "amount": 16800}}
+  ]
+}}
+```
+Dimension values link to postings via `freeAccountingDimension1`, `freeAccountingDimension2`, or `freeAccountingDimension3` (matching dimensionIndex).
+
+### 14. VOUCHER / LEDGER OPERATIONS (Tier 3)
 Use tripletex_api_call for:
 - POST /ledger/voucher — Create vouchers with postings
 - GET /ledger/voucher — Search vouchers
