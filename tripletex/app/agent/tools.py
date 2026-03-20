@@ -426,13 +426,19 @@ async def _execute(
         if "customer" not in args and ctx and ctx.last_customer_id:
             args["customer"] = {"id": ctx.last_customer_id}
             logger.info(f"Auto-injected customer id={ctx.last_customer_id} into order")
-        # Auto-inject product references only when there's exactly one product
-        # and exactly one order line missing a product reference
+        # Auto-inject product references into order lines missing them
         if ctx and ctx.product_ids and "orderLines" in args:
             lines_without_product = [l for l in args["orderLines"] if "product" not in l]
-            if len(lines_without_product) == 1 and len(ctx.product_ids) == 1:
-                lines_without_product[0]["product"] = {"id": ctx.product_ids[0]}
-                logger.info(f"Auto-injected single product id={ctx.product_ids[0]} into order line")
+            if len(lines_without_product) == len(ctx.product_ids):
+                # Exact match: inject products in order
+                for line, pid in zip(lines_without_product, ctx.product_ids):
+                    line["product"] = {"id": pid}
+                    logger.info(f"Auto-injected product id={pid} into order line")
+            elif len(lines_without_product) > 0 and len(ctx.product_ids) == 1:
+                # Single product, inject into all lines missing a product
+                for line in lines_without_product:
+                    line["product"] = {"id": ctx.product_ids[0]}
+                    logger.info(f"Auto-injected single product id={ctx.product_ids[0]} into order line")
         return await client.post("/order", json=args)
 
     if name == "create_invoice":
