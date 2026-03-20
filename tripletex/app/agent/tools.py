@@ -482,7 +482,10 @@ async def _execute(
                 logger.info("Auto-injected invoiceDateTo for invoice search")
         # Guard: POST/PUT without body causes "Kan ikke være null" errors
         if method in ("POST", "PUT") and not body and "/:payment" not in path:
-            raise ValueError(f"tripletex_api_call {method} {path} requires a 'body' parameter with the JSON payload")
+            raise ValueError(
+                f"tripletex_api_call {method} {path} requires a 'body' parameter with the JSON payload. "
+                f"Example: {{\"method\": \"{method}\", \"path\": \"{path}\", \"body\": {{...your fields here...}}}}"
+            )
         async def _run_with_bank_retry(coro_factory):
             """Retry once after registering bank account if needed."""
             try:

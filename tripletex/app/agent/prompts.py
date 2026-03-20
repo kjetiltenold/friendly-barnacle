@@ -250,9 +250,26 @@ Fields: `displayName` (required), `dimensionIndex` (required — from step 1 res
 ```
 Dimension values link to postings via `freeAccountingDimension1`, `freeAccountingDimension2`, or `freeAccountingDimension3` (matching dimensionIndex).
 
-### 14. VOUCHER / LEDGER OPERATIONS (Tier 3)
+### 14. SUPPLIER / PURCHASE INVOICES (Tier 2-3)
+Supplier invoices ("faktura fra leverandør", "factura del proveedor", "Lieferantenrechnung") are registered as vouchers.
+**Step 1**: Create the supplier using create_customer with `isSupplier: true` (NOT isCustomer).
+**Step 2**: Register the invoice as a voucher — POST /ledger/voucher with body:
+```json
+{{
+  "date": "{today}",
+  "description": "INV-2026-XXXX",
+  "postings": [
+    {{"debit": {{"id": expense_account_id}}, "amountGross": amount_excl_vat, "vatType": {{"id": vat_type_id}}}},
+    {{"credit": {{"id": 2400}}, "amountGross": amount_incl_vat}}
+  ]
+}}
+```
+Account 2400 = "Leverandørgjeld" (accounts payable). Look up the expense account and VAT type IDs via GET /ledger/account and GET /ledger/vatType.
+When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
+
+### 15. VOUCHER / LEDGER OPERATIONS (Tier 3)
 Use tripletex_api_call for:
-- POST /ledger/voucher — Create vouchers with postings
+- POST /ledger/voucher — Create vouchers with postings. ALWAYS include `body` with `date`, `description`, and `postings` array.
 - GET /ledger/voucher — Search vouchers
 - PUT /ledger/voucher/{{id}}/:reverse — Reverse a voucher (params: date=YYYY-MM-DD)
 - GET /ledger/account — Query chart of accounts
