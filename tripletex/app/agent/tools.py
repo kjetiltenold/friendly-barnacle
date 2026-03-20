@@ -482,6 +482,12 @@ async def _execute(
                 for line in lines_without_product:
                     line["product"] = {"id": ctx.product_ids[0]}
                     logger.info(f"Auto-injected single product id={ctx.product_ids[0]} into order line")
+        # Auto-inject default vatType (25% = id 3) on order lines missing it
+        if "orderLines" in args:
+            for line in args["orderLines"]:
+                if "vatType" not in line:
+                    line["vatType"] = {"id": 3}
+                    logger.info("Auto-injected default vatType id=3 (25%) into order line")
         return await client.post("/order", json=args)
 
     if name == "create_invoice":
