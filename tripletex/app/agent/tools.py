@@ -82,7 +82,7 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["employee_id", "fields"],
     }),
-    _tool("create_customer", "Create a new customer in Tripletex.", {
+    _tool("create_customer", "Create a new customer or supplier in Tripletex.", {
         "type": "object",
         "properties": {
             "name": {"type": "string"},
@@ -91,9 +91,15 @@ BASE_TOOL_DEFINITIONS = [
             "organizationNumber": {"type": "string"},
             "isCustomer": {"type": "boolean", "default": True},
             "isSupplier": {"type": "boolean"},
-            "postalCode": {"type": "string"},
-            "city": {"type": "string"},
-            "address": {"type": "string"},
+            "postalAddress": {
+                "type": "object",
+                "description": "Postal/physical address",
+                "properties": {
+                    "addressLine1": {"type": "string", "description": "Street address, e.g. Kirkegata 132"},
+                    "postalCode": {"type": "string", "description": "e.g. 7010"},
+                    "city": {"type": "string", "description": "e.g. Trondheim"},
+                },
+            },
         },
         "required": ["name"],
     }),
@@ -324,6 +330,20 @@ async def _execute(
         # Default to isCustomer=true unless this is a supplier-only entity
         if "isCustomer" not in args and not args.get("isSupplier"):
             args["isCustomer"] = True
+        # Map address fields into Tripletex format
+        # Handle flat address fields the model might send
+        addr = args.pop("address", None)
+        postal_code = args.pop("postalCode", None)
+        city = args.pop("city", None)
+        if addr or postal_code or city:
+            if "postalAddress" not in args:
+                args["postalAddress"] = {}
+            if addr:
+                args["postalAddress"]["addressLine1"] = addr
+            if postal_code:
+                args["postalAddress"]["postalCode"] = postal_code
+            if city:
+                args["postalAddress"]["city"] = city
         return await client.post("/customer", json=args)
 
     if name == "update_customer":
