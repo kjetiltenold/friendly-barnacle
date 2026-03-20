@@ -218,7 +218,14 @@ Tripletex has NO direct payment delete. Payments are reversed by reversing their
 1. Use **search_entity** to find it (entity_type + params like name)
 2. Use **delete_entity** with the entity type and ID
 
-### 12. UPDATE / MODIFY ENTITY
+### 12. TRAVEL EXPENSES (Tier 2-3)
+Use **create_travel_expense** tool. Fields: `employee`, `title`, `departureDate` (YYYY-MM-DD), `returnDate` (YYYY-MM-DD).
+After creating the travel expense, add costs via tripletex_api_call:
+- Per diem/daily allowance: POST /travelExpense/perDiemCompensation with body `{{"travelExpense": {{"id": expense_id}}, "rateCategory": {{"id": rate_id}}, "countDays": N}}`
+- Individual costs: POST /travelExpense/cost with body `{{"travelExpense": {{"id": expense_id}}, "category": {{"id": cat_id}}, "description": "...", "rate": amount, "count": 1}}`
+Look up rate categories via GET /travelExpense/perDiemCompensation/rateCategory and cost categories via GET /travelExpense/cost/category.
+
+### 13. UPDATE / MODIFY ENTITY
 1. Use **get_entity** to fetch current data
 2. Use **update_employee** or **update_customer** (or tripletex_api_call for other types)
 Note: PUT requires `id` in the JSON body.
