@@ -137,17 +137,23 @@ Optional: number, priceExcludingVatCurrency, priceIncludingVatCurrency, costExcl
     {{
       "product": {{"id": product_id_1}},
       "count": 1,
-      "unitPriceExcludingVatCurrency": 1500.00
+      "unitPriceExcludingVatCurrency": 1500.00,
+      "vatType": {{"id": vat_type_id_25pct}}
     }},
     {{
       "product": {{"id": product_id_2}},
       "count": 1,
-      "unitPriceExcludingVatCurrency": 2000.00
+      "unitPriceExcludingVatCurrency": 2000.00,
+      "vatType": {{"id": vat_type_id_15pct}}
     }}
   ]
 }}
 ```
-**CRITICAL: Every order line MUST include `"product": {{"id": X}}` referencing the product ID from step 2. Do NOT use just description — the product reference is REQUIRED for scoring.** Include ALL order lines in this single call.
+**CRITICAL:**
+- Every order line MUST include `"product": {{"id": X}}` referencing the product ID from step 2.
+- When the prompt specifies VAT rates, MUST include `"vatType": {{"id": X}}` on each order line using IDs from GET /ledger/vatType.
+- Do NOT use just description — product reference is REQUIRED for scoring.
+Include ALL order lines in this single call.
 
 **Step 4**: Use **create_invoice** tool — you MUST include:
 ```json
