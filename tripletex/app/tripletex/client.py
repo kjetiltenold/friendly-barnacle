@@ -35,8 +35,14 @@ class TripletexClient:
         resp = await self._client.request(method, path, **kwargs)
         if resp.status_code >= 400:
             self.error_count += 1
-            logger.warning(f"Tripletex {method} {path} -> {resp.status_code}: {resp.text[:500]}")
-        resp.raise_for_status()
+            body = resp.text[:500]
+            logger.warning(f"Tripletex {method} {path} -> {resp.status_code}: {body}")
+            # Raise with response body in message so callers can match on it
+            raise httpx.HTTPStatusError(
+                f"{resp.status_code} {resp.reason_phrase}: {body}",
+                request=resp.request,
+                response=resp,
+            )
         if resp.status_code == 204 or not resp.content:
             return {}
         return resp.json()
