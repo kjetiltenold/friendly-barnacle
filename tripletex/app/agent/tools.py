@@ -3,6 +3,7 @@
 import json
 import logging
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlparse
 
 from app.config import get_settings
 from app.endpoint_search import EndpointSearchClient
@@ -431,9 +432,18 @@ async def _execute(
 
     if name == "tripletex_api_call":
         method = args["method"]
-        path = args["path"]
+        raw_path = args["path"]
         params = args.get("params") or {}
         body = args.get("body")
+        # Extract query params embedded in the path (e.g. /invoice/123/:payment?paymentDate=2026-03-20)
+        parsed = urlparse(raw_path)
+        path = parsed.path
+        if parsed.query:
+            embedded = parse_qs(parsed.query, keep_blank_values=True)
+            for k, v in embedded.items():
+                if k not in params:
+                    params[k] = v[0]  # parse_qs returns lists; take first value
+            logger.info(f"Extracted query params from path: {list(embedded.keys())}")
         # Auto-inject required date range for invoice searches
         if method == "GET" and "/invoice" in path and "/:payment" not in path:
             if "invoiceDateFrom" not in params and "invoiceDateFrom" not in path:
