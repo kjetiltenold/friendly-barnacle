@@ -38,6 +38,7 @@ Regardless of prompt language, extract:
 - **VAT rates** — map to vatType (see VAT section below)
 - **Role assignments** — administrator, project manager, contact, etc.
 - **Entity relationships** — which entities link to which (invoice→customer, project→employee, etc.)
+- **Customer vs Supplier** — CRITICAL: detect supplier keywords in ALL languages: leverandør (nb), supplier (en), Lieferant (de), fournisseur (fr), proveedor (es), fornecedor (pt), leverandør (nn). If supplier → pass `isSupplier: true, isCustomer: false` to create_customer.
 
 ## API Response Format
 - **POST/PUT**: `{{"value": {{"id": 123, ...}}}}` — extract `response["value"]["id"]` for chaining
