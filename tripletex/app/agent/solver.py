@@ -41,7 +41,22 @@ async def solve_task(request: SolveRequest) -> None:
                 logger.warning(f"Soft timeout at {elapsed:.0f}s, stopping agent")
                 break
 
-            response = await chat(llm, messages, system_prompt)
+            try:
+                response = await chat(llm, messages, system_prompt)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "invalid_prompt" in error_msg or "usage policy" in error_msg:
+                    logger.warning("OpenAI content policy flag — trimming context and retrying")
+                    # Keep only the original user message + last 4 messages
+                    if len(messages) > 5:
+                        messages = [messages[0]] + messages[-4:]
+                    try:
+                        response = await chat(llm, messages, system_prompt)
+                    except Exception:
+                        logger.error("Content policy flag persists after trim — stopping")
+                        break
+                else:
+                    raise
             message = response.choices[0].message
 
             # Check if the model wants to use tools
