@@ -280,7 +280,28 @@ IMPORTANT: Use `account` field (NOT `debit`/`credit`). Positive amountGross = de
 Account 2400 = "Leverandørgjeld" (accounts payable). Look up the expense account and VAT type IDs via GET /ledger/account and GET /ledger/vatType.
 When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
 
-### 15. VOUCHER / LEDGER OPERATIONS (Tier 3)
+### 15. SALARY / PAYROLL (Tier 2-3)
+Payroll tasks ("nómina", "lønn", "Gehalt", "salaire", "salário") — use tripletex_api_call for all steps:
+**Step 1**: Find employee — use create_employee (search-first by email)
+**Step 2**: Get salary type IDs — GET /salary/type?fields=id,number,name
+**Step 3**: Create salary payment specification — POST /salary/paymentSpecification with body:
+```json
+{{
+  "employee": {{"id": employee_id}},
+  "month": current_month,
+  "year": current_year,
+  "specifications": [
+    {{"salaryType": {{"id": base_salary_type_id}}, "amount": base_salary_amount}},
+    {{"salaryType": {{"id": bonus_type_id}}, "amount": bonus_amount}}
+  ]
+}}
+```
+If POST fails, try alternate approach: POST /salary/transaction
+**Step 4**: Generate payslip — PUT /salary/payslip/:createPayslips (query params: employeeId, month, year)
+Common salary type numbers: 100 = base salary (fastlønn), 200 = hourly pay, 300 = bonus/tillegg.
+Look up exact IDs via GET /salary/type.
+
+### 16. VOUCHER / LEDGER OPERATIONS (Tier 3)
 Use tripletex_api_call for:
 - POST /ledger/voucher — Create vouchers with postings. ALWAYS include `body` with `date`, `description`, and `postings` array.
 - GET /ledger/voucher — Search vouchers
