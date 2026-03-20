@@ -283,20 +283,13 @@ When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat
 ### 15. SALARY / PAYROLL (Tier 2-3)
 Payroll tasks ("nómina", "lønn", "Gehalt", "salaire", "salário") — use tripletex_api_call for all steps:
 **Step 1**: Find employee — use create_employee (search-first by email)
-**Step 2**: Get salary type IDs — GET /salary/type?fields=id,number,name
-**Step 3**: Create salary payment specification — POST /salary/paymentSpecification with body:
+**Step 2**: Get salary type IDs — GET /salary/type?fields=id,number,name&employeeId=EMPLOYEE_ID
+**Step 3**: Create salary transactions — POST /salary/transaction for EACH salary component:
 ```json
-{{
-  "employee": {{"id": employee_id}},
-  "month": current_month,
-  "year": current_year,
-  "specifications": [
-    {{"salaryType": {{"id": base_salary_type_id}}, "amount": base_salary_amount}},
-    {{"salaryType": {{"id": bonus_type_id}}, "amount": bonus_amount}}
-  ]
-}}
+{{"date": "{today}", "salaryType": {{"id": salary_type_id}}, "amount": amount}}
 ```
-If POST fails, try alternate approach: POST /salary/transaction
+IMPORTANT: salary/transaction does NOT have an `employee` field. Pass `employeeId` as a **query parameter**: POST /salary/transaction?employeeId=EMPLOYEE_ID
+Create one transaction for base salary, one for bonus, etc.
 **Step 4**: Generate payslip — PUT /salary/payslip/:createPayslips (query params: employeeId, month, year)
 Common salary type numbers: 100 = base salary (fastlønn), 200 = hourly pay, 300 = bonus/tillegg.
 Look up exact IDs via GET /salary/type.
