@@ -294,26 +294,30 @@ Fields: `displayName` (required), `dimensionIndex` (required — from step 1 res
 ```
 IMPORTANT for voucher postings:
 - Use `account` (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit.
-- Do NOT include `row` field — row 0 is reserved by Tripletex and will cause errors.
 - Each posting MUST have: `account` (object with id) and `amountGross` (number).
+- **Account ID ≠ account number!** You MUST look up account IDs via GET /ledger/account?number=XXXX&fields=id,number,name. Account numbers like 6300, 7000, 2400 are NOT IDs — use the `id` field from the response.
 Dimension values link to postings via `freeAccountingDimension1`, `freeAccountingDimension2`, or `freeAccountingDimension3` (matching dimensionIndex).
 
 ### 14. SUPPLIER / PURCHASE INVOICES (Tier 2-3)
 Supplier invoices ("faktura fra leverandør", "factura del proveedor", "Lieferantenrechnung") are registered as vouchers.
 **Step 1**: Create the supplier using create_customer with `isSupplier: true` (NOT isCustomer).
-**Step 2**: Register the invoice as a voucher — POST /ledger/voucher with body:
+**Step 2**: Look up account IDs and VAT types:
+- GET /ledger/account?number=EXPENSE_ACCOUNT_NUMBER&fields=id,number,name (e.g. number=7000)
+- GET /ledger/account?number=2400&fields=id,number,name (accounts payable)
+- GET /ledger/vatType?fields=id,name,percentage
+**Step 3**: Register the invoice as a voucher — POST /ledger/voucher with body:
 ```json
 {{
   "date": "{today}",
   "description": "INV-2026-XXXX",
   "postings": [
-    {{"account": {{"id": expense_account_id}}, "amountGross": amount_excl_vat, "vatType": {{"id": vat_type_id}}}},
-    {{"account": {{"id": 2400}}, "amountGross": -amount_incl_vat}}
+    {{"account": {{"id": expense_account_ID}}, "amountGross": amount_excl_vat, "vatType": {{"id": vat_type_ID}}}},
+    {{"account": {{"id": accounts_payable_ID}}, "amountGross": -amount_incl_vat}}
   ]
 }}
 ```
-IMPORTANT: Use `account` field (NOT `debit`/`credit`). Positive amountGross = debit, negative = credit. Do NOT include `row` field.
-Account 2400 = "Leverandørgjeld" (accounts payable). Look up the expense account and VAT type IDs via GET /ledger/account and GET /ledger/vatType.
+IMPORTANT: Use actual account IDs from the lookup, NOT account numbers.
+When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
 When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
 
 ### 15. SALARY / PAYROLL (Tier 2-3)
