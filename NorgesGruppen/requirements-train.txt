@@ -3,3 +3,4 @@ torch==2.6.0
 torchvision==0.21.0
 numpy==1.26.4
 opencv-python==4.9.0.80
+ensemble-boxes==1.0.9

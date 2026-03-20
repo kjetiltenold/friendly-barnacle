@@ -44,6 +44,7 @@ The default training script is tuned for:
 - mild augmentations appropriate for upright shelf products
 
 For a slower local machine, use a smaller local-development run first with `yolov8s.pt`.
+For the real push on a better GPU machine, `yolov8x.pt` plus a complementary second detector is the recommended next step.
 
 ## Setup
 
@@ -151,6 +152,15 @@ For a stronger local result, use a 2-stage recipe instead of one short run:
 
 The exact commands are in `scripts/train_recipes.md`.
 
+#### Better GPU training plan
+
+When you move the repo to the RTX 3090 machine, use the GPU recipes in `scripts/train_recipes.md`:
+
+- fine-tune your current `yolov8x` checkpoint with a lower learning rate
+- train a complementary `rtdetr-l` model
+- optionally run an extra `yolov8x` seed
+- build a 2-model ensemble submission with weighted boxes fusion
+
 ### Step 3: Build the submission zip
 
 Use the trained `best.pt` file from your run.
@@ -194,6 +204,38 @@ This creates:
 
 Upload `dist/submission.zip` on the competition submit page.
 The submission builder defaults to a more conservative inference setup than the original baseline: `imgsz=768`, `conf=0.18`, `iou=0.5`, `max_det=220`, and `half=True` on CUDA. These settings reduced duplicate boxes in our local previews without obviously hurting product coverage.
+If you pass two weight files to `scripts/build_submission.py`, it will package both models and enable weighted boxes fusion inside `submission/run.py`.
+
+## Move To The 3090 Box
+
+After you push this repo, clone it on the Linux machine and run:
+
+```bash
+git clone <your-repo-url>
+cd NorgesGruppen
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements-train.txt
+```
+
+Then place the competition downloads in `data/downloads/` exactly like you did locally:
+
+- `data/downloads/NM_NGD_coco_dataset.zip`
+- `data/downloads/NM_NGD_product_images.zip`
+
+or the extracted folders:
+
+- `data/downloads/train/`
+- `data/downloads/NM_NGD_product_images/`
+
+Next:
+
+```bash
+python scripts/prepare_data.py
+```
+
+Then run the GPU recipes from `scripts/train_recipes.md`.
 
 ## Scripts
 
@@ -204,9 +246,9 @@ The submission builder defaults to a more conservative inference setup than the 
 - `scripts/export_onnx.py`
   Exports trained YOLO weights to ONNX with `opset=17`.
 - `scripts/build_submission.py`
-  Assembles `run.py`, the selected model weights, and `model_config.json` into `dist/submission.zip`.
+  Assembles `run.py`, one or more selected model weights, and `model_config.json` into `dist/submission.zip`.
 - `submission/run.py`
-  The sandbox entrypoint used by the competition server.
+  The sandbox entrypoint used by the competition server. It supports either a single model or a 2-model weighted-box-fusion ensemble.
 
 ## Repo layout
 
@@ -249,6 +291,7 @@ dist/
 - PyTorch 2.6 changed `torch.load` defaults in a way that breaks older Ultralytics 8.1.0 checkpoints. The included scripts patch trusted local YOLO checkpoint loading automatically.
 - The training requirements pin `numpy==1.26.4` because Ultralytics 8.1.0 is not reliable with newer NumPy 2.x releases.
 - The training requirements also pin `opencv-python==4.9.0.80` so the local environment stays closer to the competition sandbox and remains compatible with NumPy 1.26.
-- The training script auto-selects `cuda`, then `mps`, then `cpu`, so the same command works on a GPU server and on a Mac.
+- The training requirements pin `ensemble-boxes==1.0.9` so you can test the same weighted boxes fusion package that is available in the submission sandbox.
+- The training script auto-selects `cuda` and otherwise falls back to `cpu`. Apple `mps` is available if you explicitly pass `--device mps`.
 - You can force validation behavior with `--val` or `--no-val` when running `scripts/train_yolov8.py`.
 - If you train with a newer Ultralytics version, export to ONNX before submission instead of submitting the raw `.pt`.
