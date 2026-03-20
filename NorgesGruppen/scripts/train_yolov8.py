@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from ultralytics import YOLO
+from ultralytics import RTDETR, YOLO
 from ultralytics.engine.trainer import BaseTrainer
 
 
@@ -147,7 +147,8 @@ def main():
     # Ultralytics 8.1.0 checkpoints rely on the pre-PyTorch-2.6 torch.load behavior.
     enable_trusted_torch_loads()
     enable_no_val_workaround()
-    model = YOLO(args.model)
+    model_cls = RTDETR if "rtdetr" in str(args.model).lower() else YOLO
+    model = model_cls(args.model)
     model.train(
         data=str(args.data),
         project=str(args.project),
