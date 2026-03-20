@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "astar-island"
+version = "0.1.0"
+description = "Local tooling and explorer app for the Astar Island challenge"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+  "requests>=2.32",
+  "streamlit>=1.40",
+]
+
+[project.scripts]
+astar-island = "astar_island.cli:main"
+astar-island-app = "astar_island.launcher:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/astar_island"]
