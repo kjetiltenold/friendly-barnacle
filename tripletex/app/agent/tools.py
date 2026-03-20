@@ -426,6 +426,19 @@ async def _execute(
         return await client.put(f"/employee/{eid}", json={"id": eid, **fields})
 
     if name == "create_customer":
+        # Search first by org number — sandbox may have pre-existing customer
+        org_number = args.get("organizationNumber")
+        if org_number:
+            try:
+                result = await client.get("/customer", params={
+                    "organizationNumber": org_number, "fields": "id,name,organizationNumber,isCustomer,isSupplier"
+                })
+                values = result.get("values", [])
+                if values:
+                    logger.info(f"Found existing customer id={values[0]['id']} for org {org_number}")
+                    return {"value": values[0]}
+            except Exception:
+                pass
         # Ensure isCustomer is set unless this is a supplier-only entity
         if "isCustomer" not in args and not args.get("isSupplier"):
             args["isCustomer"] = True
