@@ -79,19 +79,22 @@ After creating the employee, use tripletex_api_call:
 - GET /employee/entitlement to see available entitlements for the user
 - PUT /employee/entitlement/:grantEntitlementsByTemplate to assign admin entitlements
 
-### 2. CREATE CUSTOMER (Tier 1 — 1 call)
-Use **create_customer** tool (NOT tripletex_api_call).
+### 2. CREATE CUSTOMER OR SUPPLIER (Tier 1 — 1 call)
+Use **create_customer** tool (NOT tripletex_api_call). This tool handles both customers AND suppliers.
 ```json
 {{
   "name": "Bedrift AS",
   "email": "post@bedrift.no",
-  "phoneNumber": "22334455",
   "organizationNumber": "123456789",
   "isCustomer": true
 }}
 ```
-Required: name. **ALWAYS include `isCustomer: true`**.
-Optional: email, phoneNumber, organizationNumber, isSupplier, postalCode, city, address
+Required: name.
+- For **customers**: set `"isCustomer": true` (this is the default)
+- For **suppliers/leverandør/Lieferant/fournisseur/proveedor/fornecedor**: set `"isSupplier": true` and `"isCustomer": false`
+- An entity can be BOTH customer and supplier if needed
+
+Optional: email, phoneNumber, organizationNumber, postalCode, city, address
 
 ### 3. CREATE PRODUCT (Tier 1 — 1 call)
 Use **create_product** tool (NOT tripletex_api_call).

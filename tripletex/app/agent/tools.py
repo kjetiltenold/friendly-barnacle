@@ -321,7 +321,8 @@ async def _execute(
         return await client.put(f"/employee/{eid}", json={"id": eid, **fields})
 
     if name == "create_customer":
-        if "isCustomer" not in args:
+        # Default to isCustomer=true unless this is a supplier-only entity
+        if "isCustomer" not in args and not args.get("isSupplier"):
             args["isCustomer"] = True
         return await client.post("/customer", json=args)
 
