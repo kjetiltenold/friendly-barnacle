@@ -294,6 +294,26 @@ async def dispatch_tool(
         return json.dumps({"error": str(e)})
 
 
+async def _ensure_department(client: TripletexClient) -> int | None:
+    """Find or create a default department for employee creation."""
+    try:
+        result = await client.get("/department", params={"fields": "id,name", "count": 1})
+        values = result.get("values", [])
+        if values:
+            logger.info(f"Found existing department id={values[0]['id']}")
+            return values[0]["id"]
+    except Exception:
+        pass
+    try:
+        result = await client.post("/department", json={"name": "Avdeling", "departmentNumber": "1"})
+        dept_id = result.get("value", {}).get("id")
+        logger.info(f"Created default department id={dept_id}")
+        return dept_id
+    except Exception as e:
+        logger.warning(f"Failed to create department: {e}")
+        return None
+
+
 async def _ensure_bank_account(client: TripletexClient) -> None:
     """Register a dummy bank account so invoices can be created."""
     try:
@@ -345,7 +365,17 @@ async def _execute(
             val = args.get(ref_field)
             if isinstance(val, dict) and not val.get("id"):
                 del args[ref_field]
-        return await client.post("/employee", json=args)
+        try:
+            return await client.post("/employee", json=args)
+        except Exception as e:
+            # Auto-inject department if required
+            if "department" in str(e) and "department" not in args:
+                logger.info("Employee requires department — auto-finding/creating one")
+                dept_id = await _ensure_department(client)
+                if dept_id:
+                    args["department"] = {"id": dept_id}
+                    return await client.post("/employee", json=args)
+            raise
 
     if name == "update_employee":
         eid = args["employee_id"]
