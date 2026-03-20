@@ -323,14 +323,17 @@ Supplier invoices ("faktura fra leverandør", "factura del proveedor", "Lieferan
   "date": "{today}",
   "description": "INV-2026-XXXX",
   "postings": [
-    {{"account": {{"id": expense_account_ID}}, "amountGross": amount_excl_vat, "vatType": {{"id": vat_type_ID}}}},
-    {{"account": {{"id": accounts_payable_ID}}, "amountGross": -amount_incl_vat}}
+    {{"account": {{"id": expense_account_ID}}, "amountGross": amount_excl_vat, "amountGrossCurrency": amount_excl_vat, "vatType": {{"id": vat_type_ID}}}},
+    {{"account": {{"id": accounts_payable_ID}}, "amountGross": -amount_incl_vat, "amountGrossCurrency": -amount_incl_vat, "supplier": {{"id": supplier_id}}}}
   ]
 }}
 ```
-IMPORTANT: Use actual account IDs from the lookup, NOT account numbers.
-When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
-When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT).
+CRITICAL for supplier invoices:
+- `amountGrossCurrency` MUST equal `amountGross` (required for NOK transactions)
+- `supplier` reference REQUIRED on the accounts payable (2400) posting
+- Postings must sum to 0 (VAT on expense posting is auto-calculated from vatType)
+- Use actual account IDs from the lookup, NOT account numbers
+- When VAT-inclusive amount is given: amount_excl_vat = amount_incl_vat / 1.25 (for 25% VAT)
 
 ### 15. SALARY / PAYROLL (Tier 2-3)
 Payroll tasks ("nómina", "lønn", "Gehalt", "salaire", "salário") — use tripletex_api_call for all steps:
