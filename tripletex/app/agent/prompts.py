@@ -323,16 +323,12 @@ When VAT-inclusive amount is given, calculate: amount_excl_vat = amount_incl_vat
 ### 15. SALARY / PAYROLL (Tier 2-3)
 Payroll tasks ("nómina", "lønn", "Gehalt", "salaire", "salário") — use tripletex_api_call for all steps:
 **Step 1**: Find employee — use create_employee (search-first by email)
-**Step 2**: Get salary type IDs — GET /salary/type?fields=id,number,name&employeeId=EMPLOYEE_ID
-**Step 3**: Create salary transactions — POST /salary/transaction for EACH salary component:
-```json
-{{"date": "{today}", "salaryType": {{"id": salary_type_id}}, "amount": amount}}
-```
-IMPORTANT: salary/transaction does NOT have an `employee` field. Pass `employeeId` as a **query parameter**: POST /salary/transaction?employeeId=EMPLOYEE_ID
-Create one transaction for base salary, one for bonus, etc.
+**Step 2**: Get salary type IDs — GET /salary/type?fields=*&employeeId=EMPLOYEE_ID
+**Step 3**: Discover salary/transaction fields — the body fields for POST /salary/transaction are NOT standard.
+First do GET /salary/transaction?employeeId=EMPLOYEE_ID&fields=* to see an example object and discover the correct field names.
+Then POST /salary/transaction?employeeId=EMPLOYEE_ID with the discovered field names.
 **Step 4**: Generate payslip — PUT /salary/payslip/:createPayslips (query params: employeeId, month, year)
-Common salary type numbers: 100 = base salary (fastlønn), 200 = hourly pay, 300 = bonus/tillegg.
-Look up exact IDs via GET /salary/type.
+Look up salary types via GET /salary/type.
 
 ### 16. VOUCHER / LEDGER OPERATIONS (Tier 3)
 Use tripletex_api_call for:
