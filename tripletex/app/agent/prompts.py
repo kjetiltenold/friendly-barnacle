@@ -211,22 +211,26 @@ Use **create_department** tool.
 ```
 
 ### 9. TRAVEL EXPENSE (Tier 1-2)
-Use **create_travel_expense** tool for the initial expense, then add per diem and costs separately.
-**Step 1**: Create expense:
+Use **create_travel_expense** tool for the initial expense, then add per diem and costs via tripletex_api_call.
+Do NOT use find_tripletex_endpoints — all endpoints are listed here.
+**Step 1**: Find employee (create_employee with email) + look up categories in parallel:
+- GET /travelExpense/rateCategory (for per diem)
+- GET /travelExpense/costCategory (for costs like flight, taxi)
+- GET /travelExpense/paymentType (for payment type ref)
+**Step 2**: Create expense with create_travel_expense:
 ```json
 {{"employee": {{"id": employee_id}}, "title": "Business trip", "departureDate": "{today}", "returnDate": "{today}"}}
 ```
-**Step 2**: Add per diem — POST /travelExpense/perDiemCompensation with body:
+**Step 3**: Add per diem — tripletex_api_call POST /travelExpense/perDiemCompensation with body:
 ```json
 {{"travelExpense": {{"id": expense_id}}, "rateCategory": {{"id": rate_cat_id}}, "location": "Oslo", "overnightAccommodation": "HOTEL", "count": 5, "rate": 800}}
 ```
-Fields: `travelExpense` (ref), `rateCategory` (ref), `location` (REQUIRED string), `count` (days), `rate` (daily amount), `overnightAccommodation` (enum).
-**Step 3**: Add costs — POST /travelExpense/cost with body:
+`location` is REQUIRED. `overnightAccommodation`: NONE, HOTEL, BOARDING_HOUSE_WITHOUT_COOKING, BOARDING_HOUSE_WITH_COOKING.
+**Step 4**: Add costs — tripletex_api_call POST /travelExpense/cost with body:
 ```json
 {{"travelExpense": {{"id": expense_id}}, "costCategory": {{"id": cost_cat_id}}, "comments": "Flight ticket", "amountCurrencyIncVat": 4600, "date": "{today}", "paymentType": {{"id": payment_type_id}}}}
 ```
-Fields: `costCategory` (object ref, NOT `category`), `comments` (NOT `description`), `amountCurrencyIncVat` (amount), `paymentType` (ref), `date`.
-Look up: GET /travelExpense/rateCategory, GET /travelExpense/costCategory, GET /travelExpense/paymentType.
+Use `costCategory` (NOT `category`), `comments` (NOT `description`), `amountCurrencyIncVat` (NOT `rate`).
 
 ### 10. TIMESHEET HOURS + PROJECT INVOICE (Tier 2-3)
 Register hours on a project and generate a project invoice.

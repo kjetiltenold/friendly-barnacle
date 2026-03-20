@@ -539,7 +539,23 @@ async def _execute(
             if "invoiceDateTo" not in params:
                 params["invoiceDateTo"] = "2100-01-01"
                 logger.info("Auto-injected invoiceDateTo=2100-01-01 for invoice search")
-        return await client.get(f"/{entity_type}", params=params)
+        result = await client.get(f"/{entity_type}", params=params)
+        # Track first result ID in context for auto-injection
+        if ctx:
+            values = result.get("values", [])
+            if values:
+                first_id = values[0].get("id")
+                attr_map = {
+                    "employee": "last_employee_id",
+                    "customer": "last_customer_id",
+                    "project": "last_project_id",
+                    "invoice": "last_invoice_id",
+                }
+                attr = attr_map.get(entity_type)
+                if attr and first_id:
+                    setattr(ctx, attr, first_id)
+                    logger.info(f"EntityContext from search: {attr} = {first_id}")
+        return result
 
     if name == "get_entity":
         return await client.get(f"/{args['entity_type']}/{args['entity_id']}")
