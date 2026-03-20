@@ -155,14 +155,17 @@ Optional: number, priceExcludingVatCurrency, priceIncludingVatCurrency, costExcl
 - Do NOT use just description — product reference is REQUIRED for scoring.
 Include ALL order lines in this single call.
 
-**Step 4**: Use **create_invoice** tool — you MUST include:
-```json
-{{
-  "invoiceDate": "{today}",
-  "invoiceDueDate": "YYYY-MM-DD",
-  "orders": [{{"id": order_id}}]
-}}
-```
+**Step 4**: Create invoice from order — use tripletex_api_call PUT /order/{{order_id}}/:invoice with **params** (NOT body):
+- `invoiceDate`: "{today}"
+- `sendToCustomer`: false
+This preserves all order line details (products, VAT types, prices). Do NOT use create_invoice for multi-line invoices.
+
+## Outbound VAT Type IDs (for order lines)
+- **3** = 25% (høy sats / high rate)
+- **31** = 15% (middels sats / medium rate / food)
+- **32** = 12% (lav sats / low rate / transport, hotels)
+- **5** = 0% (fritatt / exempt, within VAT Act)
+- **6** = 0% (utenfor mva-loven / outside VAT Act)
 
 ### 5. REGISTER PAYMENT ON EXISTING INVOICE (Tier 2)
 **Flow:**
