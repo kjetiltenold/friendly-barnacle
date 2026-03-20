@@ -284,6 +284,7 @@ async def dispatch_tool(
     """Execute a tool call and return the result as a JSON string."""
     try:
         args = json.loads(args_json)
+        logger.info(f"Tool {name} args: {json.dumps(args, default=str, ensure_ascii=False)}")
         result = await _execute(client, name, args, endpoint_search=endpoint_search, ctx=ctx)
         if ctx is not None:
             ctx.track(name, result)
