@@ -291,6 +291,10 @@ async def dispatch_tool(
         result = await _execute(client, name, args, endpoint_search=endpoint_search, ctx=ctx)
         if ctx is not None:
             ctx.track(name, result)
+        # Log creation responses for scoring diagnostics
+        if name.startswith("create_"):
+            result_str = json.dumps(result, default=str, ensure_ascii=False)
+            logger.info(f"Tool {name} response: {result_str[:500]}")
         return json.dumps(result, default=str, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"Tool {name} failed: {e}")
