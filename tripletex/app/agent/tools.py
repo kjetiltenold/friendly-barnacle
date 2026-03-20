@@ -314,31 +314,33 @@ async def _ensure_department(client: TripletexClient) -> int | None:
 
 async def _ensure_bank_account(client: TripletexClient) -> None:
     """Register a bank account on the company so invoices can be created."""
-    # Try multiple approaches to find the company and set bank account
     company_id = None
+    company_name = "Company"
 
-    # Approach 1: Try /company/1 (common default ID)
-    for try_id in [1, 2]:
-        try:
-            result = await client.get(f"/company/{try_id}", params={"fields": "id,name"})
-            company_id = result.get("value", result).get("id", try_id)
-            company_name = result.get("value", result).get("name", "Company")
-            logger.info(f"Found company id={company_id} name={company_name}")
-            break
-        except Exception:
-            continue
+    # Approach 1: Get company from session token info
+    try:
+        result = await client.get("/token/session/>whoAmI", params={"fields": "company"})
+        company_data = result.get("value", result).get("company", {})
+        if company_data.get("id"):
+            company_id = company_data["id"]
+            company_name = company_data.get("name", "Company")
+            logger.info(f"Found company id={company_id} from whoAmI")
+    except Exception as e:
+        logger.info(f"whoAmI failed: {e}")
 
+    # Approach 2: Try common company IDs
     if company_id is None:
-        # Approach 2: Try to get company from employee's company reference
-        try:
-            result = await client.get("/employee", params={"fields": "id,company", "count": 1})
-            values = result.get("values", [])
-            if values and "company" in values[0]:
-                company_id = values[0]["company"].get("id")
-                company_name = values[0]["company"].get("name", "Company")
-                logger.info(f"Found company id={company_id} from employee")
-        except Exception:
-            pass
+        for try_id in range(1, 10):
+            try:
+                result = await client.get(f"/company/{try_id}", params={"fields": "id,name"})
+                val = result.get("value", result)
+                if val.get("id"):
+                    company_id = val["id"]
+                    company_name = val.get("name", "Company")
+                    logger.info(f"Found company id={company_id} at /company/{try_id}")
+                    break
+            except Exception:
+                continue
 
     if company_id is None:
         logger.warning("Could not find company to set bank account")
