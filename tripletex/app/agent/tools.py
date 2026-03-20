@@ -481,7 +481,9 @@ async def _execute(
                 params["invoiceDateTo"] = "2100-01-01"
                 logger.info("Auto-injected invoiceDateTo for invoice search")
         # Guard: POST/PUT without body causes "Kan ikke være null" errors
-        if method in ("POST", "PUT") and not body and "/:payment" not in path:
+        # Exempt action endpoints (/:payment, /:createCreditNote, /:invoice, etc.)
+        is_action = "/:" in path
+        if method in ("POST", "PUT") and not body and not is_action:
             raise ValueError(
                 f"tripletex_api_call {method} {path} requires a 'body' parameter with the JSON payload. "
                 f"Example: {{\"method\": \"{method}\", \"path\": \"{path}\", \"body\": {{...your fields here...}}}}"
