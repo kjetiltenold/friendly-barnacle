@@ -580,8 +580,13 @@ async def _execute(
                 if k not in params:
                     params[k] = v[0]  # parse_qs returns lists; take first value
             logger.info(f"Extracted query params from path: {list(embedded.keys())}")
-        # Auto-inject required date range for invoice searches
-        if method == "GET" and "/invoice" in path and "/:payment" not in path:
+        # Auto-inject required date range for invoice LIST searches only (not by-ID lookups)
+        import re
+        is_invoice_list = method == "GET" and "/invoice" in path and "/:payment" not in path
+        # Skip if path has a numeric ID (e.g. /invoice/2147493584)
+        if is_invoice_list and re.search(r'/invoice/\d+', path):
+            is_invoice_list = False
+        if is_invoice_list:
             if "invoiceDateFrom" not in params and "invoiceDateFrom" not in path:
                 params["invoiceDateFrom"] = "2000-01-01"
                 logger.info("Auto-injected invoiceDateFrom for invoice search")
