@@ -220,7 +220,26 @@ Use **create_travel_expense** tool.
 ```
 Required: employee, title. Create employee first if needed.
 
-### 10. REVERSE / CANCEL PAYMENT (Tier 2-3)
+### 10. TIMESHEET HOURS + PROJECT INVOICE (Tier 2-3)
+Register hours on a project and generate a project invoice.
+**Step 1**: Create customer + find employee (search by email)
+**Step 2**: Create project with create_project (or find existing)
+**Step 3**: Get activities — GET /activity?fields=id,name. Find the activity matching the prompt (e.g. "Analyse", "Design").
+  If no matching activity exists, create one: POST /activity with body `{{"activityType": "PROJECT_SPECIFIC_ACTIVITY"}}` — note: the field is `activityType`, NOT `name`.
+**Step 4**: Link activity to project — POST /project/projectActivity with body:
+```json
+{{"project": {{"id": project_id}}, "activity": {{"id": activity_id}}}}
+```
+Note: uses `activity` (NOT `name`).
+**Step 5**: Register timesheet entries — POST /timesheet/entry with body:
+```json
+{{"employee": {{"id": emp_id}}, "project": {{"id": proj_id}}, "activity": {{"id": activity_id}}, "date": "{today}", "hours": 8}}
+```
+IMPORTANT: `activity` is REQUIRED and cannot be null. Max 24 hours per entry — split across multiple days if needed (e.g. 28 hours = 4 entries × 7 hours).
+**Step 6**: Set hourly rate on project — PUT /project/{{project_id}} with hourly rate fields.
+**Step 7**: Generate project invoice — PUT /project/{{project_id}}/:invoice with params: invoiceDate={today}
+
+### 11. REVERSE / CANCEL PAYMENT (Tier 2-3)
 Tripletex has NO direct payment delete. Payments are reversed by reversing their voucher.
 **Flow:**
 1. Find the customer: `search_entity` entity_type="customer" params={{"organizationNumber": "XXXXX", "fields": "id,name"}}
