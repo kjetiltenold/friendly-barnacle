@@ -69,6 +69,8 @@ BASE_TOOL_DEFINITIONS = [
             "dateOfBirth": {"type": "string", "description": "YYYY-MM-DD"},
             "phoneNumberMobileCountryCode": {"type": "string", "description": "Country code, e.g. +47"},
             "phoneNumberMobile": {"type": "string"},
+            "userType": {"type": "string", "enum": ["STANDARD", "EXTENDED", "NO_ACCESS"], "description": "User access level. Defaults to STANDARD. Use EXTENDED for admin roles."},
+            "startDate": {"type": "string", "description": "Employment start date YYYY-MM-DD. Creates an employment record for the employee."},
         },
         "required": ["firstName", "lastName"],
     }),
@@ -284,6 +286,12 @@ async def _execute(
     ctx: EntityContext | None = None,
 ) -> dict:
     if name == "create_employee":
+        if "userType" not in args:
+            args["userType"] = "STANDARD"
+        # Move startDate into an employments array if provided
+        start_date = args.pop("startDate", None)
+        if start_date and "employments" not in args:
+            args["employments"] = [{"startDate": start_date}]
         return await client.post("/employee", json=args)
 
     if name == "update_employee":
