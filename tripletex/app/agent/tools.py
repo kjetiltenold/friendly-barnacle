@@ -189,14 +189,12 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["name"],
     }),
-    _tool("create_travel_expense", "Create a travel expense report in Tripletex.", {
+    _tool("create_travel_expense", "Create a travel expense report in Tripletex. Only send employee and title — dates are NOT supported as direct fields.", {
         "type": "object",
         "properties": {
             "employee": {"type": "object", "description": "{\"id\": employee_id}"},
             "project": {"type": "object", "description": "{\"id\": project_id}"},
             "title": {"type": "string"},
-            "departureDate": {"type": "string", "description": "YYYY-MM-DD"},
-            "returnDate": {"type": "string", "description": "YYYY-MM-DD"},
         },
         "required": ["employee", "title"],
     }),
@@ -486,9 +484,9 @@ async def _execute(
             args["employee"] = {"id": ctx.last_employee_id}
             logger.info(f"Auto-injected employee id={ctx.last_employee_id} into travel expense")
         # Fix legacy field names
-        for old, new in [("departureDateTime", "departureDate"), ("returnDateTime", "returnDate")]:
-            if old in args:
-                args[new] = args.pop(old)
+        # Strip date fields — they don't exist on travelExpense object
+        for date_field in ("departureDate", "returnDate", "departureDateTime", "returnDateTime"):
+            args.pop(date_field, None)
         return await client.post("/travelExpense", json=args)
 
     if name == "search_entity":
