@@ -121,6 +121,8 @@ python scripts/train_yolov8.py --batch 4 --cache
 ```
 
 This uses the stronger defaults from `scripts/train_yolov8.py`, including `yolov8l.pt`.
+On local `cpu` or `mps` runs, the script disables built-in validation by default to avoid an Ultralytics 8.1.0 crash on this dense dataset. On CUDA machines, validation stays enabled by default.
+In `auto` mode, the script prefers CUDA and otherwise falls back to CPU for stability. Apple `mps` is supported only if you pass `--device mps`.
 
 #### Smaller local run
 
@@ -139,6 +141,15 @@ Windows:
 .venv\Scripts\Activate.ps1
 python scripts/train_yolov8.py --model yolov8s.pt --name ngd_yolov8s_local --imgsz 960 --batch 2 --epochs 80 --cache
 ```
+
+#### Better local training plan
+
+For a stronger local result, use a 2-stage recipe instead of one short run:
+
+- Stage 1 trains `yolov8s` long enough to learn the coarse shelf layout.
+- Stage 2 fine-tunes the best stage 1 checkpoint with lower learning rate and lighter augmentation.
+
+The exact commands are in `scripts/train_recipes.md`.
 
 ### Step 3: Build the submission zip
 
@@ -235,5 +246,8 @@ dist/
 
 - The prep script derives the class count directly from `annotations.json`, so you do not need to guess whether the dataset has 356 or 357 classes.
 - PyTorch 2.6 changed `torch.load` defaults in a way that breaks older Ultralytics 8.1.0 checkpoints. The included scripts patch trusted local YOLO checkpoint loading automatically.
+- The training requirements pin `numpy==1.26.4` because Ultralytics 8.1.0 is not reliable with newer NumPy 2.x releases.
+- The training requirements also pin `opencv-python==4.9.0.80` so the local environment stays closer to the competition sandbox and remains compatible with NumPy 1.26.
 - The training script auto-selects `cuda`, then `mps`, then `cpu`, so the same command works on a GPU server and on a Mac.
+- You can force validation behavior with `--val` or `--no-val` when running `scripts/train_yolov8.py`.
 - If you train with a newer Ultralytics version, export to ONNX before submission instead of submitting the raw `.pt`.

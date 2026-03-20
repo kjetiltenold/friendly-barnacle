@@ -1,8 +1,14 @@
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 from ultralytics import YOLO
+from ultralytics.engine.trainer import BaseTrainer
+
+
+if not hasattr(np, "trapz") and hasattr(np, "trapezoid"):
+    np.trapz = np.trapezoid
 
 
 def enable_trusted_torch_loads():
@@ -15,13 +21,25 @@ def enable_trusted_torch_loads():
     torch.load = patched_load
 
 
+def enable_no_val_workaround():
+    original_validate = BaseTrainer.validate
+
+    def patched_validate(self):
+        if not self.args.val:
+            fitness = -self.loss.detach().cpu().numpy() if self.loss is not None else 0.0
+            if self.best_fitness is None or self.best_fitness < fitness:
+                self.best_fitness = fitness
+            return {}, fitness
+        return original_validate(self)
+
+    BaseTrainer.validate = patched_validate
+
+
 def resolve_device(device_arg: str) -> str:
     if device_arg != "auto":
         return device_arg
     if torch.cuda.is_available():
         return "0"
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
     return "cpu"
 
 
@@ -56,7 +74,7 @@ def parse_args():
     parser.add_argument(
         "--device",
         default="auto",
-        help='Use "auto", "cpu", "mps", or a CUDA device id like "0".',
+        help='Use "auto", "cpu", "mps", or a CUDA device id like "0". "auto" prefers CUDA, otherwise CPU.',
     )
     parser.add_argument("--patience", type=int, default=40)
     parser.add_argument("--seed", type=int, default=42)
@@ -76,6 +94,31 @@ def parse_args():
     parser.add_argument("--hsv-s", type=float, default=0.5, help="HSV saturation augmentation.")
     parser.add_argument("--hsv-v", type=float, default=0.3, help="HSV value augmentation.")
     parser.add_argument("--close-mosaic", type=int, default=15, help="Disable mosaic near the end.")
+    parser.add_argument("--save-period", type=int, default=5, help="Save a checkpoint every N epochs.")
+    parser.add_argument(
+        "--plots",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable Ultralytics training plots.",
+    )
+    parser.add_argument(
+        "--amp",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable automatic mixed precision.",
+    )
+    parser.add_argument(
+        "--rect",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable rectangular training batches.",
+    )
+    parser.add_argument(
+        "--val",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable built-in validation during training.",
+    )
     return parser.parse_args()
 
 
@@ -83,9 +126,27 @@ def main():
     args = parse_args()
     args.project.mkdir(parents=True, exist_ok=True)
     device = resolve_device(args.device)
+    use_val = args.val if args.val is not None else device == "0"
+
+    if args.device == "auto" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        print(
+            "[info] MPS is available, but auto mode is choosing CPU for stability. "
+            'Pass --device mps if you want to try Apple GPU training anyway.'
+        )
+    if device in {"cpu", "mps"} and "yolov8l" in str(args.model):
+        print(
+            "[warn] Training yolov8l on cpu/mps can be very slow. "
+            "For a faster local run, consider --model yolov8s.pt --imgsz 960 --batch 2."
+        )
+    if not use_val:
+        print(
+            "[info] Built-in validation is disabled for this run. "
+            "This avoids a known Ultralytics 8.1.0 validation crash on dense data in local cpu/mps runs."
+        )
 
     # Ultralytics 8.1.0 checkpoints rely on the pre-PyTorch-2.6 torch.load behavior.
     enable_trusted_torch_loads()
+    enable_no_val_workaround()
     model = YOLO(args.model)
     model.train(
         data=str(args.data),
@@ -99,6 +160,10 @@ def main():
         patience=args.patience,
         seed=args.seed,
         cache=args.cache,
+        save_period=args.save_period,
+        plots=args.plots,
+        amp=args.amp,
+        rect=args.rect,
         optimizer=args.optimizer,
         lr0=args.lr0,
         lrf=args.lrf,
@@ -118,6 +183,7 @@ def main():
         hsv_v=args.hsv_v,
         fliplr=0.0,
         flipud=0.0,
+        val=use_val,
         verbose=True,
     )
 
