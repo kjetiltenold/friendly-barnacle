@@ -23,10 +23,15 @@ class EntityContext:
 
     last_customer_id: int | None = None
     last_product_id: int | None = None
+    product_ids: list[int] | None = None  # All product IDs created/found
     last_order_id: int | None = None
     last_employee_id: int | None = None
     last_project_id: int | None = None
     last_invoice_id: int | None = None
+
+    def __post_init__(self):
+        if self.product_ids is None:
+            self.product_ids = []
 
     def track(self, name: str, result: dict) -> None:
         """Extract and store the entity ID from a creation response."""
@@ -46,6 +51,9 @@ class EntityContext:
         if attr:
             setattr(self, attr, entity_id)
             logger.info(f"EntityContext: {attr} = {entity_id}")
+        # Track all product IDs for multi-product orders
+        if name == "create_product" and entity_id not in self.product_ids:
+            self.product_ids.append(entity_id)
 
 
 def _tool(name: str, description: str, parameters: dict) -> dict:
@@ -397,12 +405,13 @@ async def _execute(
         if "customer" not in args and ctx and ctx.last_customer_id:
             args["customer"] = {"id": ctx.last_customer_id}
             logger.info(f"Auto-injected customer id={ctx.last_customer_id} into order")
-        # Auto-inject product reference in orderLines if missing
-        if ctx and ctx.last_product_id and "orderLines" in args:
-            for line in args["orderLines"]:
-                if "product" not in line:
-                    line["product"] = {"id": ctx.last_product_id}
-                    logger.info(f"Auto-injected product id={ctx.last_product_id} into order line")
+        # Auto-inject product references only when there's exactly one product
+        # and exactly one order line missing a product reference
+        if ctx and ctx.product_ids and "orderLines" in args:
+            lines_without_product = [l for l in args["orderLines"] if "product" not in l]
+            if len(lines_without_product) == 1 and len(ctx.product_ids) == 1:
+                lines_without_product[0]["product"] = {"id": ctx.product_ids[0]}
+                logger.info(f"Auto-injected single product id={ctx.product_ids[0]} into order line")
         return await client.post("/order", json=args)
 
     if name == "create_invoice":
