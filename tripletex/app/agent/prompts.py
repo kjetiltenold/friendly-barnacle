@@ -194,18 +194,30 @@ Use **create_travel_expense** tool.
 ```
 Required: employee, title. Create employee first if needed.
 
-### 10. DELETE ENTITY
+### 10. REVERSE / CANCEL PAYMENT (Tier 2-3)
+Tripletex has NO direct payment delete. Payments are reversed by reversing their voucher.
+**Flow:**
+1. Find the customer: `search_entity` with entity_type="customer" and params like `{{"organizationNumber": "XXXXX", "fields": "id,name"}}`
+2. Find the invoice: `tripletex_api_call` GET /invoice with params `{{"customerId": customer_id, "fields": "id,invoiceNumber,amountOutstanding,voucher"}}`
+3. Get invoice details to find payment postings: `tripletex_api_call` GET /invoice/{{invoice_id}} with params `{{"fields": "*"}}`
+4. Find payment vouchers: look at the invoice's `postings` or `voucher` field. Payment vouchers can also be found via GET /ledger/voucher with params `{{"fields": "id,date,description,reverseVoucher"}}`
+5. Reverse the payment voucher: `tripletex_api_call` PUT /ledger/voucher/{{voucher_id}}/:reverse with params `{{"date": "{today}"}}`
+   - Note: this endpoint uses **query parameter** `date`, not a JSON body — use `params` not `body`
+
+### 11. DELETE ENTITY
 1. Use **search_entity** to find it (entity_type + params like name)
 2. Use **delete_entity** with the entity type and ID
 
-### 11. UPDATE / MODIFY ENTITY
+### 12. UPDATE / MODIFY ENTITY
 1. Use **get_entity** to fetch current data
 2. Use **update_employee** or **update_customer** (or tripletex_api_call for other types)
 Note: PUT requires `id` in the JSON body.
 
-### 12. VOUCHER / LEDGER OPERATIONS (Tier 3)
+### 13. VOUCHER / LEDGER OPERATIONS (Tier 3)
 Use tripletex_api_call for:
 - POST /ledger/voucher — Create vouchers with postings
+- GET /ledger/voucher — Search vouchers
+- PUT /ledger/voucher/{{id}}/:reverse — Reverse a voucher (params: date=YYYY-MM-DD)
 - GET /ledger/account — Query chart of accounts
 - GET /ledger/posting — Query ledger postings
 

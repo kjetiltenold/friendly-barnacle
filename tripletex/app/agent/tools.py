@@ -405,15 +405,16 @@ async def _execute(
         path = args["path"]
         params = args.get("params")
         body = args.get("body")
-        # Guard: POST/PUT without a body causes "Kan ikke være null" errors
-        if method in ("POST", "PUT") and not body:
-            raise ValueError(f"tripletex_api_call {method} {path} requires a 'body' parameter with the JSON payload")
+        # Guard: POST without body causes "Kan ikke være null" errors
+        # PUT is allowed without body when using query params (e.g. /:payment, /:reverse, /:createCreditNote)
+        if method == "POST" and not body:
+            raise ValueError(f"tripletex_api_call POST {path} requires a 'body' parameter with the JSON payload")
         if method == "GET":
             return await client.get(path, params=params)
         if method == "POST":
             return await client.post(path, json=body)
         if method == "PUT":
-            return await client.put(path, json=body)
+            return await client.put(path, json=body, params=params)
         if method == "DELETE":
             return await client.delete(path)
 
