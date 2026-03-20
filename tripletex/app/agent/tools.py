@@ -2,12 +2,49 @@
 
 import json
 import logging
+from dataclasses import dataclass
 
 from app.config import get_settings
 from app.endpoint_search import EndpointSearchClient
 from app.tripletex.client import TripletexClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EntityContext:
+    """Tracks created entity IDs so we can auto-inject missing references.
+
+    GPT-4o frequently omits required entity references (customer on orders,
+    orders on invoices) even when told to include them.  This safety net
+    fills in the most-recently-created entity when the model forgets.
+    """
+
+    last_customer_id: int | None = None
+    last_product_id: int | None = None
+    last_order_id: int | None = None
+    last_employee_id: int | None = None
+    last_project_id: int | None = None
+    last_invoice_id: int | None = None
+
+    def track(self, name: str, result: dict) -> None:
+        """Extract and store the entity ID from a creation response."""
+        value = result.get("value", {})
+        entity_id = value.get("id")
+        if entity_id is None:
+            return
+        mapping = {
+            "create_customer": "last_customer_id",
+            "create_product": "last_product_id",
+            "create_order": "last_order_id",
+            "create_employee": "last_employee_id",
+            "create_project": "last_project_id",
+            "create_invoice": "last_invoice_id",
+        }
+        attr = mapping.get(name)
+        if attr:
+            setattr(self, attr, entity_id)
+            logger.info(f"EntityContext: {attr} = {entity_id}")
 
 
 def _tool(name: str, description: str, parameters: dict) -> dict:
@@ -78,18 +115,19 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["name"],
     }),
-    _tool("create_order", "Create a sales order in Tripletex. Required before creating an invoice.", {
+    _tool("create_order", "Create a sales order. MUST include customer reference from a previous create_customer call. Required before creating an invoice.", {
         "type": "object",
         "properties": {
-            "customer": {"type": "object", "description": "{\"id\": customer_id}"},
+            "customer": {"type": "object", "description": "REQUIRED — customer reference object, e.g. {\"id\": 123} using the id from create_customer response"},
             "orderDate": {"type": "string", "description": "YYYY-MM-DD"},
             "deliveryDate": {"type": "string", "description": "YYYY-MM-DD"},
             "orderLines": {
                 "type": "array",
+                "description": "Line items. Each should reference a product OR have a description with price.",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "product": {"type": "object", "description": "{\"id\": product_id}"},
+                        "product": {"type": "object", "description": "Product reference {\"id\": product_id} from create_product response"},
                         "description": {"type": "string"},
                         "count": {"type": "number"},
                         "unitPriceExcludingVatCurrency": {"type": "number"},
@@ -100,15 +138,15 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["customer", "orderDate"],
     }),
-    _tool("create_invoice", "Create an invoice from an order in Tripletex.", {
+    _tool("create_invoice", "Create an invoice from an existing order. MUST include the orders array referencing order IDs from create_order.", {
         "type": "object",
         "properties": {
             "invoiceDate": {"type": "string", "description": "YYYY-MM-DD"},
             "invoiceDueDate": {"type": "string", "description": "YYYY-MM-DD"},
-            "customer": {"type": "object", "description": "{\"id\": customer_id}"},
             "orders": {
                 "type": "array",
-                "items": {"type": "object", "description": "{\"id\": order_id}"},
+                "description": "REQUIRED — array of order references, e.g. [{\"id\": 456}] using the id from create_order response",
+                "items": {"type": "object", "description": "Order reference {\"id\": order_id}"},
             },
         },
         "required": ["invoiceDate", "invoiceDueDate", "orders"],
@@ -224,11 +262,14 @@ async def dispatch_tool(
     name: str,
     args_json: str,
     endpoint_search: EndpointSearchClient | None = None,
+    ctx: EntityContext | None = None,
 ) -> str:
     """Execute a tool call and return the result as a JSON string."""
     try:
         args = json.loads(args_json)
-        result = await _execute(client, name, args, endpoint_search=endpoint_search)
+        result = await _execute(client, name, args, endpoint_search=endpoint_search, ctx=ctx)
+        if ctx is not None:
+            ctx.track(name, result)
         return json.dumps(result, default=str, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"Tool {name} failed: {e}")
@@ -240,6 +281,7 @@ async def _execute(
     name: str,
     args: dict,
     endpoint_search: EndpointSearchClient | None,
+    ctx: EntityContext | None = None,
 ) -> dict:
     if name == "create_employee":
         return await client.post("/employee", json=args)
@@ -263,18 +305,43 @@ async def _execute(
         return await client.post("/product", json=args)
 
     if name == "create_order":
+        # Auto-inject customer reference if model omitted it
+        if "customer" not in args and ctx and ctx.last_customer_id:
+            args["customer"] = {"id": ctx.last_customer_id}
+            logger.info(f"Auto-injected customer id={ctx.last_customer_id} into order")
+        # Auto-inject product reference in orderLines if missing
+        if ctx and ctx.last_product_id and "orderLines" in args:
+            for line in args["orderLines"]:
+                if "product" not in line:
+                    line["product"] = {"id": ctx.last_product_id}
+                    logger.info(f"Auto-injected product id={ctx.last_product_id} into order line")
         return await client.post("/order", json=args)
 
     if name == "create_invoice":
+        # Auto-inject orders reference if model omitted it
+        if "orders" not in args and ctx and ctx.last_order_id:
+            args["orders"] = [{"id": ctx.last_order_id}]
+            logger.info(f"Auto-injected order id={ctx.last_order_id} into invoice")
         return await client.post("/invoice", json=args)
 
     if name == "create_project":
+        # Auto-inject projectManager if missing
+        if "projectManager" not in args and ctx and ctx.last_employee_id:
+            args["projectManager"] = {"id": ctx.last_employee_id}
+            logger.info(f"Auto-injected employee id={ctx.last_employee_id} as projectManager")
+        if "customer" not in args and ctx and ctx.last_customer_id:
+            args["customer"] = {"id": ctx.last_customer_id}
+            logger.info(f"Auto-injected customer id={ctx.last_customer_id} into project")
         return await client.post("/project", json=args)
 
     if name == "create_department":
         return await client.post("/department", json=args)
 
     if name == "create_travel_expense":
+        # Auto-inject employee if missing
+        if "employee" not in args and ctx and ctx.last_employee_id:
+            args["employee"] = {"id": ctx.last_employee_id}
+            logger.info(f"Auto-injected employee id={ctx.last_employee_id} into travel expense")
         return await client.post("/travelExpense", json=args)
 
     if name == "search_entity":

@@ -20,7 +20,7 @@ async def chat(
     full_messages = [{"role": "system", "content": system}, *messages]
     return await client.chat.completions.create(
         model=get_settings().model_name,
-        max_tokens=4096,
+        max_completion_tokens=4096,
         messages=full_messages,
         tools=get_tool_definitions(),
     )

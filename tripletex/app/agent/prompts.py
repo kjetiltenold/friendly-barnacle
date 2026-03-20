@@ -44,6 +44,15 @@ Regardless of prompt language, extract:
 - **GET (single)**: `{{"value": {{...}}}}`
 - **DELETE**: empty response (HTTP 204)
 
+## ID Chaining (CRITICAL)
+When creating linked entities, you MUST pass the ID from each creation response into the next call:
+1. `create_customer` → response has `{{"value": {{"id": 100}}}}` → use `100` as customer_id
+2. `create_product` → response has `{{"value": {{"id": 200}}}}` → use `200` as product_id
+3. `create_order` → you MUST include `"customer": {{"id": 100}}` and reference product `{{"id": 200}}` in orderLines
+4. `create_invoice` → you MUST include `"orders": [{{"id": 300}}]` where `300` came from the create_order response
+
+**Never omit entity references.** If a tool requires a customer, order, or employee reference, it must be an object like `{{"id": N}}` with the actual ID from a previous response.
+
 ---
 
 ## Task Recipes

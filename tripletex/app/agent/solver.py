@@ -11,7 +11,7 @@ from app.models import SolveRequest
 from app.tripletex.client import TripletexClient
 from app.attachments.parser import process_attachments
 from app.agent.llm import create_client, chat
-from app.agent.tools import dispatch_tool
+from app.agent.tools import dispatch_tool, EntityContext
 from app.agent.prompts import get_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ async def solve_task(request: SolveRequest) -> None:
         # Build system prompt with today's date
         today = datetime.date.today().isoformat()
         system_prompt = get_system_prompt(today)
+        ctx = EntityContext()
 
         # Build user message with prompt + attachments
         content = _build_user_content(request)
@@ -81,6 +82,7 @@ async def solve_task(request: SolveRequest) -> None:
                     tc.function.name,
                     tc.function.arguments,
                     endpoint_search=endpoint_search,
+                    ctx=ctx,
                 )
                 messages.append({
                     "role": "tool",
