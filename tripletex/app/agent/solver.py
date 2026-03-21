@@ -321,7 +321,8 @@ def _build_user_content(request: SolveRequest) -> str | list[dict]:
             "Preserve European decimal separators when converting amounts: 109,00 means 109.00 and 51 312,50 means 51312.50. "
             "Do not translate literal supplier names, invoice titles, or line descriptions from attached invoices into another language. "
             "If extracted text conflicts with an attached image, trust the image. "
-            "For single-page PDFs such as receipts, contracts, and offer letters, inspect the image first because OCR may flatten layout or structured fields."
+            "For single-page PDFs such as receipts, contracts, and offer letters, inspect the image first because OCR may flatten layout or structured fields. "
+            "For contracts and offer letters, preserve literal daily or weekly working-hours figures from the attachment instead of deriving standard hours from FTE when explicit hours are shown."
         )
         text_parts.append(attachment_guidance)
         multimodal_blocks.append({"type": "text", "text": attachment_guidance})

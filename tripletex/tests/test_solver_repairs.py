@@ -164,6 +164,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not translate literal supplier names, invoice titles, or line descriptions", content)
         self.assertIn("inspect the image first", content)
         self.assertIn("contracts, and offer letters", content)
+        self.assertIn("instead of deriving standard hours from FTE", content)
 
     def test_build_user_content_preserves_multimodal_attachment_order(self):
         request = SolveRequest(
@@ -327,7 +328,8 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
     def test_system_prompt_includes_literal_contract_field_guidance(self):
         prompt = get_system_prompt("2026-03-21")
 
-        self.assertIn("copy department, occupation code, salary, FTE, start date, birth date, and national identity number literally from the attachment", prompt)
+        self.assertIn("copy department, occupation code, salary, FTE, standard working hours, start date, birth date, and national identity number literally from the attachment", prompt)
+        self.assertIn("use those literal hours for create_standard_time instead of deriving hoursPerDay from FTE", prompt)
 
 
 if __name__ == "__main__":
