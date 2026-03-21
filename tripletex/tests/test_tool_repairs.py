@@ -2697,6 +2697,38 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "countryCode": "NO",
         }), client.calls)
 
+    async def test_create_travel_expense_auto_populates_domestic_rate_based_details(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_expense",
+            {
+                "employee": {"id": 42},
+                "title": "Visite client Oslo",
+                "departureDate": "2026-03-17",
+                "returnDate": "2026-03-21",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                prompt_text="Enregistrez une note de frais de déplacement avec indemnités journalières pour Visite client Oslo.",
+            ),
+        )
+
+        self.assertEqual(client.calls, [("POST", "/travelExpense", {
+            "employee": {"id": 42},
+            "title": "Visite client Oslo",
+            "travelDetails": {
+                "departureDate": "2026-03-17",
+                "returnDate": "2026-03-21",
+                "destination": "Oslo",
+                "purpose": "Visite client Oslo",
+                "isDayTrip": False,
+                "isCompensationFromRates": True,
+                "isForeignTravel": False,
+            },
+        })])
+
     async def test_create_per_diem_infers_no_and_resolves_rate_category_from_dates(self):
         client = FakeTripletexClient(
             get_responses={
@@ -2862,6 +2894,57 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "rate": 800,
         }))
 
+
+    async def test_create_per_diem_retries_without_country_code_after_domestic_country_validation_error(self):
+        client = FakeTripletexClient(
+            post_errors={
+                "/travelExpense/perDiemCompensation": [
+                    self._http_status_error(
+                        "/travelExpense/perDiemCompensation",
+                        "422 unknown: Country not enabled for travel expense.",
+                    ),
+                    None,
+                ],
+            },
+        )
+
+        await _execute(
+            client,
+            "create_per_diem_compensation",
+            {
+                "travelExpense": {"id": 555},
+                "countryCode": "NO",
+                "rateCategory": {"id": 740},
+                "location": "Oslo",
+                "overnightAccommodation": "HOTEL",
+                "count": 5,
+                "rate": 800,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_departure_date="2026-03-17",
+                last_travel_expense_return_date="2026-03-21",
+                prompt_text='Enregistrez une note de frais pour "Visite client Oslo".',
+            ),
+        )
+
+        self.assertEqual(client.calls[0], ("POST", "/travelExpense/perDiemCompensation", {
+            "travelExpense": {"id": 555},
+            "countryCode": "NO",
+            "rateCategory": {"id": 740},
+            "location": "Oslo",
+            "overnightAccommodation": "HOTEL",
+            "count": 5,
+            "rate": 800,
+        }))
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/perDiemCompensation", {
+            "travelExpense": {"id": 555},
+            "rateCategory": {"id": 740},
+            "location": "Oslo",
+            "overnightAccommodation": "HOTEL",
+            "count": 5,
+            "rate": 800,
+        }))
 
     async def test_delete_travel_expense_by_email(self):
         client = FakeTripletexClient(

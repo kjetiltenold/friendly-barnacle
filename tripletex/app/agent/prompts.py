@@ -162,6 +162,12 @@ Recipes:
   5. create_travel_expense with employee, title, departureDate, returnDate
   6. create_per_diem_compensation
   7. create_travel_cost for each extra expense
+- On create_travel_expense, populate `travelDetails` explicitly:
+  - set `purpose` from the trip title or stated purpose
+  - set `destination` from the stated location when available
+  - set `isCompensationFromRates=true` when the task includes per diem, daily allowance, Tagegeld, or equivalent
+  - set `isForeignTravel=false` for Norwegian domestic trips
+  - set `isDayTrip=false` for multi-day trips
 - Per diem body fields:
   - travelExpense
   - rateCategory
@@ -169,6 +175,7 @@ Recipes:
   - overnightAccommodation
   - count
   - rate
+- If Tripletex rejects a domestic per diem with `Country not enabled for travel expense`, retry once without the optional `countryCode` field.
 - For Norwegian domestic travel locations such as Tromsø, Oslo, Bergen, or Trondheim, set `countryCode=NO`.
 - Do not blindly reuse the first `/travelExpense/rateCategory` result. Choose a per-diem rate category that matches the travel date range and the domestic/overnight context.
 - Travel cost body fields:

@@ -298,6 +298,8 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("For Norwegian domestic travel locations such as Tromsø", prompt)
         self.assertIn("set `countryCode=NO`", prompt)
+        self.assertIn("set `isCompensationFromRates=true`", prompt)
+        self.assertIn("retry once without the optional `countryCode` field", prompt)
         self.assertIn("Do not blindly reuse the first `/travelExpense/rateCategory` result", prompt)
 
     def test_system_prompt_includes_literal_contract_field_guidance(self):

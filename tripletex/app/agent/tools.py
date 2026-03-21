@@ -1398,6 +1398,51 @@ def _infer_per_diem_country_code(args: dict, ctx: EntityContext | None) -> str |
     return None
 
 
+def _infer_travel_destination(args: dict, ctx: EntityContext | None) -> str | None:
+    sources = [
+        args.get("location"),
+        args.get("destination"),
+        args.get("title"),
+        (ctx.prompt_text if ctx else None),
+    ]
+    location_markers = (
+        ("tromso", "Tromsø"),
+        ("oslo", "Oslo"),
+        ("bergen", "Bergen"),
+        ("trondheim", "Trondheim"),
+        ("stavanger", "Stavanger"),
+        ("bodo", "Bodø"),
+        ("alesund", "Ålesund"),
+        ("kirkenes", "Kirkenes"),
+    )
+    for source in sources:
+        if not source:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", "", _normalize_occupation_name(str(source)))
+        for marker, display in location_markers:
+            if marker in normalized:
+                return display
+    return None
+
+
+def _prompt_mentions_per_diem(ctx: EntityContext | None) -> bool:
+    text = ((ctx.prompt_text if ctx else None) or "").strip()
+    if not text:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "", _normalize_occupation_name(text))
+    markers = (
+        "perdiem",
+        "dailyallowance",
+        "indemnitejournaliere",
+        "indemnitesjournalieres",
+        "tagegeld",
+        "tagessatz",
+        "daggodt",
+        "diett",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _pick_per_diem_rate_category(
     values: list[dict],
     departure_date: str | None,
@@ -2914,12 +2959,44 @@ async def _execute(
             logger.info(f"Auto-injected employee id={ctx.last_employee_id} into travel expense")
         # Move date fields into nested travelDetails object
         travel_details = args.pop("travelDetails", {})
+        if not isinstance(travel_details, dict):
+            travel_details = {}
         for date_field in ("departureDate", "returnDate", "departureDateTime", "returnDateTime"):
             val = args.pop(date_field, None)
             if val:
                 # Normalize field names
                 normalized = date_field.replace("DateTime", "Date")
                 travel_details[normalized] = val
+        inferred_destination = _infer_travel_destination(args, ctx)
+        if inferred_destination and not travel_details.get("destination"):
+            travel_details["destination"] = inferred_destination
+            logger.info("Auto-inferred travel expense destination=%s", inferred_destination)
+        title = str(args.get("title") or "").strip()
+        if title and not travel_details.get("purpose"):
+            travel_details["purpose"] = title
+            logger.info("Auto-inferred travel expense purpose from title")
+        departure_date = travel_details.get("departureDate")
+        return_date = travel_details.get("returnDate")
+        departure_parsed = _parse_iso_date(departure_date)
+        return_parsed = _parse_iso_date(return_date)
+        if (
+            departure_parsed is not None
+            and return_parsed is not None
+            and return_parsed > departure_parsed
+            and "isDayTrip" not in travel_details
+        ):
+            travel_details["isDayTrip"] = False
+            logger.info("Auto-set travel expense isDayTrip=false for multi-day trip")
+        if _prompt_mentions_per_diem(ctx) and "isCompensationFromRates" not in travel_details:
+            travel_details["isCompensationFromRates"] = True
+            logger.info("Auto-set travel expense isCompensationFromRates=true from prompt")
+        domestic_country = _infer_per_diem_country_code(
+            {"location": inferred_destination or travel_details.get("destination") or title},
+            ctx,
+        )
+        if domestic_country == "NO" and "isForeignTravel" not in travel_details:
+            travel_details["isForeignTravel"] = False
+            logger.info("Auto-set travel expense isForeignTravel=false for domestic trip")
         if travel_details:
             args["travelDetails"] = travel_details
             if ctx is not None:
@@ -2947,33 +3024,48 @@ async def _execute(
             elif ctx and ctx.last_rate_category_id:
                 args["rateCategory"] = {"id": ctx.last_rate_category_id}
                 logger.info(f"Auto-injected fallback rate category id={ctx.last_rate_category_id} into per diem compensation")
-        try:
-            return await client.post("/travelExpense/perDiemCompensation", json=args)
-        except Exception as e:
-            error_text = str(e).lower()
-            retry_args = json.loads(json.dumps(args))
-            retried = False
-            if "country not enabled for travel expense" in error_text and "countryCode" not in retry_args:
-                inferred_country = _infer_per_diem_country_code(retry_args, ctx)
-                if inferred_country:
-                    retry_args["countryCode"] = inferred_country
-                    retried = True
-                    logger.info(
-                        "Per diem compensation failed on country validation; retrying with inferred countryCode=%s",
-                        inferred_country,
-                    )
-            if "satskategori" in error_text or "ratecategory.id" in error_text:
-                resolved_rate_category = await _resolve_per_diem_rate_category(client, retry_args, ctx)
-                if resolved_rate_category is not None and resolved_rate_category != retry_args.get("rateCategory"):
-                    retry_args["rateCategory"] = resolved_rate_category
-                    retried = True
-                    logger.info(
-                        "Per diem compensation failed on rate-category validation; retrying with rateCategory id=%s",
-                        resolved_rate_category.get("id"),
-                    )
-            if retried:
-                return await client.post("/travelExpense/perDiemCompensation", json=retry_args)
-            raise
+        current_args = json.loads(json.dumps(args))
+        attempted_signatures: set[str] = set()
+        while True:
+            attempted_signatures.add(json.dumps(current_args, sort_keys=True))
+            try:
+                return await client.post("/travelExpense/perDiemCompensation", json=current_args)
+            except Exception as e:
+                error_text = str(e).lower()
+                retry_args = json.loads(json.dumps(current_args))
+                retried = False
+                if "country not enabled for travel expense" in error_text:
+                    if "countryCode" not in retry_args:
+                        inferred_country = _infer_per_diem_country_code(retry_args, ctx)
+                        if inferred_country:
+                            retry_args["countryCode"] = inferred_country
+                            retried = True
+                            logger.info(
+                                "Per diem compensation failed on country validation; retrying with inferred countryCode=%s",
+                                inferred_country,
+                            )
+                    elif str(retry_args.get("countryCode") or "").strip().upper() == "NO":
+                        retry_args.pop("countryCode", None)
+                        retried = True
+                        logger.info(
+                            "Per diem compensation failed with countryCode=NO; retrying without optional countryCode",
+                        )
+                if "satskategori" in error_text or "ratecategory.id" in error_text:
+                    resolved_rate_category = await _resolve_per_diem_rate_category(client, retry_args, ctx)
+                    if resolved_rate_category is not None and resolved_rate_category != retry_args.get("rateCategory"):
+                        retry_args["rateCategory"] = resolved_rate_category
+                        retried = True
+                        logger.info(
+                            "Per diem compensation failed on rate-category validation; retrying with rateCategory id=%s",
+                            resolved_rate_category.get("id"),
+                        )
+                retry_signature = json.dumps(retry_args, sort_keys=True)
+                if retried and retry_signature not in attempted_signatures:
+                    current_args = retry_args
+                    continue
+                if retried:
+                    logger.warning("Per diem compensation retry payload already attempted; aborting further retries")
+                raise
 
     if name == "create_travel_cost":
         if "travelExpense" not in args and ctx and ctx.last_travel_expense_id:
