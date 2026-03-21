@@ -54,14 +54,16 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
     blocks = []
     doc = fitz.open(stream=raw, filetype="pdf")
     text_parts = []
+    page_count = len(doc)
 
     for page in doc:
         text = page.get_text()
         if text.strip():
             text_parts.append(text)
-        if _should_render_pdf_page_as_image(text):
-            # Render weak-text or scanned pages as images too so the model can
-            # recover dates, totals, and structured fields from the visual layout.
+        if page_count == 1 or _should_render_pdf_page_as_image(text):
+            # Single-page contest documents are often visually structured even
+            # when text extraction succeeds, so include the image too. For
+            # multi-page PDFs, keep the existing weak-text heuristic.
             pix = page.get_pixmap(dpi=200)
             img_bytes = pix.tobytes("png")
             blocks.append({
