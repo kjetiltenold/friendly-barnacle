@@ -1093,6 +1093,82 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 999)
         self.assertEqual(client.calls[1][2]["postings"][0]["customer"], {"id": 108297625})
 
+    async def test_create_voucher_allows_supplier_invoice_auto_vat_balance(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext()
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6700,
+                "name": "Vedlikehold",
+                "vatType": {"id": 50},
+                "legalVatTypes": [{"id": 50}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-05-22",
+                "description": "Supplier invoice",
+                "postings": [
+                    {"account": {"id": 10}, "amountGross": 65450, "vatType": {"id": 50}},
+                    {"account": {"id": 20}, "amountGross": -81812, "supplier": {"id": 77}},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[-1][0:2], ("POST", "/ledger/voucher"))
+        self.assertEqual(client.calls[-1][2]["postings"][0]["vatType"], {"id": 50})
+
+    async def test_create_voucher_keeps_supported_locked_vattype(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext()
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6300,
+                "name": "Vedlikeholdsavtale",
+                "vatType": {"id": 50},
+                "legalVatTypes": [{"id": 50}],
+                "vatLocked": True,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-05-22",
+                "description": "Supplier invoice",
+                "postings": [
+                    {"account": {"id": 10}, "amountGross": 65450, "vatType": {"id": 1}},
+                    {"account": {"id": 20}, "amountGross": -81812, "supplier": {"id": 77}},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["vatType"], {"id": 50})
+
     async def test_create_per_diem_uses_last_travel_expense_context(self):
         client = FakeTripletexClient()
 

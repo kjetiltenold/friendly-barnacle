@@ -877,6 +877,28 @@ def _get_cached_account(ctx: EntityContext | None, posting: dict | None) -> dict
     return ctx.account_cache.get(account_id)
 
 
+def _preferred_account_vat_id(account: dict, current_vat_id: int | None, ctx: EntityContext | None) -> int | None:
+    account_vat_id = _extract_reference_id(account.get("vatType"))
+    legal_vat_ids = {
+        vat_id
+        for vat_id in (
+            _extract_reference_id(vat)
+            for vat in (account.get("legalVatTypes") or [])
+        )
+        if vat_id is not None
+    }
+    if current_vat_id is not None and current_vat_id in legal_vat_ids and current_vat_id != 0:
+        return current_vat_id
+    if account_vat_id not in (None, 0) and (not legal_vat_ids or account_vat_id in legal_vat_ids):
+        return account_vat_id
+    if ctx and ctx.last_vat_type_id in legal_vat_ids:
+        return ctx.last_vat_type_id
+    legal_non_zero = sorted(vat_id for vat_id in legal_vat_ids if vat_id != 0)
+    if legal_non_zero:
+        return legal_non_zero[0]
+    return None
+
+
 def _looks_like_paid_receipt_voucher(ctx: EntityContext | None, postings: list[dict] | None) -> bool:
     if ctx is None or not isinstance(postings, list):
         return False
@@ -1769,6 +1791,7 @@ async def _execute(
     if name == "create_voucher":
         if "postings" in args and isinstance(args["postings"], list):
             is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
+            allows_auto_vat_balance = False
             for i, posting in enumerate(args["postings"]):
                 if isinstance(posting, dict):
                     posting.pop("guiRow", None)
@@ -1784,30 +1807,47 @@ async def _execute(
                         if vat_id is not None
                     }
                     current_vat_id = _extract_reference_id(posting.get("vatType"))
-                    if account.get("vatLocked") or account_vat_id == 0:
+                    preferred_vat_id = _preferred_account_vat_id(account, current_vat_id, ctx)
+                    no_vat_only = account_vat_id == 0 and not any(vat_id != 0 for vat_id in legal_vat_ids)
+                    if no_vat_only:
                         if posting.pop("vatType", None) is not None:
                             logger.info("Removed vatType from voucher posting because the account is VAT-locked")
                     elif (
                         is_paid_receipt
                         and posting.get("amountGross", 0) > 0
-                        and account_vat_id is not None
-                        and current_vat_id != account_vat_id
+                        and preferred_vat_id is not None
+                        and current_vat_id != preferred_vat_id
                     ):
-                        posting["vatType"] = {"id": account_vat_id}
+                        posting["vatType"] = {"id": preferred_vat_id}
                         logger.info(
-                            f"Normalized receipt voucher vatType to account default id={account_vat_id}"
+                            f"Normalized receipt voucher vatType to account-supported id={preferred_vat_id}"
+                        )
+                    elif (
+                        account.get("vatLocked")
+                        and posting.get("amountGross", 0) > 0
+                        and preferred_vat_id is not None
+                        and current_vat_id != preferred_vat_id
+                    ):
+                        posting["vatType"] = {"id": preferred_vat_id}
+                        logger.info(
+                            f"Normalized locked voucher vatType to account-supported id={preferred_vat_id}"
                         )
                     elif current_vat_id is not None and legal_vat_ids and current_vat_id not in legal_vat_ids:
-                        if account_vat_id is not None:
-                            posting["vatType"] = {"id": account_vat_id}
+                        if preferred_vat_id is not None:
+                            posting["vatType"] = {"id": preferred_vat_id}
                             logger.info(
-                                f"Replaced invalid voucher vatType id={current_vat_id} with account-supported id={account_vat_id}"
+                                f"Replaced invalid voucher vatType id={current_vat_id} with account-supported id={preferred_vat_id}"
                             )
                         else:
                             posting.pop("vatType", None)
                             logger.info(
                                 f"Removed invalid voucher vatType id={current_vat_id} because the account has no default VAT type"
                             )
+                    if (
+                        posting.get("amountGross", 0) > 0
+                        and _extract_reference_id(posting.get("vatType")) not in (None, 0)
+                    ):
+                        allows_auto_vat_balance = True
                     if (
                         ctx
                         and ctx.last_department_id
@@ -1821,7 +1861,10 @@ async def _execute(
                 p.get("amountGross", 0) for p in args["postings"] if isinstance(p, dict)
             )
             if abs(total) > 0.01:
-                return {"error": f"Voucher postings do not balance. Net total: {total}. Debit (positive) and credit (negative) amounts must sum to zero. Adjust the posting amounts and retry."}
+                if allows_auto_vat_balance:
+                    logger.info("Skipping strict voucher balance pre-validation because VAT auto-posting is expected")
+                else:
+                    return {"error": f"Voucher postings do not balance. Net total: {total}. Debit (positive) and credit (negative) amounts must sum to zero. Adjust the posting amounts and retry."}
         try:
             return await client.post("/ledger/voucher", json=args)
         except Exception as e:
