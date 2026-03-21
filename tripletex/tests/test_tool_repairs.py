@@ -2789,6 +2789,26 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             },
         })])
 
+    async def test_create_travel_expense_sets_is_compensation_from_rates_for_portuguese_allowance_prompt(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_expense",
+            {
+                "employee": {"id": 42},
+                "title": "Visita cliente Trondheim",
+                "departureDate": "2026-03-17",
+                "returnDate": "2026-03-21",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                prompt_text="Registe uma despesa de viagem com ajudas de custo para Visita cliente Trondheim.",
+            ),
+        )
+
+        self.assertTrue(client.calls[0][2]["travelDetails"]["isCompensationFromRates"])
+
     async def test_create_per_diem_infers_no_and_resolves_rate_category_from_dates(self):
         client = FakeTripletexClient(
             get_responses={
@@ -3004,6 +3024,74 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "overnightAccommodation": "HOTEL",
             "count": 5,
             "rate": 800,
+        }))
+
+    async def test_create_travel_cost_resolves_flight_category_and_infers_departure_date(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_cost",
+            {
+                "comments": "Bilhete de avião",
+                "amountCurrencyIncVat": 7600,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_id=555,
+                last_payment_type_id=9,
+                last_travel_expense_departure_date="2026-03-17",
+                last_travel_expense_return_date="2026-03-21",
+                last_cost_categories=[
+                    {"id": 11, "displayName": "Flyreise"},
+                    {"id": 12, "displayName": "Taxi"},
+                ],
+            ),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/cost", {
+            "travelExpense": {"id": 555},
+            "costCategory": {"id": 11},
+            "paymentType": {"id": 9},
+            "comments": "Bilhete de avião",
+            "amountCurrencyIncVat": 7600,
+            "date": "2026-03-17",
+        }))
+
+    async def test_create_travel_cost_adjusts_second_taxi_to_return_date_and_removes_redundant_rate(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_cost",
+            {
+                "comments": "Táxi",
+                "amountCurrencyIncVat": 350,
+                "rate": 350,
+                "date": "2026-03-17",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_id=555,
+                last_payment_type_id=9,
+                last_travel_expense_departure_date="2026-03-17",
+                last_travel_expense_return_date="2026-03-21",
+                last_cost_categories=[
+                    {"id": 11, "displayName": "Flyreise"},
+                    {"id": 12, "displayName": "Taxi"},
+                ],
+                travel_cost_count=1,
+                prompt_text="Registe uma despesa de viagem para Visita cliente Trondheim. A viagem durou 5 dias com ajudas de custo.",
+            ),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/cost", {
+            "travelExpense": {"id": 555},
+            "costCategory": {"id": 12},
+            "paymentType": {"id": 9},
+            "comments": "Táxi",
+            "amountCurrencyIncVat": 350,
+            "date": "2026-03-21",
         }))
 
     async def test_delete_travel_expense_by_email(self):

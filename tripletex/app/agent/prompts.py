@@ -165,7 +165,7 @@ Recipes:
 - On create_travel_expense, populate `travelDetails` explicitly:
   - set `purpose` from the trip title or stated purpose
   - set `destination` from the stated location when available
-  - set `isCompensationFromRates=true` when the task includes per diem, daily allowance, Tagegeld, or equivalent
+  - set `isCompensationFromRates=true` when the task includes per diem, daily allowance, Tagegeld, `ajudas de custo`, or equivalent
   - set `isForeignTravel=false` for Norwegian domestic trips
   - set `isDayTrip=false` for multi-day trips
 - Per diem body fields:
@@ -188,6 +188,7 @@ Recipes:
 - Use costCategory, not category.
 - Use comments, not description.
 - Use amountCurrencyIncVat, not rate.
+- If the task omits explicit expense dates, use the departure date for airfare and the return date for taxi unless the prompt says otherwise.
 
 11. Timesheet plus project invoice
 - Flow:

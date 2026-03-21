@@ -66,6 +66,7 @@ class EntityContext:
     last_activity_id: int | None = None
     last_rate_category_id: int | None = None
     last_cost_category_id: int | None = None
+    last_cost_categories: list[dict] | None = None
     last_payment_type_id: int | None = None
     last_hourly_rate_id: int | None = None
     last_dimension_index: int | None = None
@@ -82,6 +83,7 @@ class EntityContext:
     last_top_expense_analysis_key: str | None = None
     last_top_expense_analysis: dict | None = None
     next_project_activity_pair_index: int = 0
+    travel_cost_count: int = 0
     prompt_text: str | None = None
 
     def __post_init__(self):
@@ -95,6 +97,8 @@ class EntityContext:
             self.employee_ids = []
         if self.account_cache is None:
             self.account_cache = {}
+        if self.last_cost_categories is None:
+            self.last_cost_categories = []
         if self.project_start_dates is None:
             self.project_start_dates = {}
         if self.timesheet_hours_by_day is None:
@@ -221,6 +225,7 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         ctx.last_rate_category_id = first_id
     elif path.startswith("/travelExpense/costCategory"):
         ctx.last_cost_category_id = first_id
+        ctx.last_cost_categories = [item for item in values if isinstance(item, dict)]
     elif (
         path.startswith("/travelExpense/paymentType")
         or path.startswith("/invoice/paymentType")
@@ -1439,8 +1444,110 @@ def _prompt_mentions_per_diem(ctx: EntityContext | None) -> bool:
         "tagessatz",
         "daggodt",
         "diett",
+        "ajudadecusto",
+        "ajudasdecusto",
+        "taxadiaria",
+        "taxasdiarias",
     )
     return any(marker in normalized for marker in markers)
+
+
+def _classify_travel_cost_kind(value: str | None) -> str | None:
+    normalized = _normalize_occupation_name(value)
+    if not normalized:
+        return None
+    flight_markers = (
+        "flight",
+        "airfare",
+        "airticket",
+        "airticket",
+        "plane",
+        "fly",
+        "flug",
+        "bilhetedeaviao",
+        "billetdavion",
+        "flybillett",
+        "flyreise",
+        "boardingpass",
+    )
+    taxi_markers = ("taxi", "drosje", "cab", "uber")
+    if any(marker in normalized for marker in flight_markers):
+        return "flight"
+    if any(marker in normalized for marker in taxi_markers):
+        return "taxi"
+    return None
+
+
+def _travel_cost_category_text(category: dict) -> str:
+    account = category.get("account") or {}
+    parts = [
+        category.get("displayName"),
+        category.get("description"),
+        account.get("name"),
+        account.get("number"),
+    ]
+    return _normalize_occupation_name(" ".join(str(part) for part in parts if part not in (None, "")))
+
+
+def _select_travel_cost_category(categories: list[dict], comments: str | None) -> dict | None:
+    kind = _classify_travel_cost_kind(comments)
+    if kind is None:
+        return None
+    specific_markers = {
+        "flight": (
+            "flight",
+            "airfare",
+            "airticket",
+            "airticket",
+            "plane",
+            "fly",
+            "flug",
+            "flybillett",
+            "flyreise",
+        ),
+        "taxi": ("taxi", "drosje", "cab", "uber"),
+    }[kind]
+    generic_markers = ("transport", "reise", "travel")
+    best: tuple[int, dict] | None = None
+    for category in categories:
+        if not isinstance(category, dict) or category.get("id") is None:
+            continue
+        text = _travel_cost_category_text(category)
+        if not text:
+            continue
+        score = 0
+        if any(marker in text for marker in specific_markers):
+            score += 100
+        if any(marker in text for marker in generic_markers):
+            score += 20
+        if best is None or score > best[0]:
+            best = (score, category)
+    if best is None or best[0] <= 0:
+        return None
+    return best[1]
+
+
+def _prompt_has_explicit_calendar_date(ctx: EntityContext | None) -> bool:
+    text = ((ctx.prompt_text if ctx else None) or "").strip()
+    if not text:
+        return False
+    return bool(
+        re.search(r"\b\d{4}-\d{2}-\d{2}\b", text)
+        or re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", text)
+    )
+
+
+def _infer_default_travel_cost_date(args: dict, ctx: EntityContext | None) -> str | None:
+    if ctx is None:
+        return None
+    departure_date = ctx.last_travel_expense_departure_date
+    return_date = ctx.last_travel_expense_return_date
+    kind = _classify_travel_cost_kind(args.get("comments"))
+    if kind == "flight":
+        return departure_date
+    if kind == "taxi":
+        return return_date or departure_date
+    return None
 
 
 def _pick_per_diem_rate_category(
@@ -3080,6 +3187,7 @@ async def _execute(
             if ctx is not None:
                 ctx.last_travel_expense_departure_date = travel_details.get("departureDate")
                 ctx.last_travel_expense_return_date = travel_details.get("returnDate")
+                ctx.travel_cost_count = 0
                 logger.info(
                     "Tracked travel expense dates departure=%s return=%s for per diem resolution",
                     ctx.last_travel_expense_departure_date,
@@ -3149,13 +3257,54 @@ async def _execute(
         if "travelExpense" not in args and ctx and ctx.last_travel_expense_id:
             args["travelExpense"] = {"id": ctx.last_travel_expense_id}
             logger.info(f"Auto-injected travel expense id={ctx.last_travel_expense_id} into travel cost")
+        if "costCategory" not in args and ctx and ctx.last_cost_categories:
+            resolved_cost_category = _select_travel_cost_category(ctx.last_cost_categories, args.get("comments"))
+            if resolved_cost_category is not None:
+                args["costCategory"] = {"id": resolved_cost_category["id"]}
+                logger.info(
+                    "Resolved travel cost category id=%s from comments=%r",
+                    resolved_cost_category["id"],
+                    args.get("comments"),
+                )
         if "costCategory" not in args and ctx and ctx.last_cost_category_id:
             args["costCategory"] = {"id": ctx.last_cost_category_id}
             logger.info(f"Auto-injected cost category id={ctx.last_cost_category_id} into travel cost")
         if "paymentType" not in args and ctx and ctx.last_payment_type_id:
             args["paymentType"] = {"id": ctx.last_payment_type_id}
             logger.info(f"Auto-injected payment type id={ctx.last_payment_type_id} into travel cost")
-        return await client.post("/travelExpense/cost", json=args)
+        inferred_date = _infer_default_travel_cost_date(args, ctx)
+        if args.get("date") in (None, "") and inferred_date:
+            args["date"] = inferred_date
+            logger.info(
+                "Auto-inferred travel cost date=%s from comments=%r",
+                inferred_date,
+                args.get("comments"),
+            )
+        elif (
+            inferred_date
+            and ctx
+            and ctx.travel_cost_count > 0
+            and args.get("date") == ctx.last_travel_expense_departure_date
+            and inferred_date != args.get("date")
+            and not _prompt_has_explicit_calendar_date(ctx)
+            and _classify_travel_cost_kind(args.get("comments")) == "taxi"
+        ):
+            args["date"] = inferred_date
+            logger.info(
+                "Adjusted taxi travel cost date to return date=%s for multi-day trip without explicit expense dates",
+                inferred_date,
+            )
+        if (
+            args.get("amountCurrencyIncVat") not in (None, "")
+            and args.get("count") in (None, "", 1, 1.0)
+            and _coerce_number(args.get("rate")) == _coerce_number(args.get("amountCurrencyIncVat"))
+        ):
+            args.pop("rate", None)
+            logger.info("Removed redundant travel cost rate because amountCurrencyIncVat already specifies the amount")
+        result = await client.post("/travelExpense/cost", json=args)
+        if ctx is not None:
+            ctx.travel_cost_count += 1
+        return result
 
     if name == "create_project_activity":
         if (
