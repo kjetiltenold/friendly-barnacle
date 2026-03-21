@@ -262,6 +262,53 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             [("GET", "/product", {"productNumber": "PROJ-DESIGN-1450", "fields": "id,name,number"})],
         )
 
+    async def test_create_product_resolves_vat_type_from_percentage(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/vatType",
+                    (("fields", "id,name,percentage"), ("percentage", "15")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 5, "name": "Utgående mva middels sats", "percentage": 15.0},
+                        {"id": 52, "name": "Inngående mva middels sats", "percentage": 15.0},
+                    ],
+                },
+                (
+                    "/product",
+                    (("fields", "id,name,number"), ("productNumber", "4431")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_product",
+            {
+                "name": "Galletas de avena",
+                "number": "4431",
+                "priceExcludingVatCurrency": 41050,
+                "vatPercentage": 15,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/ledger/vatType", {"percentage": "15", "fields": "id,name,percentage"}),
+                ("GET", "/product", {"productNumber": "4431", "fields": "id,name,number"}),
+                ("POST", "/product", {
+                    "name": "Galletas de avena",
+                    "number": "4431",
+                    "priceExcludingVatCurrency": 41050,
+                    "vatType": {"id": 5},
+                }),
+            ],
+        )
+
     async def test_search_entity_blocks_unfiltered_searches(self):
         client = FakeTripletexClient()
 
@@ -503,6 +550,58 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                     "annualSalary": 480000.0,
                 }),
             ],
+        )
+
+    async def test_create_employment_details_fallback_resolves_prefixed_occupation_code(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/occupationCode",
+                    (("code", "3323"), ("count", 20), ("fields", "id,nameNO,code")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/employment/occupationCode",
+                    (("count", 200), ("fields", "id,nameNO,code")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 991, "code": "3323.01", "nameNO": "Kontormedarbeider"},
+                        {"id": 992, "code": "4110", "nameNO": "Kontorassistent"},
+                    ],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2813401"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employmentId": 2813401,
+                "date": "2026-07-06",
+                "annualSalary": 500000,
+                "percentageOfFullTimeEquivalent": 80,
+                "occupationCodeCode": "3323",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertIn(
+            ("POST", "/employee/employment/details", {
+                "employment": {"id": 2813401},
+                "date": "2026-07-06",
+                "employmentType": "ORDINARY",
+                "remunerationType": "MONTHLY_WAGE",
+                "workingHoursScheme": "NOT_SHIFT",
+                "occupationCode": {"id": 991},
+                "percentageOfFullTimeEquivalent": 80.0,
+                "annualSalary": 500000.0,
+            }),
+            client.calls,
         )
 
     async def test_tripletex_api_call_normalizes_raw_employment_details_post(self):

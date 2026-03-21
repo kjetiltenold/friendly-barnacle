@@ -285,6 +285,8 @@ BASE_TOOL_DEFINITIONS = [
             "priceExcludingVatCurrency": {"type": "number"},
             "priceIncludingVatCurrency": {"type": "number"},
             "vatType": {"type": "object", "description": "VAT type object, e.g. {\"id\": 3} for 25% MVA"},
+            "vatPercentage": {"type": "number", "description": "Convenience alias. The executor resolves this outgoing VAT percentage to vatType automatically."},
+            "vatRate": {"type": "number", "description": "Alias for vatPercentage."},
         },
         "required": ["name"],
     }),
@@ -767,6 +769,84 @@ def _normalize_identifier(value: str | None) -> str | None:
     return normalized or None
 
 
+def _normalize_code_text(value: str | int | None) -> str:
+    if value in (None, ""):
+        return ""
+    return re.sub(r"[^0-9A-Za-z]+", "", str(value)).upper()
+
+
+def _normalize_percentage(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _vat_direction_from_name(name: str) -> str:
+    normalized = str(name or "").lower()
+    return "incoming" if ("inng" in normalized or "incoming" in normalized) else "outgoing"
+
+
+async def _resolve_vat_type(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+    percentage,
+    direction: str = "outgoing",
+) -> dict | None:
+    normalized_percentage = _normalize_percentage(percentage)
+    if normalized_percentage is None:
+        return None
+    if ctx and ctx.vat_type_cache:
+        cached_id = ctx.vat_type_cache.get((normalized_percentage, direction))
+        if cached_id is not None:
+            return {"id": cached_id}
+    try:
+        result = await client.get("/ledger/vatType", params={
+            "percentage": str(int(normalized_percentage) if normalized_percentage.is_integer() else normalized_percentage),
+            "fields": "id,name,percentage",
+        })
+        _track_lookup_context(ctx, "/ledger/vatType", result)
+        values = result.get("values", [])
+        candidates = []
+        for item in values:
+            item_percentage = _normalize_percentage(item.get("percentage"))
+            if item.get("id") is None or item_percentage != normalized_percentage:
+                continue
+            item_direction = _vat_direction_from_name(item.get("name", ""))
+            candidates.append((item_direction == direction, item))
+        if candidates:
+            candidates.sort(key=lambda pair: pair[0], reverse=True)
+            return {"id": candidates[0][1]["id"]}
+    except Exception as e:
+        logger.warning(f"Failed to resolve VAT type for {normalized_percentage}% ({direction}): {e}")
+    return None
+
+
+def _pick_occupation_code(values: list[dict], raw_code: str | int | None) -> dict | None:
+    normalized_requested = _normalize_code_text(raw_code)
+    if not normalized_requested:
+        return None
+    exact_matches = []
+    prefix_matches = []
+    for item in values:
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        normalized_candidate = _normalize_code_text(item.get("code"))
+        if not normalized_candidate:
+            continue
+        if normalized_candidate == normalized_requested:
+            exact_matches.append(item)
+        elif normalized_candidate.startswith(normalized_requested) or normalized_requested.startswith(normalized_candidate):
+            prefix_matches.append(item)
+    if exact_matches:
+        return exact_matches[0]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    return None
+
+
 def _get_cached_account(ctx: EntityContext | None, posting: dict | None) -> dict | None:
     if ctx is None or not ctx.account_cache or not isinstance(posting, dict):
         return None
@@ -995,10 +1075,17 @@ async def _resolve_occupation_code(client: TripletexClient, args: dict):
                 "count": 20,
             })
             values = result.get("values", [])
-            normalized_code = str(occupation_code_code).strip()
-            for item in values:
-                if str(item.get("code", "")).strip() == normalized_code and item.get("id") is not None:
-                    return {"id": item["id"]}
+            match = _pick_occupation_code(values, occupation_code_code)
+            if match is not None:
+                return {"id": match["id"]}
+            if not values:
+                fallback_result = await client.get("/employee/employment/occupationCode", params={
+                    "fields": "id,nameNO,code",
+                    "count": 200,
+                })
+                fallback_match = _pick_occupation_code(fallback_result.get("values", []), occupation_code_code)
+                if fallback_match is not None:
+                    return {"id": fallback_match["id"]}
             if values and values[0].get("id") is not None:
                 return {"id": values[0]["id"]}
         except Exception as e:
@@ -1295,6 +1382,17 @@ async def _execute(
 
     if name == "create_product":
         product_number = args.get("number")
+        vat_percentage = args.pop("vatPercentage", None)
+        if vat_percentage is None:
+            vat_percentage = args.pop("vatRate", None)
+        if "vatType" not in args and vat_percentage not in (None, ""):
+            resolved_vat_type = await _resolve_vat_type(client, ctx, vat_percentage, direction="outgoing")
+            if resolved_vat_type is not None:
+                args["vatType"] = resolved_vat_type
+                logger.info(f"Resolved product vatType from {vat_percentage}% to id={resolved_vat_type['id']}")
+        elif "vatType" not in args and ctx and ctx.last_vat_type_id:
+            args["vatType"] = {"id": ctx.last_vat_type_id}
+            logger.info(f"Auto-injected last vatType id={ctx.last_vat_type_id} into product")
         # Search first if product number given — avoids 422 error on conflict
         if product_number:
             try:

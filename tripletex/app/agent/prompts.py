@@ -64,6 +64,7 @@ Recipes:
 - workingHoursScheme is the enum value such as NOT_SHIFT, not a numeric ID.
 - For ordinary employee contracts, use employmentType ORDINARY unless the document clearly says something else.
 - If the contract contains a stillingskode or occupation code, pass it to create_employment_details as occupationCodeCode. If the contract contains only a role title, pass occupationCodeName. The tool resolves it to the correct occupationCode id.
+- Only include email when a literal email address is present in the prompt or the attached document. If the document does not explicitly contain an email address, omit email and use userType NO_ACCESS. Do not synthesize placeholder addresses such as example.org, example.com, or example.net.
 - If the contract includes personnummer or fødselsnummer, pass it as nationalIdentityNumber on create_employee. Use dnumber only when the document explicitly indicates a D-number.
 
 2. Create customer or supplier
@@ -75,6 +76,7 @@ Recipes:
 3. Create product
 - Use create_product directly.
 - If the prompt gives a product number, include it. The tool searches first by product number and reuses the product if it already exists.
+- If the task specifies a VAT rate, do not leave the product on the default VAT type. Either look up GET /ledger/vatType with percentage and use vatType, or pass vatPercentage to create_product so the executor resolves the correct outgoing VAT type automatically.
 
 4. Create customer invoice or order->invoice flow
 - Standard flow:
