@@ -60,6 +60,15 @@ class ModelParameters:
 
 
 @dataclass(slots=True)
+class RoundLatentProfile:
+    expansion_bias: float = 0.0
+    port_bias: float = 0.0
+    collapse_bias: float = 0.0
+    forest_bias: float = 0.0
+    certainty: float = 0.0
+
+
+@dataclass(slots=True)
 class LearnedTables:
     global_counts: FloatGrid
     code_counts: dict[str, FloatGrid]
@@ -270,6 +279,121 @@ def build_prior(state: InitialState) -> FloatGrid:
     return normalize_probabilities(prior)
 
 
+def clip_factor(value: float, *, minimum: float = 0.4, maximum: float = 1.9) -> float:
+    return float(np.clip(value, minimum, maximum))
+
+
+def adjust_distribution_for_profile(
+    distribution: FloatGrid,
+    feature_maps: SeedFeatureMaps,
+    y: int,
+    x: int,
+    profile: RoundLatentProfile,
+) -> FloatGrid:
+    if profile.certainty <= 0.0:
+        return distribution
+
+    code = int(feature_maps.initial_grid[y, x])
+    coastal = bool(feature_maps.coastal_mask[y, x])
+
+    factors = np.ones(6, dtype=float)
+    expansion_factor = clip_factor(1.0 + (0.55 * profile.expansion_bias))
+    collapse_factor = clip_factor(1.0 + (0.65 * profile.collapse_bias))
+    forest_factor = clip_factor(1.0 + (0.50 * profile.forest_bias))
+    port_factor = clip_factor(1.0 + (0.65 * profile.port_bias * (1.0 if coastal else 0.25)))
+    empty_factor = clip_factor(
+        1.0
+        - (0.30 * profile.expansion_bias)
+        - (0.25 * profile.collapse_bias)
+        - (0.18 * profile.forest_bias),
+        minimum=0.35,
+        maximum=1.8,
+    )
+
+    if code in BUILDABLE_CODES:
+        factors[0] *= empty_factor
+        factors[1] *= expansion_factor
+        factors[2] *= port_factor
+        factors[3] *= collapse_factor
+        factors[4] *= forest_factor
+    elif code == 4:
+        factors[4] *= forest_factor
+        factors[1] *= clip_factor(1.0 + (0.20 * profile.expansion_bias))
+        factors[3] *= clip_factor(1.0 + (0.20 * profile.collapse_bias))
+    elif code == 3:
+        factors[1] *= clip_factor(1.0 + (0.25 * profile.expansion_bias))
+        factors[2] *= clip_factor(1.0 + (0.30 * profile.port_bias * (1.0 if coastal else 0.2)))
+        factors[3] *= collapse_factor
+        factors[4] *= forest_factor
+        factors[0] *= empty_factor
+    elif code == 1:
+        factors[1] *= expansion_factor
+        factors[2] *= clip_factor(1.0 + (0.35 * profile.port_bias * (1.0 if coastal else 0.25)))
+        factors[3] *= clip_factor(1.0 + (0.30 * profile.collapse_bias))
+    elif code == 2:
+        factors[1] *= clip_factor(1.0 + (0.20 * profile.expansion_bias))
+        factors[2] *= port_factor
+        factors[3] *= clip_factor(1.0 + (0.30 * profile.collapse_bias))
+
+    return normalize_probabilities(distribution * factors)
+
+
+def infer_round_latent_profile(
+    detail: RoundDetail,
+    observations: list[SimulationResult],
+    feature_maps_by_seed: dict[int, SeedFeatureMaps] | None = None,
+) -> RoundLatentProfile:
+    if not observations:
+        return RoundLatentProfile()
+
+    feature_maps_lookup = feature_maps_by_seed or build_feature_maps_for_round(detail)
+    observed_total = np.zeros(6, dtype=float)
+    expected_total = np.zeros(6, dtype=float)
+    coastal_observed_port = 0.0
+    coastal_expected_port = 0.0
+    reclaim_observed_forest = 0.0
+    reclaim_expected_forest = 0.0
+    observed_cells = 0
+
+    for observation in observations:
+        feature_maps = feature_maps_lookup[observation.seed_index]
+        class_grid = internal_to_class_grid(np.array(observation.grid, dtype=int))
+        for local_y in range(observation.viewport.h):
+            for local_x in range(observation.viewport.w):
+                world_y = observation.viewport.y + local_y
+                world_x = observation.viewport.x + local_x
+                observed_class = int(class_grid[local_y, local_x])
+                observed_total[observed_class] += 1.0
+                expected = base_distribution_for_cell(feature_maps, world_y, world_x)
+                expected_total += expected
+                observed_cells += 1
+
+                if feature_maps.coastal_mask[world_y, world_x]:
+                    coastal_observed_port += 1.0 if observed_class == 2 else 0.0
+                    coastal_expected_port += float(expected[2])
+
+                if int(feature_maps.initial_grid[world_y, world_x]) in BUILDABLE_CODES | {3}:
+                    reclaim_observed_forest += 1.0 if observed_class == 4 else 0.0
+                    reclaim_expected_forest += float(expected[4])
+
+    if observed_cells == 0:
+        return RoundLatentProfile()
+
+    live_delta = ((observed_total[1] + observed_total[2]) - (expected_total[1] + expected_total[2])) / observed_cells
+    ruin_delta = (observed_total[3] - expected_total[3]) / observed_cells
+    forest_delta = (reclaim_observed_forest - reclaim_expected_forest) / max(1.0, reclaim_expected_forest + 1.0)
+    port_delta = (coastal_observed_port - coastal_expected_port) / max(1.0, coastal_expected_port + 1.0)
+    certainty = float(np.clip((observed_cells / 1200.0) + (len(observations) / 25.0), 0.0, 1.0))
+
+    return RoundLatentProfile(
+        expansion_bias=float(np.tanh(8.0 * live_delta) * certainty),
+        port_bias=float(np.tanh(5.0 * port_delta) * certainty),
+        collapse_bias=float(np.tanh(10.0 * ruin_delta) * certainty),
+        forest_bias=float(np.tanh(4.0 * forest_delta) * certainty),
+        certainty=certainty,
+    )
+
+
 def feature_keys(feature_maps: SeedFeatureMaps, y: int, x: int) -> tuple[str, str, str, str]:
     code = int(feature_maps.initial_grid[y, x])
     coastal = int(feature_maps.coastal_mask[y, x])
@@ -454,15 +578,26 @@ def build_seed_prediction(
     feature_maps_by_seed: dict[int, SeedFeatureMaps] | None = None,
     tables: LearnedTables | None = None,
     params: ModelParameters | None = None,
+    latent_profile: RoundLatentProfile | None = None,
 ) -> PredictionPreview:
     model_params = params or ModelParameters()
     feature_maps_lookup = feature_maps_by_seed or build_feature_maps_for_round(detail)
     feature_maps = feature_maps_lookup[seed_index]
+    round_profile = latent_profile or infer_round_latent_profile(detail, observations, feature_maps_lookup)
     prior = normalize_probabilities(
         np.stack(
             [
                 np.stack(
-                    [base_distribution_for_cell(feature_maps, y, x) for x in range(detail.map_width)],
+                    [
+                        adjust_distribution_for_profile(
+                            base_distribution_for_cell(feature_maps, y, x),
+                            feature_maps,
+                            y,
+                            x,
+                            round_profile,
+                        )
+                        for x in range(detail.map_width)
+                    ],
                     axis=0,
                 )
                 for y in range(detail.map_height)
@@ -508,6 +643,7 @@ def build_all_predictions(
     model_params = params or ModelParameters()
     feature_maps_by_seed = build_feature_maps_for_round(detail)
     tables = build_feature_model(detail, observations, feature_maps_by_seed)
+    latent_profile = infer_round_latent_profile(detail, observations, feature_maps_by_seed)
     predictions: dict[int, PredictionPreview] = {}
 
     for seed_index in range(detail.seeds_count):
@@ -519,6 +655,7 @@ def build_all_predictions(
             feature_maps_by_seed=feature_maps_by_seed,
             tables=tables,
             params=model_params,
+            latent_profile=latent_profile,
         )
 
     return predictions

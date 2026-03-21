@@ -9,6 +9,7 @@ import numpy as np
 from .api import AstarIslandClient
 from .baseline import ModelParameters, PredictionPreview, build_all_predictions
 from .cache import CacheStore
+from .historical import HistoricalSignalPrior, estimate_historical_signal_for_round
 from .types import RoundDetail, SimulationResult
 
 PlannerStage = Literal["explore", "infer", "exploit"]
@@ -104,15 +105,36 @@ def rect_sum(integral: np.ndarray, x: int, y: int, w: int, h: int) -> float:
     return float(integral[y2, x2] - integral[y, x2] - integral[y2, x] + integral[y, x])
 
 
-def score_cells(preview: PredictionPreview) -> tuple[np.ndarray, np.ndarray]:
+def score_cells(
+    preview: PredictionPreview,
+    *,
+    entropy_grid: np.ndarray | None = None,
+    dynamic_grid: np.ndarray | None = None,
+    historical_entropy_grid: np.ndarray | None = None,
+    historical_dynamic_grid: np.ndarray | None = None,
+    historical_support_grid: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    planning_entropy = preview.entropy_grid if entropy_grid is None else entropy_grid
+    planning_dynamic = preview.dynamic_grid if dynamic_grid is None else dynamic_grid
     novelty = 1.0 / np.sqrt(1.0 + preview.support_grid)
     observation_discount = np.where(
         preview.coverage_mask,
         0.35 / (1.0 + preview.sample_count_grid),
         1.0,
     )
-    uncertainty = preview.entropy_grid * (0.25 + preview.dynamic_grid)
+    uncertainty = planning_entropy * (0.25 + planning_dynamic)
     cell_scores = uncertainty * (0.55 + (0.45 * novelty)) * observation_discount
+
+    if (
+        historical_entropy_grid is not None
+        and historical_dynamic_grid is not None
+        and historical_support_grid is not None
+    ):
+        historical_uncertainty = historical_entropy_grid * (0.25 + historical_dynamic_grid)
+        historical_weight = np.clip(historical_support_grid / 3.0, 0.0, 0.85)
+        historical_scores = historical_uncertainty * (0.75 + (0.25 * novelty)) * observation_discount
+        cell_scores = ((1.0 - historical_weight) * cell_scores) + (historical_weight * historical_scores)
+
     return cell_scores, novelty
 
 
@@ -179,6 +201,7 @@ def plan_query_batch(
     viewport_h: int = 15,
     seed_indices: list[int] | None = None,
     params: ModelParameters | None = None,
+    historical_prior: HistoricalSignalPrior | None = None,
     stage: PlannerStage = "infer",
 ) -> list[PlannedQuery]:
     if count <= 0:
@@ -187,6 +210,11 @@ def plan_query_batch(
     profile = STAGE_PROFILES[stage]
     candidate_seeds = seed_indices or list(range(detail.seeds_count))
     predictions = build_all_predictions(detail, observations, params=params)
+    historical_signals = (
+        estimate_historical_signal_for_round(detail, historical_prior)
+        if historical_prior is not None
+        else {}
+    )
     seed_priority = seed_priority_map(predictions, candidate_seeds)
 
     candidates: list[PlannedQuery] = []
@@ -197,10 +225,28 @@ def plan_query_batch(
 
     for seed_index in candidate_seeds:
         preview = predictions[seed_index]
-        cell_scores, novelty = score_cells(preview)
+        planning_entropy = preview.entropy_grid
+        planning_dynamic = preview.dynamic_grid
+        historical_entropy = None
+        historical_dynamic = None
+        historical_support = None
+        if seed_index in historical_signals:
+            historical_entropy, historical_dynamic, historical_support = historical_signals[seed_index]
+            blend = np.clip(historical_support / 4.0, 0.0, 0.65)
+            planning_entropy = ((1.0 - blend) * planning_entropy) + (blend * historical_entropy)
+            planning_dynamic = ((1.0 - blend) * planning_dynamic) + (blend * historical_dynamic)
+
+        cell_scores, novelty = score_cells(
+            preview,
+            entropy_grid=planning_entropy,
+            dynamic_grid=planning_dynamic,
+            historical_entropy_grid=historical_entropy,
+            historical_dynamic_grid=historical_dynamic,
+            historical_support_grid=historical_support,
+        )
         score_integral = integral_image(cell_scores)
-        entropy_integral = integral_image(preview.entropy_grid)
-        dynamic_integral = integral_image(preview.dynamic_grid)
+        entropy_integral = integral_image(planning_entropy)
+        dynamic_integral = integral_image(planning_dynamic)
         uncovered_integral = integral_image((~preview.coverage_mask).astype(float))
         novelty_integral = integral_image(novelty)
 
@@ -355,6 +401,7 @@ def run_iterative_autopilot(
     replan_every: int = 5,
     pause_seconds: float = 0.25,
     params: ModelParameters | None = None,
+    historical_prior: HistoricalSignalPrior | None = None,
 ) -> AutopilotRun:
     remaining = max(0, total_queries)
     existing_queries = len(cache.load_observations(round_id))
@@ -377,6 +424,7 @@ def run_iterative_autopilot(
             viewport_h=viewport_h,
             seed_indices=seed_indices,
             params=params,
+            historical_prior=historical_prior,
             stage=stage,
         )
         if not batch_plan:

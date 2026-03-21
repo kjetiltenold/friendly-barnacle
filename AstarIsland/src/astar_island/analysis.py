@@ -4,7 +4,10 @@ from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 
+from .api import AstarIslandClient
 from .baseline import MIN_PROBABILITY_FLOOR, ModelParameters, build_all_predictions
+from .cache import CacheStore
+from .historical import build_historical_signal_prior
 from .types import RoundAnalysis, RoundDetail, SimulationResult
 
 
@@ -23,6 +26,8 @@ class SeedEvaluation:
     observation_count: int
     weighted_kl: float
     model_score: float
+    submitted_weighted_kl: float | None
+    submitted_score: float | None
     official_score: float | None
 
 
@@ -32,7 +37,19 @@ class RoundEvaluation:
     round_number: int
     seed_evaluations: list[SeedEvaluation]
     average_model_score: float
+    average_submitted_score: float | None
     average_official_score: float | None
+
+
+@dataclass(slots=True)
+class PreflightResult:
+    synced_rounds: list[dict[str, int | str]]
+    case_count: int
+    before_score: float | None
+    after_score: float | None
+    improved: bool
+    saved_params: bool
+    report_path: str | None = None
 
 
 def prediction_score(ground_truth: np.ndarray, prediction: np.ndarray) -> tuple[float, float]:
@@ -62,6 +79,10 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
         predicted = np.array(predictions[seed_index].prediction, dtype=float)
         ground_truth = np.array(analysis.ground_truth, dtype=float)
         weighted_kl, model_score = prediction_score(ground_truth, predicted)
+        submitted_weighted_kl, submitted_score = prediction_score(
+            ground_truth,
+            np.array(analysis.prediction, dtype=float),
+        )
         observation_count = sum(1 for observation in case.observations if observation.seed_index == seed_index)
         seed_evaluations.append(
             SeedEvaluation(
@@ -69,11 +90,15 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
                 observation_count=observation_count,
                 weighted_kl=weighted_kl,
                 model_score=model_score,
+                submitted_weighted_kl=submitted_weighted_kl,
+                submitted_score=submitted_score,
                 official_score=analysis.score,
             )
         )
 
     average_model_score = float(np.mean([item.model_score for item in seed_evaluations])) if seed_evaluations else 0.0
+    submitted_scores = [item.submitted_score for item in seed_evaluations if item.submitted_score is not None]
+    average_submitted_score = float(np.mean(submitted_scores)) if submitted_scores else None
     official_scores = [item.official_score for item in seed_evaluations if item.official_score is not None]
     average_official_score = float(np.mean(official_scores)) if official_scores else None
     return RoundEvaluation(
@@ -81,6 +106,7 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
         round_number=case.round_number,
         seed_evaluations=seed_evaluations,
         average_model_score=average_model_score,
+        average_submitted_score=average_submitted_score,
         average_official_score=average_official_score,
     )
 
@@ -163,9 +189,160 @@ def evaluation_report(evaluations: list[RoundEvaluation], params: ModelParameter
                 "round_id": evaluation.round_id,
                 "round_number": evaluation.round_number,
                 "average_model_score": evaluation.average_model_score,
+                "average_submitted_score": evaluation.average_submitted_score,
                 "average_official_score": evaluation.average_official_score,
                 "seeds": [asdict(seed_eval) for seed_eval in evaluation.seed_evaluations],
             }
             for evaluation in evaluations
         ],
     }
+
+
+def load_cached_evaluation_cases(
+    client: AstarIslandClient,
+    cache: CacheStore,
+    *,
+    round_ids: list[str] | None = None,
+    completed_only: bool = True,
+) -> list[EvaluationCase]:
+    candidate_ids = round_ids
+    if candidate_ids is None:
+        rounds = client.get_my_rounds()
+        candidate_ids = [
+            round_item.id
+            for round_item in rounds
+            if (round_item.status == "completed" if completed_only else True)
+        ]
+
+    cases: list[EvaluationCase] = []
+    for round_id in candidate_ids:
+        detail = cache.load_round_detail(round_id)
+        analyses = cache.load_all_round_analyses(round_id)
+        observations = cache.load_observations(round_id)
+        if detail is None or not analyses or not observations:
+            continue
+        cases.append(
+            EvaluationCase(
+                round_id=round_id,
+                round_number=detail.round_number,
+                detail=detail,
+                observations=observations,
+                analyses=analyses,
+            )
+        )
+    return cases
+
+
+def sync_completed_analyses(
+    client: AstarIslandClient,
+    cache: CacheStore,
+    *,
+    round_ids: list[str] | None = None,
+    include_non_completed: bool = False,
+    refresh: bool = False,
+) -> list[dict[str, int | str]]:
+    requested_ids = round_ids
+
+    if requested_ids is None:
+        rounds = client.get_my_rounds()
+        selected_rounds = [
+            round_item
+            for round_item in rounds
+            if (round_item.status == "completed" if not include_non_completed else True)
+        ]
+        candidate_ids = [round_item.id for round_item in selected_rounds]
+    else:
+        candidate_ids = requested_ids
+
+    synced: list[dict[str, int | str]] = []
+    for round_id in candidate_ids:
+        detail = cache.load_round_detail(round_id)
+        if detail is None or refresh:
+            detail = client.get_round_detail(round_id)
+            cache.save_round_detail(detail)
+
+        synced_seed_count = 0
+        for seed_index in range(detail.seeds_count):
+            if not refresh and cache.load_round_analysis(round_id, seed_index) is not None:
+                continue
+            analysis = client.get_round_analysis(round_id=round_id, seed_index=seed_index)
+            cache.save_round_analysis(round_id, seed_index, analysis)
+            synced_seed_count += 1
+
+        if synced_seed_count > 0 or refresh:
+            synced.append(
+                {
+                    "round_id": round_id,
+                    "round_number": detail.round_number,
+                    "seeds_count": detail.seeds_count,
+                    "synced_seed_count": synced_seed_count,
+                }
+            )
+    return synced
+
+
+def run_training_preflight(
+    client: AstarIslandClient,
+    cache: CacheStore,
+    *,
+    passes: int = 1,
+    round_ids: list[str] | None = None,
+    include_non_completed: bool = False,
+    refresh: bool = False,
+) -> PreflightResult:
+    synced_rounds = sync_completed_analyses(
+        client,
+        cache,
+        round_ids=round_ids,
+        include_non_completed=include_non_completed,
+        refresh=refresh,
+    )
+    cases = load_cached_evaluation_cases(
+        client,
+        cache,
+        round_ids=round_ids,
+        completed_only=not include_non_completed,
+    )
+    if not cases:
+        return PreflightResult(
+            synced_rounds=synced_rounds,
+            case_count=0,
+            before_score=None,
+            after_score=None,
+            improved=False,
+            saved_params=False,
+        )
+
+    current_params = cache.load_model_parameters() or ModelParameters()
+    before_score = mean_model_score(cases, current_params)
+    best_params, best_score, history = coordinate_search(cases, start=current_params, passes=passes)
+    improved = best_score >= before_score
+    saved_params = False
+    if improved:
+        cache.save_model_parameters(best_params)
+        saved_params = True
+
+    evaluations = evaluate_cases(cases, best_params if improved else current_params)
+    historical_prior = build_historical_signal_prior(
+        [(case.detail, case.analyses) for case in cases]
+    )
+    cache.save_historical_signal_prior(historical_prior)
+    report = evaluation_report(evaluations, best_params if improved else current_params)
+    report["preflight"] = {
+        "before_score": before_score,
+        "after_score": best_score,
+        "improved": improved,
+        "history": history,
+        "synced_rounds": synced_rounds,
+        "case_count": len(cases),
+    }
+    report_path = str(cache.save_report("preflight", report))
+    return PreflightResult(
+        synced_rounds=synced_rounds,
+        case_count=len(cases),
+        before_score=before_score,
+        after_score=best_score,
+        improved=improved,
+        saved_params=saved_params,
+        report_path=report_path,
+    )

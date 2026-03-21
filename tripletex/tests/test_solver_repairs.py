@@ -1,0 +1,744 @@
+import json
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.agent.solver import (
+    TerminalTripletexProxyTokenError,
+    _build_context_prompt_text,
+    _build_incomplete_task_reminder,
+    _build_user_content,
+    _compress_messages,
+    _execute_tool_calls,
+    _is_terminal_tripletex_proxy_token_error_message,
+    _prompt_likely_requires_writes,
+    _prime_context,
+    _should_retry_text_only_response,
+)
+from app.agent.prompts import get_system_prompt
+from app.agent.tools import EntityContext
+from app.models import FileAttachment, SolveRequest, TripletexCredentials
+
+
+class FakeTripletexClient:
+    def __init__(self, get_responses=None):
+        self.get_responses = get_responses or {}
+        self.calls = []
+
+    async def get(self, path, params=None):
+        self.calls.append(("GET", path, params))
+        key = (path, tuple(sorted((params or {}).items())))
+        return self.get_responses.get(key, {"fullResultSize": 0, "values": []})
+
+
+def _tool_call(tool_call_id: str, name: str, arguments: dict):
+    return SimpleNamespace(
+        id=tool_call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prime_context_prefetches_department_read_only(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/department",
+                    (("count", 1), ("fields", "id,name")),
+                ): {"fullResultSize": 1, "values": [{"id": 55, "name": "Salg"}]},
+            }
+        )
+        ctx = EntityContext()
+
+        await _prime_context(client, ctx)
+
+        self.assertEqual(ctx.last_department_id, 55)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/department", {"fields": "id,name", "count": 1})],
+        )
+
+    async def test_prime_context_stops_on_invalid_proxy_token(self):
+        class FailingClient(FakeTripletexClient):
+            async def get(self, path, params=None):
+                self.calls.append(("GET", path, params))
+                raise RuntimeError(
+                    '403 Forbidden: {"error":"Invalid or expired proxy token. Each submission receives a unique token - do not reuse tokens from previous submissions.","source":"nmiai-proxy"}'
+                )
+
+        client = FailingClient()
+        ctx = EntityContext()
+
+        with self.assertRaises(TerminalTripletexProxyTokenError):
+            await _prime_context(client, ctx)
+
+        self.assertEqual(
+            client.calls,
+            [("GET", "/department", {"fields": "id,name", "count": 1})],
+        )
+
+    async def test_execute_tool_calls_runs_in_order_with_shared_context(self):
+        ctx = EntityContext()
+        observed_customer_ids = []
+
+        async def fake_dispatch_tool(tx, name, args_json, endpoint_search=None, ctx=None):
+            if name == "create_customer":
+                ctx.last_customer_id = 123
+                return json.dumps({"value": {"id": 123}})
+            if name == "create_order":
+                observed_customer_ids.append(ctx.last_customer_id)
+                return json.dumps({"value": {"id": 456, "customer": {"id": ctx.last_customer_id}}})
+            raise AssertionError(f"Unexpected tool {name}")
+
+        tool_calls = [
+            _tool_call("tc1", "create_customer", {"name": "Acme"}),
+            _tool_call("tc2", "create_order", {"orderDate": "2026-03-21"}),
+        ]
+
+        with patch("app.agent.solver.dispatch_tool", side_effect=fake_dispatch_tool):
+            messages = await _execute_tool_calls(FakeTripletexClient(), tool_calls, None, ctx)
+
+        self.assertEqual(observed_customer_ids, [123])
+        self.assertEqual(
+            messages,
+            [
+                {"role": "tool", "tool_call_id": "tc1", "content": json.dumps({"value": {"id": 123}})},
+                {"role": "tool", "tool_call_id": "tc2", "content": json.dumps({"value": {"id": 456, "customer": {"id": 123}}})},
+            ],
+        )
+
+    async def test_execute_tool_calls_stops_on_invalid_proxy_token_error(self):
+        ctx = EntityContext()
+        seen_calls = []
+
+        async def fake_dispatch_tool(tx, name, args_json, endpoint_search=None, ctx=None):
+            seen_calls.append(name)
+            if name == "create_customer":
+                return json.dumps(
+                    {
+                        "error": '403 Forbidden: {"error":"Invalid or expired proxy token. Each submission receives a unique token - do not reuse tokens from previous submissions.","source":"nmiai-proxy"}'
+                    }
+                )
+            raise AssertionError("Subsequent tool calls should not run after a terminal proxy-token error")
+
+        tool_calls = [
+            _tool_call("tc1", "create_customer", {"name": "Acme"}),
+            _tool_call("tc2", "tripletex_api_call", {"method": "GET", "path": "/ledger/account?number=2400"}),
+        ]
+
+        with patch("app.agent.solver.dispatch_tool", side_effect=fake_dispatch_tool):
+            with self.assertRaises(TerminalTripletexProxyTokenError):
+                await _execute_tool_calls(FakeTripletexClient(), tool_calls, None, ctx)
+
+        self.assertEqual(seen_calls, ["create_customer"])
+
+    def test_terminal_tripletex_proxy_token_error_message_detection(self):
+        self.assertTrue(
+            _is_terminal_tripletex_proxy_token_error_message(
+                '403 Forbidden: {"error":"Invalid or expired proxy token. Each submission receives a unique token - do not reuse tokens from previous submissions.","source":"nmiai-proxy"}'
+            )
+        )
+        self.assertFalse(_is_terminal_tripletex_proxy_token_error_message("422 Validation failed"))
+
+    def test_compress_messages_keeps_lookup_payloads(self):
+        lookup_payload = json.dumps(
+            {
+                "values": [
+                    {
+                        "id": 10,
+                        "number": 7350,
+                        "name": "Representasjon",
+                        "vatLocked": True,
+                        "requiresDepartment": False,
+                        "isApplicableForSupplierInvoice": True,
+                    }
+                ],
+                "fullResultSize": 1,
+            },
+            ensure_ascii=False,
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "tool_call_id": "t1", "content": lookup_payload + (" " * 220)},
+            {"role": "assistant", "content": "next"},
+        ]
+
+        _compress_messages(messages, keep_recent=1)
+
+        self.assertIn('"vatLocked": true', messages[1]["content"])
+        self.assertIn('"requiresDepartment": false', messages[1]["content"])
+
+    def test_compress_messages_preserves_useful_nested_ids(self):
+        create_payload = json.dumps(
+            {
+                "value": {
+                    "id": 18619016,
+                    "firstName": "Marit",
+                    "lastName": "Lunde",
+                    "email": "marit.lunde@example.org",
+                    "department": {"id": 927020, "name": "Utvikling", "displayName": "Utvikling"},
+                    "employments": [{"id": 2813211, "startDate": "2026-07-25"}],
+                    "comments": "x" * 300,
+                }
+            },
+            ensure_ascii=False,
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "tool_call_id": "t1", "content": create_payload},
+            {"role": "assistant", "content": "next"},
+        ]
+
+        _compress_messages(messages, keep_recent=1)
+
+        compressed = json.loads(messages[1]["content"])
+        self.assertEqual(compressed["value"]["id"], 18619016)
+        self.assertEqual(compressed["value"]["department"]["id"], 927020)
+        self.assertEqual(compressed["value"]["employments"][0]["id"], 2813211)
+
+    def test_build_user_content_adds_attachment_source_of_truth_note(self):
+        request = SolveRequest(
+            prompt="Post this receipt correctly.",
+            files=[
+                FileAttachment(
+                    filename="receipt.txt",
+                    mime_type="text/plain",
+                    content_base64="VG9nYmlsbGV0dApOU0IKMTA5LDAwCg==",
+                )
+            ],
+            tripletex_credentials=TripletexCredentials(
+                base_url="https://example.invalid/v2",
+                session_token="token",
+            ),
+        )
+
+        content = _build_user_content(request)
+
+        self.assertIsInstance(content, str)
+        self.assertIn("Treat attached files as the source of truth", content)
+        self.assertIn("109,00 means 109.00", content)
+        self.assertIn("Do not translate literal supplier names, invoice titles, or line descriptions", content)
+        self.assertIn("inspect the image first", content)
+        self.assertIn("contracts, and offer letters", content)
+        self.assertIn("instead of deriving standard hours from FTE", content)
+
+    def test_build_user_content_preserves_multimodal_attachment_order(self):
+        request = SolveRequest(
+            prompt="Post this receipt correctly.",
+            files=[
+                FileAttachment(
+                    filename="receipt.pdf",
+                    mime_type="application/pdf",
+                    content_base64="cGRm",
+                )
+            ],
+            tripletex_credentials=TripletexCredentials(
+                base_url="https://example.invalid/v2",
+                session_token="token",
+            ),
+        )
+
+        with patch(
+            "app.agent.solver.process_attachments",
+            return_value=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U=",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "[Content from receipt.pdf]\n\nReceipt OCR text",
+                },
+            ],
+        ):
+            content = _build_user_content(request)
+
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0]["type"], "text")
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertEqual(content[2]["type"], "text")
+
+    def test_build_context_prompt_text_includes_attachment_ocr_without_generic_guidance(self):
+        request = SolveRequest(
+            prompt="Registrer bare Overnatting fra dette vedlegget.",
+            files=[
+                FileAttachment(
+                    filename="receipt.pdf",
+                    mime_type="application/pdf",
+                    content_base64="cGRm",
+                )
+            ],
+            tripletex_credentials=TripletexCredentials(
+                base_url="https://example.invalid/v2",
+                session_token="token",
+            ),
+        )
+
+        with patch(
+            "app.agent.solver.process_attachments",
+            return_value=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U=",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "[Content from receipt.pdf]\n\nOvernatting 4 200,00\nTotal 4 850,00",
+                },
+            ],
+        ):
+            context_text = _build_context_prompt_text(request)
+
+        self.assertIn("Registrer bare Overnatting", context_text)
+        self.assertIn("Overnatting 4 200,00", context_text)
+        self.assertNotIn("Treat attached files as the source of truth", context_text)
+
+    def test_should_retry_text_only_response_when_model_stops_without_done(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "Here are the top three accounts.",
+                "Analyze the increases and create a project for each.",
+                0,
+                0,
+            )
+        )
+
+    def test_should_retry_text_only_response_when_done_but_no_requested_writes_happened(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                "Crie um projeto interno para cada conta.",
+                0,
+                0,
+            )
+        )
+
+    def test_prompt_likely_requires_writes_handles_accented_french_create(self):
+        self.assertTrue(
+            _prompt_likely_requires_writes(
+                "Créez un projet interne pour chacun des trois comptes et créez aussi une activité."
+            )
+        )
+
+    def test_should_retry_text_only_response_when_done_after_french_analysis_but_no_writes(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                "Analysez le grand livre puis créez un projet interne pour chacun des trois comptes.",
+                0,
+                0,
+            )
+        )
+
+    def test_prompt_likely_requires_writes_handles_spanish_cree(self):
+        self.assertTrue(
+            _prompt_likely_requires_writes(
+                "Cree un proyecto interno para cada una de las tres cuentas y también cree una actividad."
+            )
+        )
+
+    def test_should_retry_text_only_response_when_done_after_spanish_analysis_but_no_writes(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Analice el libro mayor e identifique las tres cuentas de gastos con el mayor incremento en monto. "
+                    "Cree un proyecto interno para cada una de las tres cuentas con el nombre de la cuenta. "
+                    "También cree una actividad para cada proyecto."
+                ),
+                0,
+                0,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_done_after_writes(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                "Create a project and activity.",
+                2,
+                0,
+            )
+        )
+
+    def test_should_retry_text_only_response_for_top_expense_followup_until_projects_activities_and_links_exist(self):
+        ctx = EntityContext(
+            last_top_expense_analysis={
+                "topAccounts": [
+                    {"account": {"name": "Account 1"}},
+                    {"account": {"name": "Account 2"}},
+                    {"account": {"name": "Account 3"}},
+                ]
+            }
+        )
+        ctx.project_ids = [101, 102, 103]
+        ctx.activity_ids = [201]
+        ctx.linked_project_activity_pairs = {(101, 201)}
+
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Los costos totales aumentaron significativamente. "
+                    "Cree un proyecto interno para cada una de las tres cuentas con el nombre de la cuenta. "
+                    "Tambien cree una actividad para cada proyecto."
+                ),
+                3,
+                0,
+                ctx,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_for_top_expense_followup_after_all_writes_exist(self):
+        ctx = EntityContext(
+            last_top_expense_analysis={
+                "topAccounts": [
+                    {"account": {"name": "Account 1"}},
+                    {"account": {"name": "Account 2"}},
+                    {"account": {"name": "Account 3"}},
+                ]
+            }
+        )
+        ctx.project_ids = [101, 102, 103]
+        ctx.activity_ids = [201, 202, 203]
+        ctx.linked_project_activity_pairs = {(101, 201), (102, 202), (103, 203)}
+
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Los costos totales aumentaron significativamente. "
+                    "Cree un proyecto interno para cada una de las tres cuentas con el nombre de la cuenta. "
+                    "Tambien cree una actividad para cada proyecto."
+                ),
+                9,
+                0,
+                ctx,
+            )
+        )
+
+    def test_should_retry_text_only_response_for_offer_letter_onboarding_until_occupation_code_is_written(self):
+        prompt = (
+            "Du har motteke eit tilbodsbrev for ein ny tilsett. "
+            "Utfor komplett onboarding: opprett den tilsette, tilknytt rett avdeling, "
+            "set opp tilsetjingsforhold med stillingsprosent og arslonn, og konfigurer standard arbeidstid."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3728594,
+            last_employment_details_had_occupation_code=False,
+            last_standard_time_id=44176,
+        )
+
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                3,
+                0,
+                ctx,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_for_offer_letter_onboarding_when_occupation_code_was_written(self):
+        prompt = (
+            "Du har motteke eit tilbodsbrev for ein ny tilsett. "
+            "Utfor komplett onboarding: opprett den tilsette, tilknytt rett avdeling, "
+            "set opp tilsetjingsforhold med stillingsprosent og arslonn, og konfigurer standard arbeidstid."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3728594,
+            last_employment_details_had_occupation_code=True,
+            last_standard_time_id=44176,
+        )
+
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                3,
+                0,
+                ctx,
+            )
+        )
+
+    def test_build_incomplete_task_reminder_for_offer_letter_mentions_occupation_code(self):
+        prompt = (
+            "Du har motteke eit tilbodsbrev for ein ny tilsett. "
+            "Utfor komplett onboarding: opprett den tilsette, tilknytt rett avdeling, "
+            "set opp tilsetjingsforhold med stillingsprosent og arslonn, og konfigurer standard arbeidstid."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3728594,
+            last_employment_details_had_occupation_code=False,
+            last_standard_time_id=44176,
+        )
+
+        reminder = _build_incomplete_task_reminder(prompt, ctx)
+
+        self.assertIn("occupationCodeCode or occupationCodeName", reminder)
+        self.assertIn("required contract fields are registered", reminder)
+
+    def test_should_not_retry_text_only_response_for_contract_create_when_standard_time_was_not_requested(self):
+        prompt = (
+            "Vous avez recu un contrat de travail. Creez l'employe dans Tripletex avec tous les details du contrat : "
+            "numero d'identite nationale, date de naissance, departement, code de profession, salaire, "
+            "pourcentage d'emploi et date de debut."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3729075,
+            last_employment_details_had_occupation_code=True,
+            last_standard_time_id=None,
+        )
+
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                2,
+                0,
+                ctx,
+            )
+        )
+
+    def test_should_retry_text_only_response_when_invoice_payment_not_registered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                'O cliente Rio Azul Lda tem uma fatura pendente. Registe o pagamento total desta fatura.',
+                1,
+                0,
+                EntityContext(),
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_invoice_payment_was_registered(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                'O cliente Rio Azul Lda tem uma fatura pendente. Registe o pagamento total desta fatura.',
+                1,
+                0,
+                EntityContext(invoice_payment_action_count=1),
+            )
+        )
+
+    def test_should_retry_text_only_response_when_invoice_payment_reversal_not_registered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Betalinga frå Vestfjord AS for fakturaen vart returnert av banken. "
+                    "Reverser betalinga slik at fakturaen igjen viser utestaande belop."
+                ),
+                1,
+                0,
+                EntityContext(),
+            )
+        )
+
+    def test_should_retry_text_only_response_when_payroll_not_registered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                "Køyr løn for Brita Berge for denne månaden. Grunnlønn er 36800 kr. Legg til ein eingongsbonus på 14100 kr.",
+                2,
+                0,
+                EntityContext(last_employee_id=18614354, last_employment_id=2831689),
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_payroll_was_registered(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                "Køyr løn for Brita Berge for denne månaden. Grunnlønn er 36800 kr. Legg til ein eingongsbonus på 14100 kr.",
+                2,
+                0,
+                EntityContext(salary_transaction_action_count=1),
+            )
+        )
+
+    def test_build_incomplete_task_reminder_for_payroll_mentions_salary_transaction(self):
+        reminder = _build_incomplete_task_reminder(
+            "Exécutez la paie de Chloé Dubois pour ce mois. Ajoutez une prime unique.",
+            EntityContext(last_employee_id=18614205, last_employment_id=2817401),
+        )
+
+        self.assertIn("create_salary_transaction again", reminder)
+        self.assertIn("employment is linked to a division/business", reminder)
+
+    def test_should_not_retry_text_only_response_when_invoice_payment_reversal_was_registered(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Betalinga frå Vestfjord AS for fakturaen vart returnert av banken. "
+                    "Reverser betalinga slik at fakturaen igjen viser utestaande belop."
+                ),
+                1,
+                0,
+                EntityContext(reverse_voucher_action_count=1, last_reversed_voucher_id=608888217),
+            )
+        )
+
+    def test_prompt_likely_requires_writes_for_german_bank_reconciliation_payments(self):
+        self.assertTrue(
+            _prompt_likely_requires_writes(
+                "Gleichen Sie den Kontoauszug mit den offenen Rechnungen ab. "
+                "Ordnen Sie eingehende Zahlungen Kundenrechnungen und ausgehende Zahlungen Lieferantenrechnungen zu. "
+                "Behandeln Sie Teilzahlungen korrekt."
+            )
+        )
+
+    def test_should_retry_text_only_response_for_bank_reconciliation_until_both_payment_directions_written(self):
+        prompt = (
+            "Gleichen Sie den Kontoauszug mit den offenen Rechnungen ab. "
+            "Ordnen Sie eingehende Zahlungen Kundenrechnungen und ausgehende Zahlungen Lieferantenrechnungen zu. "
+            "Behandeln Sie Teilzahlungen korrekt."
+        )
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                1,
+                0,
+                EntityContext(customer_invoice_payment_action_count=1, supplier_invoice_payment_action_count=0),
+            )
+        )
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                2,
+                0,
+                EntityContext(customer_invoice_payment_action_count=1, supplier_invoice_payment_action_count=1),
+            )
+        )
+
+    def test_build_incomplete_task_reminder_for_bank_reconciliation_mentions_separate_payment_types(self):
+        prompt = (
+            "Reconcile the bank statement against open invoices in Tripletex. "
+            "Match incoming payments to customer invoices and outgoing payments to supplier invoices. "
+            "Handle partial payments correctly."
+        )
+        reminder = _build_incomplete_task_reminder(
+            prompt,
+            EntityContext(last_customer_payment_type_id=11, last_supplier_payment_type_id=22),
+        )
+
+        self.assertIn("customer paymentType id=11", reminder)
+        self.assertIn("supplier paymentType id=22", reminder)
+        self.assertIn("Do not reuse the outgoing supplier payment type on customer invoice payments", reminder)
+
+    def test_should_not_retry_text_only_response_after_two_reminders(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                "Create a project and activity.",
+                0,
+                2,
+            )
+        )
+
+    def test_system_prompt_includes_vat_correction_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("debiting the input VAT account such as `2710` and crediting the original expense account", prompt)
+        self.assertIn("Do not credit bank `1920`", prompt)
+        self.assertIn("correct only the difference between the wrong amount and the intended amount", prompt)
+        self.assertIn("correct exactly those stated errors", prompt)
+
+    def test_system_prompt_includes_foreign_currency_invoice_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("foreign-currency invoice", prompt)
+        self.assertIn("do not invent 25 percent VAT", prompt)
+        self.assertIn("debit the exchange-loss account such as `8160` and credit accounts receivable `1500`", prompt)
+
+    def test_system_prompt_includes_month_end_closing_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("Month-end closing", prompt)
+        self.assertIn("Do not mistake an amount like `4200 NOK` or `8300 NOK`", prompt)
+        self.assertIn("Post accrual reversal, depreciation, and salary accrual as separate vouchers", prompt)
+        self.assertIn("credit accumulated depreciation `1209`", prompt)
+        self.assertIn("reverse that full stated balance, not a monthly slice", prompt)
+
+    def test_system_prompt_includes_project_budget_and_timesheet_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("A project budget is not the same as a fixed-price project", prompt)
+        self.assertIn("budgetFeeCurrency", prompt)
+        self.assertIn("typically 7.5 or 8 hours per day, not 24-hour days", prompt)
+        self.assertIn("Do not collapse all hours onto the last created employee", prompt)
+        self.assertIn("derive the hourly rate as budget divided by total hours before invoicing", prompt)
+
+    def test_system_prompt_includes_fixed_price_milestone_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("Fixed-price project with milestone invoice", prompt)
+        self.assertIn("fixedprice: amount", prompt)
+        self.assertIn("create order lines for the milestone", prompt)
+
+    def test_system_prompt_includes_supplier_invoice_attachment_and_software_account_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("preserve the literal supplier name, organization number, invoice number, invoice date, and line description", prompt)
+        self.assertIn("Prefer account `6420`", prompt)
+        self.assertIn("Prefer account `6900`", prompt)
+        self.assertIn("supplier reference on the accounts-payable line only", prompt)
+
+    def test_system_prompt_includes_bank_reconciliation_supplier_payment_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("GET /ledger/paymentTypeOut", prompt)
+        self.assertIn("PUT /supplierInvoice/{invoice_id}/:addPayment with paymentDate, paymentType, and amount", prompt)
+        self.assertIn("amountOutstanding, not amountRemaining", prompt)
+        self.assertIn("On supplier-invoice fields filters, prefer amount", prompt)
+        self.assertIn("customer(name) or supplier(name)", prompt)
+        self.assertIn("inspect the page image carefully", prompt)
+
+    def test_system_prompt_includes_travel_per_diem_country_and_rate_category_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("for travel-expense tasks without explicit travel dates, prefer the next reasonable working-day window after 2026-03-21", prompt)
+        self.assertIn("For Norwegian domestic travel locations such as Tromsø", prompt)
+        self.assertIn("prefer omitting `countryCode=NO`", prompt)
+        self.assertIn("set `isCompensationFromRates=true`", prompt)
+        self.assertIn("`ajudas de custo`", prompt)
+        self.assertIn("retry once without the optional `countryCode` field", prompt)
+        self.assertIn("Do not blindly reuse the first `/travelExpense/rateCategory` result", prompt)
+        self.assertIn("use the departure date for airfare and the return date for taxi", prompt)
+
+    def test_system_prompt_includes_literal_contract_field_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("copy department, occupation code, salary, FTE, standard working hours, start date, birth date, and national identity number literally from the attachment", prompt)
+        self.assertIn("use those literal hours for create_standard_time instead of deriving hoursPerDay from FTE", prompt)
+        self.assertIn("do not infer or synthesize an email address from the employee name", prompt)
+
+    def test_system_prompt_includes_employee_access_default_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("Do not grant Tripletex access just because an email address is present", prompt)
+        self.assertIn("default to userType NO_ACCESS", prompt)
+
+    def test_system_prompt_includes_ledger_error_counterpart_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("inspect the original voucher/postings first to recover the real counterpart account", prompt)
+        self.assertIn("identify the duplicate voucher ID and use reverse_voucher", prompt)
+        self.assertIn("Do not guess balancing accounts such as `1920`, `2400`, `2050`, or `2990`", prompt)
+        self.assertIn("Do not request `postings(voucherNumber)`", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()

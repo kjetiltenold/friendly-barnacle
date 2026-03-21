@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from astar_island.analysis import EvaluationCase, coordinate_search, evaluate_case, prediction_score
+from astar_island.analysis import run_training_preflight
 from astar_island.baseline import ModelParameters, build_all_predictions
 from astar_island.cache import CacheStore
 from astar_island.types import InitialState, RoundAnalysis, RoundDetail, Settlement, SimulationResult, Viewport
@@ -74,7 +75,25 @@ class AnalysisTests(unittest.TestCase):
         case = make_case()
         evaluation = evaluate_case(case, ModelParameters())
         self.assertAlmostEqual(evaluation.average_model_score, 100.0, places=6)
+        self.assertAlmostEqual(evaluation.average_submitted_score or 0.0, 100.0, places=6)
         self.assertAlmostEqual(evaluation.average_official_score or 0.0, 100.0, places=6)
+
+    def test_evaluate_case_distinguishes_current_model_from_submitted_prediction(self) -> None:
+        case = make_case()
+        bad_prediction = np.full((4, 4, 6), 1.0 / 6.0, dtype=float).tolist()
+        case.analyses[0] = RoundAnalysis(
+            prediction=bad_prediction,
+            ground_truth=case.analyses[0].ground_truth,
+            score=12.34,
+            width=4,
+            height=4,
+            initial_grid=case.detail.initial_states[0].grid,
+        )
+
+        evaluation = evaluate_case(case, ModelParameters())
+        self.assertAlmostEqual(evaluation.average_model_score, 100.0, places=6)
+        self.assertLess(evaluation.average_submitted_score or 100.0, evaluation.average_model_score)
+        self.assertAlmostEqual(evaluation.average_official_score or 0.0, 12.34, places=6)
 
     def test_coordinate_search_runs_and_returns_parameters(self) -> None:
         case = make_case()
@@ -99,6 +118,35 @@ class AnalysisTests(unittest.TestCase):
             self.assertEqual(loaded_analysis.width if loaded_analysis else None, 4)
             self.assertIsNotNone(loaded_params)
             self.assertAlmostEqual((loaded_params or ModelParameters()).prior_weight, 3.0)
+
+    def test_training_preflight_syncs_and_saves_improved_params(self) -> None:
+        case = make_case()
+
+        class FakeRound:
+            def __init__(self) -> None:
+                self.id = case.round_id
+                self.status = "completed"
+
+        class FakeClient:
+            def get_my_rounds(self):
+                return [FakeRound()]
+
+            def get_round_detail(self, round_id: str):
+                return case.detail
+
+            def get_round_analysis(self, *, round_id: str, seed_index: int):
+                return case.analyses[seed_index]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = CacheStore(Path(tmpdir))
+            cache.save_round_detail(case.detail)
+            for observation in case.observations:
+                cache.append_observation(observation)
+            result = run_training_preflight(FakeClient(), cache, passes=1)
+            self.assertEqual(result.case_count, 1)
+            self.assertTrue(result.saved_params)
+            self.assertIsNotNone(cache.load_model_parameters())
+            self.assertIsNotNone(cache.load_historical_signal_prior())
 
 
 if __name__ == "__main__":

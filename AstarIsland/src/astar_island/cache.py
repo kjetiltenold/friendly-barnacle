@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .baseline import ModelParameters
+from .historical import HistoricalSignalPrior
 from .types import RoundAnalysis, RoundDetail, SimulationResult
 
 
@@ -110,6 +111,18 @@ class CacheStore:
             return None
         payload = json.loads(path.read_text())
         return ModelParameters(**payload)
+
+    def save_historical_signal_prior(self, prior: HistoricalSignalPrior) -> Path:
+        path = self.root / "historical_signal_prior.json"
+        path.write_text(json.dumps(asdict(prior), indent=2))
+        return path
+
+    def load_historical_signal_prior(self) -> HistoricalSignalPrior | None:
+        path = self.root / "historical_signal_prior.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text())
+        return HistoricalSignalPrior.from_dict(payload)
 
     def save_report(self, name: str, payload: dict[str, Any]) -> Path:
         reports_dir = self.root / "reports"
