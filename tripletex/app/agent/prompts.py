@@ -115,6 +115,7 @@ Recipes:
   - paymentDate
   - paymentTypeId
   - paidAmount
+- For exchange gain / agio, debit accounts receivable `1500` and credit exchange-gain account such as `8060`, and put the customer reference on the `1500` posting.
 - For foreign-currency settlement tasks, register the payment first, then book the exchange gain or loss in a separate voucher. For exchange loss / disagio, debit the exchange-loss account such as `8160` and credit accounts receivable `1500`, and put the customer reference on the `1500` posting.
 - For dunning, reminder, or late-fee tasks such as Mahngebühr, purregebyr, or late fee:
   - Use 0 percent VAT on the fee product and sales order line.

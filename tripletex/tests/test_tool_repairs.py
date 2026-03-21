@@ -18,7 +18,14 @@ class FakeTripletexClient:
     async def get(self, path, params=None):
         self.calls.append(("GET", path, params))
         key = (path, tuple(sorted((params or {}).items())))
-        return self.get_responses.get(key, {"fullResultSize": 0, "values": []})
+        response = self.get_responses.get(key, {"fullResultSize": 0, "values": []})
+        if isinstance(response, list):
+            if response:
+                current = response.pop(0)
+                if current is not None:
+                    return current
+            return {"fullResultSize": 0, "values": []}
+        return response
 
     async def post(self, path, json=None):
         self.calls.append(("POST", path, json))
@@ -2405,6 +2412,30 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["values"][0]["id"], 1)
         self.assertEqual(client.calls, [("GET", "/invoice/paymentType", {})])
 
+    async def test_tripletex_api_call_normalizes_invoice_payment_type_fields_filter(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice/paymentType",
+                    (("fields", "id,description"),),
+                ): {"fullResultSize": 1, "values": [{"id": 1, "description": "Bank"}]},
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/invoice/paymentType?fields=id,name"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 1)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/invoice/paymentType", {"fields": "id,description"})],
+        )
+
     async def test_tripletex_api_call_normalizes_supplier_invoice_payment_type_lookup(self):
         client = FakeTripletexClient(
             get_responses={
@@ -2618,6 +2649,41 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                         "invoiceDateTo": "2026-12-31",
                         "fields": "id,invoiceNumber,invoiceDate,amountOutstanding,customer(name),voucher(number)",
                     },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_normalizes_invoice_by_id_fields_filter_by_removing_payments(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice/2147630160",
+                    (("fields", "id,invoiceNumber,amount,amountOutstanding,currency"),),
+                ): {
+                    "value": {"id": 2147630160, "invoiceNumber": "2"},
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/invoice/2147630160?fields=id,invoiceNumber,amount,amountOutstanding,currency,payments",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 2147630160)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "GET",
+                    "/invoice/2147630160",
+                    {"fields": "id,invoiceNumber,amount,amountOutstanding,currency"},
                 )
             ],
         )
@@ -3030,6 +3096,117 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_create_salary_transaction_retries_again_after_created_employment_still_needs_division_link(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment",
+                    (("count", 20), ("employeeId", 18614205), ("fields", "id,startDate,endDate")),
+                ): [
+                    {"fullResultSize": 0, "values": []},
+                    {"fullResultSize": 1, "values": [{"id": 2817401, "startDate": "2026-03-21"}]},
+                ],
+                (
+                    "/employee/18614205",
+                    (("fields", "id,firstName,lastName,email,dateOfBirth,department"),),
+                ): {"value": {"id": 18614205, "email": "chloe.dubois@example.org"}},
+                (
+                    "/division",
+                    (("count", 1), ("fields", "id,name,organizationNumber")),
+                ): {"fullResultSize": 1, "values": [{"id": 7001, "name": "Default business", "organizationNumber": "999888777"}]},
+                (
+                    "/employee/employment/2817401",
+                    (("fields", "id,division"),),
+                ): {"value": {"id": 2817401}},
+            },
+            post_errors={
+                "/salary/transaction": [
+                    Exception("422 unknown: Ansatt nr.  er ikke registrert med et arbeidsforhold i perioden."),
+                    Exception("422 unknown: Arbeidsforholdet er ikke knyttet mot en virksomhet."),
+                    None,
+                ],
+            },
+            post_responses={
+                "/employee/employment": {"value": {"id": 2817401, "employee": {"id": 18614205}, "startDate": "2026-03-21"}},
+            },
+        )
+
+        await _execute(
+            client,
+            "create_salary_transaction",
+            {
+                "date": "2026-03-21",
+                "year": 2026,
+                "month": 3,
+                "payslips": [
+                    {
+                        "employee": {"id": 18614205},
+                        "specifications": [
+                            {"salaryType": {"id": 54322276}, "rate": 58350, "count": 1},
+                            {"salaryType": {"id": 54322446}, "rate": 9300, "count": 1},
+                        ],
+                    }
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18614205},
+                            "specifications": [
+                                {"salaryType": {"id": 54322276}, "rate": 58350, "count": 1},
+                                {"salaryType": {"id": 54322446}, "rate": 9300, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+                ("GET", "/employee/employment", {"employeeId": 18614205, "fields": "id,startDate,endDate", "count": 20}),
+                ("GET", "/employee/18614205", {"fields": "id,firstName,lastName,email,dateOfBirth,department"}),
+                ("PUT", "/employee/18614205", {"id": 18614205, "dateOfBirth": "1990-01-01"}, None),
+                ("GET", "/division", {"fields": "id,name,organizationNumber", "count": 1}),
+                ("POST", "/employee/employment", {"employee": {"id": 18614205, "dateOfBirth": "1990-01-01"}, "startDate": "2026-03-21", "division": {"id": 7001}}),
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18614205},
+                            "specifications": [
+                                {"salaryType": {"id": 54322276}, "rate": 58350, "count": 1},
+                                {"salaryType": {"id": 54322446}, "rate": 9300, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+                ("GET", "/employee/employment/2817401", {"fields": "id,division"}),
+                ("PUT", "/employee/employment/2817401", {"id": 2817401, "division": {"id": 7001}}, None),
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18614205},
+                            "specifications": [
+                                {"salaryType": {"id": 54322276}, "rate": 58350, "count": 1},
+                                {"salaryType": {"id": 54322446}, "rate": 9300, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+            ],
+        )
+
     async def test_find_top_expense_account_increases_blocks_identical_repeat(self):
         client = FakeTripletexClient()
         ctx = EntityContext()
@@ -3157,6 +3334,46 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 999)
         self.assertNotIn("customer", client.calls[1][2]["postings"][0])
         self.assertEqual(client.calls[1][2]["postings"][1]["customer"], {"id": 108342671})
+
+    async def test_create_voucher_normalizes_exchange_gain_voucher_amount_accounts_and_customer(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_customer_id=108406776,
+            prompt_text=(
+                "Me sende ein faktura på 11219 EUR til Bølgekraft AS (org.nr 825006206) då kursen var 10.02 NOK/EUR. "
+                "Kunden har no betalt, men kursen er 10.29 NOK/EUR. Registrer betalinga og bokfør valutadifferansen "
+                "(agio) på rett konto."
+            ),
+        )
+        ctx.account_cache = {
+            1500: {"id": 1500, "number": 1500, "name": "Kundefordringer"},
+            8060: {"id": 8060, "number": 8060, "name": "Valutagevinst"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Valutagevinst (agio) ved betaling av faktura 2 Bølgekraft AS",
+                "year": 2026,
+                "postings": [
+                    {"amountGross": 2804.75, "amountGrossCurrency": 2804.75},
+                    {"amountGross": -2804.75, "amountGrossCurrency": -2804.75},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        voucher_call = client.calls[0]
+        self.assertEqual(voucher_call[0:2], ("POST", "/ledger/voucher"))
+        self.assertAlmostEqual(voucher_call[2]["postings"][0]["amountGross"], 3029.13)
+        self.assertAlmostEqual(voucher_call[2]["postings"][1]["amountGross"], -3029.13)
+        self.assertEqual(voucher_call[2]["postings"][0]["account"], {"id": 1500})
+        self.assertEqual(voucher_call[2]["postings"][1]["account"], {"id": 8060})
+        self.assertEqual(voucher_call[2]["postings"][0]["customer"], {"id": 108406776})
 
     async def test_create_voucher_allows_supplier_invoice_auto_vat_balance(self):
         client = FakeTripletexClient()

@@ -954,6 +954,7 @@ def _normalize_invoice_fields_filter(fields: str) -> str:
         "amountGross": "amount",
         "isPaid": "",
         "order": "",
+        "payments": "",
     }
     rewritten: list[str] = []
     seen: set[str] = set()
@@ -979,6 +980,11 @@ def _normalize_invoice_fields_filter(fields: str) -> str:
         seen.add(part)
         rewritten.append(part)
     return ",".join(rewritten)
+
+
+def _normalize_invoice_payment_type_fields_filter(fields: str) -> str:
+    """Normalize common invalid invoice/paymentType fields to schema-valid PaymentTypeDTO fields."""
+    return _rewrite_fields_filter(fields, {"name": "description"})
 
 
 def _normalize_ledger_posting_fields_filter(fields: str) -> str:
@@ -1231,6 +1237,232 @@ def _extract_prompt_tax_provision_accounts(ctx: EntityContext | None) -> tuple[s
     if not match:
         return None
     return match.group(1), match.group(2)
+
+
+def _parse_localized_prompt_number(value: str | None) -> float | None:
+    text = str(value or "").strip().replace("\u00a0", " ")
+    if not text:
+        return None
+    text = re.sub(r"\s+", "", text).replace("'", "")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        if text.count(",") == 1 and len(text.split(",")[-1]) in (1, 2):
+            text = text.replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "." in text and text.count(".") > 1:
+        text = text.replace(".", "")
+    elif "." in text:
+        left, right = text.split(".", 1)
+        if len(right) > 2:
+            text = f"{left}{right}"
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _extract_prompt_exchange_difference_details(ctx: EntityContext | None) -> dict | None:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    normalized_text = unicodedata.normalize("NFKD", raw_text.lower())
+    normalized_text = "".join(ch for ch in normalized_text if not unicodedata.combining(ch))
+    amount_matches = list(
+        re.finditer(r"(\d[\d\s\u00a0.,']*)\s*(eur|usd|gbp|sek|dkk)\b", normalized_text, re.IGNORECASE)
+    )
+    rate_matches = list(
+        re.finditer(r"(\d[\d.,]*)\s*nok\s*/\s*(eur|usd|gbp|sek|dkk)\b", normalized_text, re.IGNORECASE)
+    )
+    if not amount_matches or len(rate_matches) < 2:
+        return None
+    for amount_match in amount_matches:
+        currency_code = amount_match.group(2).upper()
+        currency_amount = _parse_localized_prompt_number(amount_match.group(1))
+        if currency_amount in (None, 0):
+            continue
+        matching_rates = [
+            _parse_localized_prompt_number(match.group(1))
+            for match in rate_matches
+            if match.group(2).upper() == currency_code
+        ]
+        matching_rates = [rate for rate in matching_rates if rate not in (None, 0)]
+        if len(matching_rates) < 2:
+            continue
+        booked_rate, settled_rate = matching_rates[0], matching_rates[1]
+        difference_amount = round(abs(settled_rate - booked_rate) * currency_amount, 2)
+        if difference_amount <= 0:
+            continue
+        return {
+            "currencyCode": currency_code,
+            "currencyAmount": round(currency_amount, 2),
+            "bookedRate": round(booked_rate, 4),
+            "settledRate": round(settled_rate, 4),
+            "differenceAmount": difference_amount,
+        }
+    return None
+
+
+def _classify_exchange_difference_direction(
+    description: str | None,
+    ctx: EntityContext | None,
+    details: dict | None,
+) -> str | None:
+    combined_text = _normalize_prompt_text(
+        " ".join(
+            part
+            for part in (
+                str(description or ""),
+                str((ctx.prompt_text if ctx else None) or ""),
+            )
+            if part
+        )
+    )
+    if any(
+        token in combined_text
+        for token in (
+            "agio",
+            "valutagevinst",
+            "exchangegain",
+            "gainonexchange",
+            "gaindechange",
+            "gainendevise",
+        )
+    ):
+        return "gain"
+    if any(
+        token in combined_text
+        for token in (
+            "disagio",
+            "valutatap",
+            "exchangeloss",
+            "lossonexchange",
+            "pertedechange",
+            "perteendevise",
+        )
+    ):
+        return "loss"
+    if details is None:
+        return None
+    return "gain" if details["settledRate"] > details["bookedRate"] else "loss"
+
+
+async def _resolve_account_by_number(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+    number: str,
+) -> tuple[dict | None, str]:
+    cached = _find_cached_account_by_number(ctx, number)
+    if cached is not None:
+        return cached, "cached lookup"
+    result = await client.get("/ledger/account", params={"number": str(number), "fields": "id,number,name"})
+    values = result.get("values", [])
+    if not values:
+        return None, ""
+    account = values[0]
+    account_id = account.get("id")
+    if ctx is not None and account_id is not None:
+        ctx.account_cache[account_id] = account
+        ctx.last_account_id = account_id
+    return account, "lookup"
+
+
+async def _normalize_exchange_difference_voucher_postings(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    description: str | None,
+    ctx: EntityContext | None,
+) -> None:
+    if ctx is None or not isinstance(postings, list) or len(postings) != 2:
+        return
+    prompt_details = _extract_prompt_exchange_difference_details(ctx)
+    if prompt_details is None:
+        return
+    combined_text = _normalize_prompt_text(
+        " ".join(
+            [str(description or ""), str((ctx.prompt_text if ctx else None) or "")]
+            + [str((posting or {}).get("description") or "") for posting in postings if isinstance(posting, dict)]
+        )
+    )
+    if not any(
+        token in combined_text
+        for token in (
+            "agio",
+            "disagio",
+            "valutagevinst",
+            "valutatap",
+            "valutadifferanse",
+            "valutadifferansen",
+            "exchangegain",
+            "exchangeloss",
+            "gaindechange",
+            "pertedechange",
+        )
+    ):
+        return
+    direction = _classify_exchange_difference_direction(description, ctx, prompt_details)
+    if direction not in {"gain", "loss"}:
+        return
+    debit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    credit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(debit_postings) != 1 or len(credit_postings) != 1:
+        return
+    debit_posting = debit_postings[0]
+    credit_posting = credit_postings[0]
+    prompt_delta = prompt_details["differenceAmount"]
+    current_amount = abs(_coerce_number(debit_posting.get("amountGross")))
+    if abs(current_amount - prompt_delta) > 0.01:
+        debit_posting["amountGross"] = prompt_delta
+        debit_posting["amountGrossCurrency"] = prompt_delta
+        credit_posting["amountGross"] = -prompt_delta
+        credit_posting["amountGrossCurrency"] = -prompt_delta
+        logger.info(
+            "Normalized exchange %s voucher amount to prompt delta %.2f from %.2f * (%.4f - %.4f)",
+            direction,
+            prompt_delta,
+            prompt_details["currencyAmount"],
+            prompt_details["settledRate"],
+            prompt_details["bookedRate"],
+        )
+    if direction == "gain":
+        debit_number = "1500"
+        credit_number = "8060"
+    else:
+        debit_number = "8160"
+        credit_number = "1500"
+    preferred_debit, debit_source = await _resolve_account_by_number(client, ctx, debit_number)
+    preferred_credit, credit_source = await _resolve_account_by_number(client, ctx, credit_number)
+    if preferred_debit is not None and preferred_credit is not None:
+        current_debit_number = str((_get_cached_account(ctx, debit_posting) or {}).get("number") or "")
+        current_credit_number = str((_get_cached_account(ctx, credit_posting) or {}).get("number") or "")
+        changed = False
+        if current_debit_number != debit_number:
+            debit_posting["account"] = {"id": preferred_debit["id"]}
+            changed = True
+        if current_credit_number != credit_number:
+            credit_posting["account"] = {"id": preferred_credit["id"]}
+            changed = True
+        if changed:
+            logger.info(
+                "Normalized exchange %s voucher postings to accounts %s/%s from %s and %s",
+                direction,
+                debit_number,
+                credit_number,
+                debit_source,
+                credit_source,
+            )
+    receivables_posting = debit_posting if direction == "gain" else credit_posting
+    if ctx.last_customer_id and "customer" not in receivables_posting:
+        receivables_posting["customer"] = {"id": ctx.last_customer_id}
+        logger.info(
+            "Auto-injected customer id=%s into exchange %s receivables posting from context",
+            ctx.last_customer_id,
+            direction,
+        )
 
 
 def _normalize_year_end_prepaid_reversal_postings(
@@ -1577,6 +1809,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
     if "postings" not in args or not isinstance(args["postings"], list):
         return None
     _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
+    await _normalize_exchange_difference_voucher_postings(client, args["postings"], args.get("description"), ctx)
     _normalize_year_end_prepaid_reversal_postings(args["postings"], args.get("description"), ctx)
     await _normalize_year_end_prepaid_reversal_counterpart_account(client, args["postings"], args.get("description"), ctx)
     _normalize_year_end_tax_provision_postings(args["postings"], args.get("description"), ctx)
@@ -4751,51 +4984,58 @@ async def _execute(
             raise
 
     if name == "create_salary_transaction":
-        try:
-            return await client.post("/salary/transaction", json=args)
-        except Exception as e:
-            error_text = str(e).lower()
-            missing_employment = (
-                "arbeidsforhold i perioden" in error_text
-                or "employment in the period" in error_text
-            )
-            missing_business_link = (
-                "ikke knyttet mot en virksomhet" in error_text
-                or "not linked to a business" in error_text
-            )
-            if not missing_employment and not missing_business_link:
-                raise
-            effective_date = args.get("date")
-            if not effective_date:
-                year = args.get("year")
-                month = args.get("month")
-                if year and month:
-                    effective_date = f"{int(year):04d}-{int(month):02d}-01"
-                else:
-                    effective_date = datetime.date.today().isoformat()
-            ensured_any = False
-            for payslip in args.get("payslips", []):
-                if not isinstance(payslip, dict):
-                    continue
-                employee_id = _extract_reference_id(payslip.get("employee"))
-                if employee_id is None:
-                    continue
-                employment_id = await _ensure_employment_for_employee(
-                    client,
-                    employee_id,
-                    effective_date,
-                    ctx,
-                    ensure_division=True,
+        effective_date = args.get("date")
+        if not effective_date:
+            year = args.get("year")
+            month = args.get("month")
+            if year and month:
+                effective_date = f"{int(year):04d}-{int(month):02d}-01"
+            else:
+                effective_date = datetime.date.today().isoformat()
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                return await client.post("/salary/transaction", json=args)
+            except Exception as e:
+                last_error = e
+                error_text = str(e).lower()
+                missing_employment = (
+                    "arbeidsforhold i perioden" in error_text
+                    or "employment in the period" in error_text
                 )
-                if employment_id is not None:
-                    ensured_any = True
-            if ensured_any:
+                missing_business_link = (
+                    "ikke knyttet mot en virksomhet" in error_text
+                    or "not linked to a business" in error_text
+                )
+                if not missing_employment and not missing_business_link:
+                    raise
+                ensured_any = False
+                for payslip in args.get("payslips", []):
+                    if not isinstance(payslip, dict):
+                        continue
+                    employee_id = _extract_reference_id(payslip.get("employee"))
+                    if employee_id is None:
+                        continue
+                    employment_id = await _ensure_employment_for_employee(
+                        client,
+                        employee_id,
+                        effective_date,
+                        ctx,
+                        ensure_division=True,
+                    )
+                    if employment_id is not None:
+                        ensured_any = True
+                if not ensured_any:
+                    raise
                 if missing_business_link:
                     logger.info("Linked employment(s) to division for salary transaction retry")
                 else:
                     logger.info("Created or reused missing employment(s) for salary transaction retry")
-                return await client.post("/salary/transaction", json=args)
-            raise
+                if attempt == 2:
+                    raise
+                continue
+        if last_error is not None:
+            raise last_error
 
     if name == "find_top_expense_account_increases":
         analysis_key = json.dumps(
@@ -5064,7 +5304,12 @@ async def _execute(
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized ledger/voucher fields filter to {rewritten_fields}")
-        if path == "/invoice" and isinstance(params.get("fields"), str):
+        if path.startswith("/invoice/paymentType") and isinstance(params.get("fields"), str):
+            rewritten_fields = _normalize_invoice_payment_type_fields_filter(params["fields"])
+            if rewritten_fields != params["fields"]:
+                params["fields"] = rewritten_fields
+                logger.info(f"Normalized invoice/paymentType fields filter to {rewritten_fields}")
+        if (path == "/invoice" or re.fullmatch(r"/invoice/\d+", path)) and isinstance(params.get("fields"), str):
             rewritten_fields = _normalize_invoice_fields_filter(params["fields"])
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
