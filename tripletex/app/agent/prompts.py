@@ -217,7 +217,8 @@ Recipes:
 - For NOK transactions, amountGrossCurrency must match amountGross.
 - Use a VAT type that is valid for the chosen ledger account and for incoming VAT.
 - When only a VAT-inclusive amount is given, compute amount excluding VAT from the stated VAT rate.
-- For supplier-invoice vouchers, it is valid that the expense debit is net and the accounts-payable credit is gross when the expense posting carries vatType. Tripletex can create the VAT posting automatically. Do not "fix" that by removing VAT and forcing the two visible lines to balance.
+- For supplier-invoice vouchers with input VAT, prefer a balanced visible voucher. If the expense line carries vatType and the payable line is gross, then the expense posting amountGross should normally also be the gross invoice amount unless you provide the VAT split explicitly.
+- Do not post a net expense debit against a gross 2400 credit and assume Tripletex will repair the imbalance for you.
 
 15. Receipt or expense voucher
 - If a file is attached, extract: merchant name, date, total amount (incl. VAT), VAT rate or amount, payment method, and any department or category hints.

@@ -1065,6 +1065,34 @@ def _looks_like_paid_receipt_voucher(ctx: EntityContext | None, postings: list[d
     return False
 
 
+def _normalize_simple_supplier_invoice_amounts(postings: list[dict] | None, ctx: EntityContext | None) -> bool:
+    if not isinstance(postings, list):
+        return False
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return False
+    expense_posting = positive_postings[0]
+    payable_posting = negative_postings[0]
+    if _extract_reference_id(expense_posting.get("vatType")) in (None, 0):
+        return False
+    payable_account = _get_cached_account(ctx, payable_posting) or {}
+    is_supplier_liability = "supplier" in payable_posting or str(payable_account.get("number")) == "2400"
+    if not is_supplier_liability:
+        return False
+    expense_amount = round(_coerce_number(expense_posting.get("amountGross")), 2)
+    payable_amount = round(abs(_coerce_number(payable_posting.get("amountGross"))), 2)
+    if payable_amount <= expense_amount + 0.01:
+        return False
+    expense_posting["amountGross"] = payable_amount
+    payable_currency_amount = abs(_coerce_number(payable_posting.get("amountGrossCurrency", payable_amount)))
+    expense_posting["amountGrossCurrency"] = round(payable_currency_amount, 2)
+    logger.info(
+        f"Normalized supplier invoice expense posting from net {expense_amount} to gross {payable_amount} based on accounts payable amount"
+    )
+    return True
+
+
 async def dispatch_tool(
     client: TripletexClient,
     name: str,
@@ -1557,7 +1585,23 @@ async def _execute(
         if "isCustomer" not in args and not args.get("isSupplier"):
             args["isCustomer"] = True
         try:
-            return await client.post("/customer", json=args)
+            result = await client.post("/customer", json=args)
+            value = result.get("value", {})
+            customer_id = value.get("id")
+            update_fields = {}
+            requested_is_customer = args.get("isCustomer")
+            requested_is_supplier = args.get("isSupplier")
+            if requested_is_customer is not None and customer_id is not None and requested_is_customer != value.get("isCustomer"):
+                update_fields["isCustomer"] = requested_is_customer
+            if requested_is_supplier is not None and customer_id is not None and requested_is_supplier != value.get("isSupplier"):
+                update_fields["isSupplier"] = requested_is_supplier
+            if update_fields:
+                try:
+                    logger.info(f"Correcting created customer id={customer_id} flags after create")
+                    return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
+                except Exception as update_error:
+                    logger.warning(f"Customer post-create flag correction failed for id={customer_id}: {update_error}")
+            return result
         except Exception as e:
             if org_number and _is_duplicate_error(e, "nummeret er i bruk", "already exists"):
                 result = await client.get("/customer", params={
@@ -1960,7 +2004,6 @@ async def _execute(
     if name == "create_voucher":
         if "postings" in args and isinstance(args["postings"], list):
             is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
-            allows_auto_vat_balance = False
             for i, posting in enumerate(args["postings"]):
                 if isinstance(posting, dict):
                     posting.pop("guiRow", None)
@@ -2013,11 +2056,6 @@ async def _execute(
                                 f"Removed invalid voucher vatType id={current_vat_id} because the account has no default VAT type"
                             )
                     if (
-                        posting.get("amountGross", 0) > 0
-                        and _extract_reference_id(posting.get("vatType")) not in (None, 0)
-                    ):
-                        allows_auto_vat_balance = True
-                    if (
                         ctx
                         and ctx.last_department_id
                         and "department" not in posting
@@ -2025,15 +2063,13 @@ async def _execute(
                     ):
                         posting["department"] = {"id": ctx.last_department_id}
                         logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+            _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
             # Pre-validate that postings balance before sending
             total = sum(
                 p.get("amountGross", 0) for p in args["postings"] if isinstance(p, dict)
             )
             if abs(total) > 0.01:
-                if allows_auto_vat_balance:
-                    logger.info("Skipping strict voucher balance pre-validation because VAT auto-posting is expected")
-                else:
-                    return {"error": f"Voucher postings do not balance. Net total: {total}. Debit (positive) and credit (negative) amounts must sum to zero. Adjust the posting amounts and retry."}
+                return {"error": f"Voucher postings do not balance. Net total: {total}. Debit (positive) and credit (negative) amounts must sum to zero. Adjust the posting amounts and retry."}
         try:
             return await client.post("/ledger/voucher", json=args)
         except Exception as e:

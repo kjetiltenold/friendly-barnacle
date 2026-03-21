@@ -5,10 +5,12 @@ from app.agent.tools import EntityContext, _execute
 
 
 class FakeTripletexClient:
-    def __init__(self, get_responses=None, post_errors=None, put_errors=None):
+    def __init__(self, get_responses=None, post_errors=None, put_errors=None, post_responses=None, put_responses=None):
         self.get_responses = get_responses or {}
         self.post_errors = post_errors or {}
         self.put_errors = put_errors or {}
+        self.post_responses = post_responses or {}
+        self.put_responses = put_responses or {}
         self.calls = []
 
     async def get(self, path, params=None):
@@ -26,12 +28,16 @@ class FakeTripletexClient:
                     raise current
             else:
                 raise error
+        if path in self.post_responses:
+            return self.post_responses[path]
         return {"value": {"id": 999, **(json or {})}}
 
     async def put(self, path, json=None, params=None):
         self.calls.append(("PUT", path, json, params))
         if path in self.put_errors:
             raise self.put_errors[path]
+        if path in self.put_responses:
+            return self.put_responses[path]
         return {"value": {"id": 999, **(json or {})}}
 
     async def delete(self, path):
@@ -227,6 +233,53 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 77)
         self.assertIn(
             ("PUT", "/customer/77", {"id": 77, "isCustomer": False, "isSupplier": True}, None),
+            client.calls,
+        )
+
+    async def test_create_customer_corrects_flags_after_create(self):
+        client = FakeTripletexClient(
+            post_responses={
+                "/customer": {
+                    "value": {
+                        "id": 88,
+                        "name": "Bergvik AS",
+                        "organizationNumber": "919398051",
+                        "isCustomer": True,
+                        "isSupplier": True,
+                    }
+                }
+            },
+            put_responses={
+                "/customer/88": {
+                    "value": {
+                        "id": 88,
+                        "name": "Bergvik AS",
+                        "organizationNumber": "919398051",
+                        "isCustomer": False,
+                        "isSupplier": True,
+                    }
+                }
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_customer",
+            {
+                "name": "Bergvik AS",
+                "organizationNumber": "919398051",
+                "isCustomer": False,
+                "isSupplier": True,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 88)
+        self.assertFalse(result["value"]["isCustomer"])
+        self.assertTrue(result["value"]["isSupplier"])
+        self.assertIn(
+            ("PUT", "/customer/88", {"id": 88, "isCustomer": False}, None),
             client.calls,
         )
         self.assertNotIn(("POST", "/customer", {"name": "Silberberg GmbH", "organizationNumber": "871719500", "isCustomer": False, "isSupplier": True}), client.calls)
@@ -1256,6 +1309,8 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["value"]["id"], 999)
         self.assertEqual(client.calls[-1][0:2], ("POST", "/ledger/voucher"))
+        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGross"], 81812)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGrossCurrency"], 81812)
         self.assertEqual(client.calls[-1][2]["postings"][0]["vatType"], {"id": 50})
 
     async def test_create_voucher_keeps_supported_locked_vattype(self):
