@@ -80,6 +80,7 @@ class EntityContext:
     last_voucher_id: int | None = None
     last_vat_type_id: int | None = None
     last_account_id: int | None = None
+    last_division_id: int | None = None
     account_cache: dict[int, dict] | None = None
     vat_type_cache: dict | None = None  # Maps (percentage, direction_hint) -> vat_type_id
     project_start_dates: dict[int, str] | None = None
@@ -1334,7 +1335,10 @@ def _validate_ledger_error_correction_postings(
             "libromayor",
             "encuentralos4errores",
             "hovedbok",
+            "hovudbok",
+            "hovudboka",
             "finnende4feilene",
+            "finndei4feila",
         )
     ):
         return None
@@ -1349,7 +1353,7 @@ def _validate_ledger_error_correction_postings(
     )
     if not suspicious_numbers:
         return None
-    if any(token in normalized_description for token in ("duplicatevoucher", "pieceendouble", "duplicertbilag", "doppelterbeleg", "lançamentoduplicado", "asientoduplicado")):
+    if any(token in normalized_description for token in ("duplicatevoucher", "pieceendouble", "duplicertbilag", "duplikatbilag", "doppelterbeleg", "lançamentoduplicado", "asientoduplicado")):
         logger.warning(
             "Blocked duplicate-voucher correction using guessed balancing account(s): %s",
             ", ".join(suspicious_numbers),
@@ -3159,6 +3163,63 @@ async def _get_employee_snapshot(client: TripletexClient, employee_id: int) -> d
     return result.get("value") or {}
 
 
+async def _resolve_default_division_reference(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+) -> dict | None:
+    if ctx and ctx.last_division_id is not None:
+        return {"id": ctx.last_division_id}
+    try:
+        result = await client.get(
+            "/division",
+            params={"fields": "id,name,organizationNumber", "count": 1},
+        )
+        values = result.get("values", [])
+        if values:
+            division_id = _extract_reference_id(values[0])
+            if division_id is not None:
+                if ctx is not None:
+                    ctx.last_division_id = division_id
+                logger.info("Resolved default division id=%s for employment linkage", division_id)
+                return {"id": division_id}
+    except Exception as e:
+        logger.warning(f"Failed to resolve default division for employment linkage: {e}")
+    return None
+
+
+async def _ensure_employment_division(
+    client: TripletexClient,
+    employment_id: int,
+    ctx: EntityContext | None,
+) -> bool:
+    division = await _resolve_default_division_reference(client, ctx)
+    if division is None:
+        return False
+    division_id = _extract_reference_id(division)
+    if division_id is None:
+        return False
+    try:
+        result = await client.get(
+            f"/employee/employment/{employment_id}",
+            params={"fields": "id,division"},
+        )
+        existing_division_id = _extract_reference_id((result.get("value") or {}).get("division"))
+        if existing_division_id == division_id:
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to inspect employment {employment_id} division before repair: {e}")
+    await client.put(
+        f"/employee/employment/{employment_id}",
+        json={"id": employment_id, "division": {"id": division_id}},
+    )
+    logger.info(
+        "Linked employment id=%s to division id=%s for salary transaction retry",
+        employment_id,
+        division_id,
+    )
+    return True
+
+
 async def _ensure_employment_for_employee(
     client: TripletexClient,
     employee_id: int,
@@ -3166,6 +3227,7 @@ async def _ensure_employment_for_employee(
     ctx: EntityContext | None,
     *,
     skip_existing_lookup: bool = False,
+    ensure_division: bool = False,
 ) -> int | None:
     if not skip_existing_lookup:
         employment_id = await _resolve_employment_id(
@@ -3177,6 +3239,8 @@ async def _ensure_employment_for_employee(
             if ctx is not None:
                 ctx.last_employment_id = employment_id
                 ctx.last_employee_id = employee_id
+            if ensure_division:
+                await _ensure_employment_division(client, employment_id, ctx)
             return employment_id
 
     employee = await _get_employee_snapshot(client, employee_id)
@@ -3192,12 +3256,23 @@ async def _ensure_employment_for_employee(
         )
         date_of_birth = placeholder_date_of_birth
 
+    division = None
+    if ensure_division:
+        division = await _resolve_default_division_reference(client, ctx)
+        division_id = _extract_reference_id(division)
+        if division_id is not None:
+            logger.info("Auto-injected division id=%s into employment create", division_id)
+
+    payload = {
+        "employee": {"id": employee_id, "dateOfBirth": date_of_birth},
+        "startDate": effective_date,
+    }
+    if division is not None:
+        payload["division"] = division
+
     result = await client.post(
         "/employee/employment",
-        json={
-            "employee": {"id": employee_id, "dateOfBirth": date_of_birth},
-            "startDate": effective_date,
-        },
+        json=payload,
     )
     value = result.get("value") or {}
     employment_id = value.get("id")
@@ -3320,15 +3395,30 @@ async def _resolve_occupation_code(client: TripletexClient, args: dict):
             match = _pick_occupation_code(values, occupation_code_code)
             if match is not None:
                 return {"id": match["id"]}
-            if not values:
+            if not values or match is None:
+                if values:
+                    logger.info(
+                        "No exact occupation-code match for %s in direct search results; scanning full occupation code list",
+                        occupation_code_code,
+                    )
                 fallback_result = await client.get("/employee/employment/occupationCode", params={
                     "fields": "id,nameNO,code",
-                    "count": 200,
+                    "count": 1000,
                 })
                 fallback_match = _pick_occupation_code(fallback_result.get("values", []), occupation_code_code)
                 if fallback_match is not None:
+                    logger.info(
+                        "Resolved occupation code %s from fallback occupationCode scan to id=%s code=%s",
+                        occupation_code_code,
+                        fallback_match.get("id"),
+                        fallback_match.get("code"),
+                    )
                     return {"id": fallback_match["id"]}
-            if values and values[0].get("id") is not None:
+                logger.warning(
+                    "Unable to resolve occupation code %s after fallback occupationCode scan",
+                    occupation_code_code,
+                )
+            if len(values) == 1 and values[0].get("id") is not None:
                 return {"id": values[0]["id"]}
         except Exception as e:
             logger.warning(f"Failed to resolve occupation code {occupation_code_code}: {e}")
@@ -4539,7 +4629,15 @@ async def _execute(
             return await client.post("/salary/transaction", json=args)
         except Exception as e:
             error_text = str(e).lower()
-            if "arbeidsforhold i perioden" not in error_text and "employment in the period" not in error_text:
+            missing_employment = (
+                "arbeidsforhold i perioden" in error_text
+                or "employment in the period" in error_text
+            )
+            missing_business_link = (
+                "ikke knyttet mot en virksomhet" in error_text
+                or "not linked to a business" in error_text
+            )
+            if not missing_employment and not missing_business_link:
                 raise
             effective_date = args.get("date")
             if not effective_date:
@@ -4556,11 +4654,20 @@ async def _execute(
                 employee_id = _extract_reference_id(payslip.get("employee"))
                 if employee_id is None:
                     continue
-                employment_id = await _ensure_employment_for_employee(client, employee_id, effective_date, ctx)
+                employment_id = await _ensure_employment_for_employee(
+                    client,
+                    employee_id,
+                    effective_date,
+                    ctx,
+                    ensure_division=True,
+                )
                 if employment_id is not None:
                     ensured_any = True
             if ensured_any:
-                logger.info("Created or reused missing employment(s) for salary transaction retry")
+                if missing_business_link:
+                    logger.info("Linked employment(s) to division for salary transaction retry")
+                else:
+                    logger.info("Created or reused missing employment(s) for salary transaction retry")
                 return await client.post("/salary/transaction", json=args)
             raise
 

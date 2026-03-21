@@ -1088,7 +1088,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 ): {"fullResultSize": 0, "values": []},
                 (
                     "/employee/employment/occupationCode",
-                    (("count", 200), ("fields", "id,nameNO,code")),
+                    (("count", 1000), ("fields", "id,nameNO,code")),
                 ): {
                     "fullResultSize": 2,
                     "values": [
@@ -1126,6 +1126,67 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 "workingHoursScheme": "NOT_SHIFT",
                 "occupationCode": {"id": 991},
                 "percentageOfFullTimeEquivalent": 80.0,
+                "annualSalary": 500000.0,
+            }),
+            client.calls,
+        )
+
+    async def test_create_employment_details_fallback_resolves_prefixed_occupation_code_beyond_first_200(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/occupationCode",
+                    (("code", "3323"), ("count", 20), ("fields", "id,nameNO,code")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 881, "code": "3320", "nameNO": "Lagerarbeider"},
+                        {"id": 882, "code": "3321", "nameNO": "Ordrebehandler"},
+                    ],
+                },
+                (
+                    "/employee/employment/occupationCode",
+                    (("count", 1000), ("fields", "id,nameNO,code")),
+                ): {
+                    "fullResultSize": 201,
+                    "values": [
+                        *[
+                            {"id": 1000 + i, "code": f"41{i:02d}", "nameNO": f"Yrke {i}"}
+                            for i in range(200)
+                        ],
+                        {"id": 1991, "code": "3323.01", "nameNO": "Kontormedarbeider"},
+                    ],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2813402"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employmentId": 2813402,
+                "date": "2026-07-07",
+                "annualSalary": 500000,
+                "percentageOfFullTimeEquivalent": 100,
+                "occupationCodeCode": "3323",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertIn(
+            ("POST", "/employee/employment/details", {
+                "employment": {"id": 2813402},
+                "date": "2026-07-07",
+                "employmentType": "ORDINARY",
+                "remunerationType": "MONTHLY_WAGE",
+                "workingHoursScheme": "NOT_SHIFT",
+                "occupationCode": {"id": 1991},
+                "percentageOfFullTimeEquivalent": 100.0,
                 "annualSalary": 500000.0,
             }),
             client.calls,
@@ -2464,6 +2525,10 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                     "/employee/18610084",
                     (("fields", "id,firstName,lastName,email,dateOfBirth,department"),),
                 ): {"value": {"id": 18610084, "dateOfBirth": "1990-05-01"}},
+                (
+                    "/division",
+                    (("count", 1), ("fields", "id,name,organizationNumber")),
+                ): {"fullResultSize": 1, "values": [{"id": 7001, "name": "Default business", "organizationNumber": "999888777"}]},
             },
             post_errors={
                 "/salary/transaction": [
@@ -2514,7 +2579,8 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 }),
                 ("GET", "/employee/employment", {"employeeId": 18610084, "fields": "id,startDate,endDate", "count": 20}),
                 ("GET", "/employee/18610084", {"fields": "id,firstName,lastName,email,dateOfBirth,department"}),
-                ("POST", "/employee/employment", {"employee": {"id": 18610084, "dateOfBirth": "1990-05-01"}, "startDate": "2026-03-21"}),
+                ("GET", "/division", {"fields": "id,name,organizationNumber", "count": 1}),
+                ("POST", "/employee/employment", {"employee": {"id": 18610084, "dateOfBirth": "1990-05-01"}, "startDate": "2026-03-21", "division": {"id": 7001}}),
                 ("POST", "/salary/transaction", {
                     "date": "2026-03-21",
                     "year": 2026,
@@ -2542,6 +2608,10 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                     "/employee/18610434",
                     (("fields", "id,firstName,lastName,email,dateOfBirth,department"),),
                 ): {"value": {"id": 18610434, "email": "ana.ferreira@example.org"}},
+                (
+                    "/division",
+                    (("count", 1), ("fields", "id,name,organizationNumber")),
+                ): {"fullResultSize": 1, "values": [{"id": 7001, "name": "Default business", "organizationNumber": "999888777"}]},
             },
             post_errors={
                 "/salary/transaction": [
@@ -2595,7 +2665,8 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 ("GET", "/employee/employment", {"employeeId": 18610434, "fields": "id,startDate,endDate", "count": 20}),
                 ("GET", "/employee/18610434", {"fields": "id,firstName,lastName,email,dateOfBirth,department"}),
                 ("PUT", "/employee/18610434", {"id": 18610434, "dateOfBirth": "1990-01-01"}, None),
-                ("POST", "/employee/employment", {"employee": {"id": 18610434, "dateOfBirth": "1990-01-01"}, "startDate": "2026-03-21"}),
+                ("GET", "/division", {"fields": "id,name,organizationNumber", "count": 1}),
+                ("POST", "/employee/employment", {"employee": {"id": 18610434, "dateOfBirth": "1990-01-01"}, "startDate": "2026-03-21", "division": {"id": 7001}}),
                 ("POST", "/salary/transaction", {
                     "date": "2026-03-21",
                     "year": 2026,
@@ -2606,6 +2677,89 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                             "specifications": [
                                 {"salaryType": {"id": 53258510}, "rate": 41750, "count": 1},
                                 {"salaryType": {"id": 53258687}, "rate": 6750, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+            ],
+        )
+
+    async def test_create_salary_transaction_retries_after_linking_employment_to_division(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment",
+                    (("count", 20), ("employeeId", 18613724), ("fields", "id,startDate,endDate")),
+                ): {"fullResultSize": 1, "values": [{"id": 2816401, "startDate": "2026-03-21"}]},
+                (
+                    "/division",
+                    (("count", 1), ("fields", "id,name,organizationNumber")),
+                ): {"fullResultSize": 1, "values": [{"id": 7001, "name": "Default business", "organizationNumber": "999888777"}]},
+                (
+                    "/employee/employment/2816401",
+                    (("fields", "id,division"),),
+                ): {"value": {"id": 2816401}},
+            },
+            post_errors={
+                "/salary/transaction": [
+                    Exception("422 unknown: Arbeidsforholdet er ikke knyttet mot en virksomhet."),
+                    None,
+                ],
+            },
+        )
+
+        await _execute(
+            client,
+            "create_salary_transaction",
+            {
+                "date": "2026-03-21",
+                "year": 2026,
+                "month": 3,
+                "payslips": [
+                    {
+                        "employee": {"id": 18613724},
+                        "specifications": [
+                            {"salaryType": {"id": 54182004}, "rate": 58750, "count": 1},
+                            {"salaryType": {"id": 54182165}, "rate": 10750, "count": 1},
+                        ],
+                    }
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18613724},
+                            "specifications": [
+                                {"salaryType": {"id": 54182004}, "rate": 58750, "count": 1},
+                                {"salaryType": {"id": 54182165}, "rate": 10750, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+                ("GET", "/employee/employment", {"employeeId": 18613724, "fields": "id,startDate,endDate", "count": 20}),
+                ("GET", "/division", {"fields": "id,name,organizationNumber", "count": 1}),
+                ("GET", "/employee/employment/2816401", {"fields": "id,division"}),
+                ("PUT", "/employee/employment/2816401", {"id": 2816401, "division": {"id": 7001}}, None),
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18613724},
+                            "specifications": [
+                                {"salaryType": {"id": 54182004}, "rate": 58750, "count": 1},
+                                {"salaryType": {"id": 54182165}, "rate": 10750, "count": 1},
                             ],
                         }
                     ],
@@ -4275,6 +4429,72 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 "postings": [
                     {"account": {"id": 466918873}, "amountGross": 2800, "amountGrossCurrency": 2800},
                     {"account": {"id": 466919149}, "amountGross": -2800, "amountGrossCurrency": -2800},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("original voucher's counterpart account", result["error"])
+        self.assertEqual(client.calls, [])
+
+    async def test_create_voucher_blocks_duplicate_correction_with_guessed_bank_balancing_account_for_nynorsk_ledger_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Me har oppdaga feil i hovudboka for januar og februar 2026. "
+                "GÃ¥ gjennom alle bilag og finn dei 4 feila: eit duplikat bilag "
+                "(konto 6860, belÃ¸p 2050 kr)."
+            ),
+            account_cache={
+                466691059: {"id": 466691059, "number": 6860, "name": "Kontorkostnad"},
+                466690878: {"id": 466690878, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Korriger duplikat bilag pÃ¥ konto 6860",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466691059}, "amountGross": -2050, "amountGrossCurrency": -2050},
+                    {"account": {"id": 466690878}, "amountGross": 2050, "amountGrossCurrency": 2050},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("use reverse_voucher", result["error"])
+        self.assertEqual(client.calls, [])
+
+    async def test_create_voucher_blocks_wrong_amount_correction_with_guessed_bank_balancing_account_for_nynorsk_ledger_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Me har oppdaga feil i hovudboka for januar og februar 2026. "
+                "Ga gjennom alle bilag og finn dei 4 feila: eit feil belop "
+                "(konto 6590, 15100 kr bokfort i staden for 5450 kr)."
+            ),
+            account_cache={
+                466919149: {"id": 466919149, "number": 6590, "name": "Andre driftskostnader"},
+                466918873: {"id": 466918873, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Korriger feil belop pa konto 6590",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466918873}, "amountGross": 9650, "amountGrossCurrency": 9650},
+                    {"account": {"id": 466919149}, "amountGross": -9650, "amountGrossCurrency": -9650},
                 ],
             },
             endpoint_search=None,
