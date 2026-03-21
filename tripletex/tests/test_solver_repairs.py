@@ -3,7 +3,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.agent.solver import _build_user_content, _compress_messages, _execute_tool_calls, _prime_context
+from app.agent.solver import (
+    _build_user_content,
+    _compress_messages,
+    _execute_tool_calls,
+    _prime_context,
+    _should_retry_text_only_response,
+)
 from app.agent.tools import EntityContext
 from app.models import FileAttachment, SolveRequest, TripletexCredentials
 
@@ -153,6 +159,36 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(content, str)
         self.assertIn("Treat attached files as the source of truth", content)
         self.assertIn("109,00 means 109.00", content)
+
+    def test_should_retry_text_only_response_when_model_stops_without_done(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "Here are the top three accounts.",
+                "Analyze the increases and create a project for each.",
+                0,
+                False,
+            )
+        )
+
+    def test_should_retry_text_only_response_when_done_but_no_requested_writes_happened(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                "Crie um projeto interno para cada conta.",
+                0,
+                False,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_done_after_writes(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                "Create a project and activity.",
+                2,
+                False,
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ class TripletexClient:
         )
         self.call_count = 0
         self.error_count = 0
+        self.write_call_count = 0
 
     async def get(self, path: str, params: dict | None = None) -> dict:
         return await self._request("GET", path, params=params)
@@ -31,6 +32,8 @@ class TripletexClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         self.call_count += 1
+        if method in {"POST", "PUT", "DELETE"}:
+            self.write_call_count += 1
         logger.info(f"Tripletex {method} {path} (call #{self.call_count})")
         resp = await self._client.request(method, path, **kwargs)
         if resp.status_code >= 400:

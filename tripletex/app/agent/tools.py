@@ -677,7 +677,7 @@ BASE_TOOL_DEFINITIONS = [
 ]
 
 BASE_TOOL_DEFINITIONS.extend([
-    _tool("find_top_expense_account_increases", "Analyze ledger postings across two periods and return the expense accounts with the largest increase from period A to period B.", {
+    _tool("find_top_expense_account_increases", "Analyze ledger postings across two periods and return the expense accounts with the largest increase from period A to period B. This tool is read-only. If the task also asks you to create projects, activities, or other entities from the result, you must continue with those write tools after this analysis.", {
         "type": "object",
         "properties": {
             "period_a_from": {"type": "string", "description": "YYYY-MM-DD inclusive"},
@@ -2220,6 +2220,7 @@ async def _execute(
             "periodA": {"from": args["period_a_from"], "to": args["period_a_to"]},
             "periodB": {"from": args["period_b_from"], "to": args["period_b_to"]},
             "topAccounts": top_accounts,
+            "nextStepHint": "Analysis only. If the task asks for follow-up writes, continue with create_project, create_activity, and create_project_activity for each top account.",
         }
 
     if name == "search_entity":

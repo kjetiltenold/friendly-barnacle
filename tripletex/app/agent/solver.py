@@ -18,6 +18,42 @@ from app.agent.prompts import get_system_prompt
 logger = logging.getLogger(__name__)
 
 
+def _prompt_likely_requires_writes(prompt: str) -> bool:
+    lowered = (prompt or "").lower()
+    write_markers = (
+        "create",
+        "opprett",
+        "registrer",
+        "register",
+        "update",
+        "oppdater",
+        "delete",
+        "slett",
+        "reverse",
+        "book ",
+        "buchen",
+        "crie",
+        "crear",
+        "créer",
+        "erstell",
+    )
+    return any(marker in lowered for marker in write_markers)
+
+
+def _should_retry_text_only_response(
+    assistant_text: str,
+    prompt: str,
+    write_call_count: int,
+    reminder_already_sent: bool,
+) -> bool:
+    if reminder_already_sent:
+        return False
+    normalized = assistant_text.strip().upper()
+    if normalized != "DONE":
+        return True
+    return _prompt_likely_requires_writes(prompt) and write_call_count == 0
+
+
 async def solve_task(request: SolveRequest) -> None:
     start = time.monotonic()
     creds = request.tripletex_credentials
@@ -31,6 +67,7 @@ async def solve_task(request: SolveRequest) -> None:
         today = datetime.date.today().isoformat()
         system_prompt = get_system_prompt(today)
         ctx = EntityContext()
+        completion_reminder_sent = False
 
         await _prime_context(tx, ctx)
 
@@ -64,6 +101,24 @@ async def solve_task(request: SolveRequest) -> None:
 
             # Check if the model wants to use tools
             if not message.tool_calls:
+                assistant_text = (message.content or "").strip()
+                if _should_retry_text_only_response(
+                    assistant_text,
+                    request.prompt,
+                    tx.write_call_count,
+                    completion_reminder_sent,
+                ):
+                    completion_reminder_sent = True
+                    logger.info("Model stopped before completing requested actions; nudging to continue")
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "The task is not complete yet. Execute all requested Tripletex create, update, delete, "
+                            "or posting actions before stopping. Reply only with DONE when the requested actions are finished."
+                        ),
+                    })
+                    continue
                 # Model is done (text-only response)
                 logger.info(
                     f"Agent done after {iteration + 1} iterations, "

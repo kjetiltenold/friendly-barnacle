@@ -261,6 +261,7 @@ Recipes:
 
 17. Analyze ledger increases and create internal projects
 - For tasks that compare costs or expenses across periods, use find_top_expense_account_increases instead of raw GET /ledger.
+- find_top_expense_account_increases is analysis only. It does not complete a task that also asks for projects, activities, vouchers, or other writes.
 - For January vs February 2026, use:
   - period_a_from: 2026-01-01
   - period_a_to: 2026-02-01
@@ -270,6 +271,7 @@ Recipes:
   1. create_project with name set to the account name and isInternal=true
   2. create_activity with the same account name
   3. create_project_activity to link each activity to its project
+- Do not stop after the analysis step when the prompt still asks you to create the projects and activities.
 
 18. Delete travel expense
 - Use delete_travel_expense.
