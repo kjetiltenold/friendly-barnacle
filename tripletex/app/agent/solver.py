@@ -230,6 +230,12 @@ def _build_user_content(request: SolveRequest) -> str | list[dict]:
     image_blocks: list[dict] = []
 
     if request.files:
+        text_parts.append(
+            "[Attachment handling]\n"
+            "Treat attached files as the source of truth for exact names, dates, invoice numbers, and amounts. "
+            "Preserve European decimal separators when converting amounts: 109,00 means 109.00 and 51 312,50 means 51312.50. "
+            "If extracted text conflicts with an attached image, trust the image."
+        )
         attachment_blocks = process_attachments(request.files)
         for block in attachment_blocks:
             if block["type"] == "text":

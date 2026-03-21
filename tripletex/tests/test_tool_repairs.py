@@ -415,6 +415,32 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"fullResultSize": 0, "values": []})
         self.assertEqual(client.calls, [])
 
+    async def test_search_entity_accepts_top_level_filter_fields(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/department",
+                    (("fields", "id,name"), ("name", "Produksjon")),
+                ): {"fullResultSize": 1, "values": [{"id": 928225, "name": "Produksjon"}]}
+            }
+        )
+        ctx = EntityContext()
+
+        result = await _execute(
+            client,
+            "search_entity",
+            {"entity_type": "department", "name": "Produksjon", "fields": "id,name"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["values"][0]["id"], 928225)
+        self.assertEqual(ctx.last_department_id, 928225)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/department", {"name": "Produksjon", "fields": "id,name"})],
+        )
+
     async def test_create_project_generates_number_and_start_date(self):
         client = FakeTripletexClient()
 
@@ -1703,6 +1729,55 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "account": {"id": 364015350},
                         "amountGross": -14100,
+                        "description": "Betalt med bedriftskort",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["vatType"], {"id": 61})
+
+    async def test_create_voucher_receipt_prefers_default_vat_over_other_legal_guess(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            account_cache={
+                364015653: {
+                    "id": 364015653,
+                    "number": 7140,
+                    "name": "Reisekostnad",
+                    "vatType": {"id": 61},
+                    "legalVatTypes": [{"id": 12}, {"id": 61}],
+                    "vatLocked": False,
+                },
+                364015350: {
+                    "id": 364015350,
+                    "number": 1920,
+                    "name": "Bank",
+                    "isBankAccount": True,
+                },
+            },
+        )
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-13",
+                "description": "NSB kvittering - Togbillett",
+                "postings": [
+                    {
+                        "account": {"id": 364015653},
+                        "amountGross": 109.00,
+                        "description": "Togbillett",
+                        "vatType": {"id": 12},
+                    },
+                    {
+                        "account": {"id": 364015350},
+                        "amountGross": -109.00,
                         "description": "Betalt med bedriftskort",
                     },
                 ],

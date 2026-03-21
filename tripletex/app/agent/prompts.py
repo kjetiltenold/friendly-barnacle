@@ -34,10 +34,12 @@ Data extraction:
 - Split personal names into firstName and lastName.
 - Convert all dates to YYYY-MM-DD.
 - Parse amounts as numbers, not strings.
+- Preserve decimal separators from European-formatted amounts. Examples: 109,00 means 109.00, and 51 312,50 means 51312.50. Do not turn decimal receipts or invoices into whole numbers by simply stripping commas or periods.
 - Detect supplier intent in all languages. Supplier means create_customer with isSupplier=true and isCustomer=false.
 - Detect VAT percentages from the prompt and map them to vatType.
 - Department or avdeling means a real Tripletex department. For employees use employee.department. For vouchers use posting.department. Do not treat it as a free accounting dimension.
 - If an attached CSV or text file contains transactions, treat the attachment as the primary source of truth for payment dates, amounts, references, counterparties, and direction (incoming vs outgoing). Do not ignore attached bank-statement files.
+- If a PDF or image is attached, extract the exact merchant, date, invoice number, and amount from the attachment. Do not invent common sample values. If OCR text conflicts with the attached image, trust the image.
 
 Response formats:
 - POST and PUT usually return {{"value": {{...}}}}.

@@ -3,8 +3,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.agent.solver import _compress_messages, _execute_tool_calls, _prime_context
+from app.agent.solver import _build_user_content, _compress_messages, _execute_tool_calls, _prime_context
 from app.agent.tools import EntityContext
+from app.models import FileAttachment, SolveRequest, TripletexCredentials
 
 
 class FakeTripletexClient:
@@ -130,6 +131,28 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(compressed["value"]["id"], 18619016)
         self.assertEqual(compressed["value"]["department"]["id"], 927020)
         self.assertEqual(compressed["value"]["employments"][0]["id"], 2813211)
+
+    def test_build_user_content_adds_attachment_source_of_truth_note(self):
+        request = SolveRequest(
+            prompt="Post this receipt correctly.",
+            files=[
+                FileAttachment(
+                    filename="receipt.txt",
+                    mime_type="text/plain",
+                    content_base64="VG9nYmlsbGV0dApOU0IKMTA5LDAwCg==",
+                )
+            ],
+            tripletex_credentials=TripletexCredentials(
+                base_url="https://example.invalid/v2",
+                session_token="token",
+            ),
+        )
+
+        content = _build_user_content(request)
+
+        self.assertIsInstance(content, str)
+        self.assertIn("Treat attached files as the source of truth", content)
+        self.assertIn("109,00 means 109.00", content)
 
 
 if __name__ == "__main__":

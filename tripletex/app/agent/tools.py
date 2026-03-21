@@ -1066,7 +1066,13 @@ def _get_cached_account(ctx: EntityContext | None, posting: dict | None) -> dict
     return ctx.account_cache.get(account_id)
 
 
-def _preferred_account_vat_id(account: dict, current_vat_id: int | None, ctx: EntityContext | None) -> int | None:
+def _preferred_account_vat_id(
+    account: dict,
+    current_vat_id: int | None,
+    ctx: EntityContext | None,
+    *,
+    prefer_account_default: bool = False,
+) -> int | None:
     account_vat_id = _extract_reference_id(account.get("vatType"))
     legal_vat_ids = {
         vat_id
@@ -1076,6 +1082,9 @@ def _preferred_account_vat_id(account: dict, current_vat_id: int | None, ctx: En
         )
         if vat_id is not None
     }
+    if prefer_account_default and account_vat_id not in (None, 0):
+        if not legal_vat_ids or account_vat_id in legal_vat_ids:
+            return account_vat_id
     if current_vat_id is not None and current_vat_id in legal_vat_ids and current_vat_id != 0:
         return current_vat_id
     if account_vat_id not in (None, 0) and (not legal_vat_ids or account_vat_id in legal_vat_ids):
@@ -2057,7 +2066,12 @@ async def _execute(
                         if vat_id is not None
                     }
                     current_vat_id = _extract_reference_id(posting.get("vatType"))
-                    preferred_vat_id = _preferred_account_vat_id(account, current_vat_id, ctx)
+                    preferred_vat_id = _preferred_account_vat_id(
+                        account,
+                        current_vat_id,
+                        ctx,
+                        prefer_account_default=is_paid_receipt and posting.get("amountGross", 0) > 0,
+                    )
                     no_vat_only = account_vat_id == 0 and not any(vat_id != 0 for vat_id in legal_vat_ids)
                     if no_vat_only:
                         if posting.pop("vatType", None) is not None:
@@ -2210,7 +2224,11 @@ async def _execute(
 
     if name == "search_entity":
         entity_type = args["entity_type"]
-        params = args.get("params", {})
+        params = dict(args.get("params") or {})
+        for key, value in args.items():
+            if key in {"entity_type", "params"} or value in (None, "", [], {}):
+                continue
+            params.setdefault(key, value)
         # GET /invoice requires invoiceDateFrom and invoiceDateTo
         if entity_type == "invoice":
             if "invoiceDateFrom" not in params:
