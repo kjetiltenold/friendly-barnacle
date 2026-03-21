@@ -3296,6 +3296,39 @@ def _looks_like_paid_receipt_voucher(ctx: EntityContext | None, postings: list[d
     return False
 
 
+def _attachment_text_warns_missing_separators(ctx: EntityContext | None) -> bool:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    normalized = raw_text.lower()
+    return (
+        "[extracted text note]" in normalized
+        and "may miss separators" in normalized
+    )
+
+
+def _parse_receipt_attachment_amount_token(ctx: EntityContext | None, token: str) -> float | None:
+    value = _parse_localized_prompt_number(token)
+    if value in (None, 0):
+        return None
+    raw_token = str(token or "").strip()
+    if not _attachment_text_warns_missing_separators(ctx):
+        return value
+    if any(separator in raw_token for separator in (",", ".", "'")):
+        return value
+    digits_only = re.sub(r"\D+", "", raw_token)
+    if len(digits_only) < 4:
+        return value
+    scaled = round(value / 100.0, 2)
+    if scaled <= 0:
+        return value
+    logger.info(
+        "Scaled receipt attachment token %r from %.2f to %.2f because single-page OCR note warned about missing separators",
+        raw_token,
+        value,
+        scaled,
+    )
+    return scaled
+
+
 def _extract_attachment_receipt_line_amount(ctx: EntityContext | None, line_label: str | None) -> float | None:
     raw_text = (ctx.prompt_text if ctx else None) or ""
     if "[Content from" not in raw_text or not str(line_label or "").strip():
@@ -3315,7 +3348,7 @@ def _extract_attachment_receipt_line_amount(ctx: EntityContext | None, line_labe
     def _candidate_amounts(text: str) -> list[float]:
         amounts: list[float] = []
         for token in re.findall(amount_pattern, text):
-            value = _parse_localized_prompt_number(token)
+            value = _parse_receipt_attachment_amount_token(ctx, token)
             if value is None or value <= 0 or value >= 1_000_000:
                 continue
             amounts.append(round(value, 2))

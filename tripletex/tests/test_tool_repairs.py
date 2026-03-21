@@ -5062,6 +5062,71 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["postings"][1]["amountGross"], -4200.0)
         self.assertEqual(body["postings"][1]["amountGrossCurrency"], -4200.0)
 
+    async def test_create_voucher_receipt_scales_flattened_ocr_amount_for_named_line(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "We need the Togbillett expense from this receipt posted to department Produksjon.\n\n"
+                "[Content from kvittering_en_04.pdf]\n\n"
+                "[Extracted text note]\n"
+                "This OCR text may miss separators or layout details on single-page documents. "
+                "Verify exact amounts, dates, names, and structured fields against the attached page image.\n\n"
+                "NSB\n"
+                "Togbillett 10900\n"
+                "Total 10900"
+            ),
+            account_cache={
+                364015653: {
+                    "id": 364015653,
+                    "number": 7140,
+                    "name": "Reisekostnad",
+                    "vatType": {"id": 12},
+                    "legalVatTypes": [{"id": 12}],
+                    "vatLocked": False,
+                },
+                364015350: {
+                    "id": 364015350,
+                    "number": 1920,
+                    "name": "Bank",
+                    "isBankAccount": True,
+                },
+            },
+        )
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-13",
+                "description": "NSB kvittering - Togbillett",
+                "postings": [
+                    {
+                        "account": {"id": 364015653},
+                        "amountGross": 10900,
+                        "amountGrossCurrency": 10900,
+                        "vatType": {"id": 1},
+                        "description": "Togbillett",
+                    },
+                    {
+                        "account": {"id": 364015350},
+                        "amountGross": -10900,
+                        "amountGrossCurrency": -10900,
+                        "description": "Betalt med bedriftskort",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["amountGross"], 109.0)
+        self.assertEqual(body["postings"][0]["amountGrossCurrency"], 109.0)
+        self.assertEqual(body["postings"][1]["amountGross"], -109.0)
+        self.assertEqual(body["postings"][1]["amountGrossCurrency"], -109.0)
+        self.assertEqual(body["postings"][0]["vatType"], {"id": 12})
+
     async def test_create_voucher_blocks_duplicate_correction_with_guessed_bank_balancing_account(self):
         client = FakeTripletexClient()
         ctx = EntityContext(
