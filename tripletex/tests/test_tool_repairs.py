@@ -1892,6 +1892,63 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["orderLines"][0]["unitPriceExcludingVatCurrency"], 114075.0)
         self.assertFalse(body["isPrioritizeAmountsIncludingVat"])
 
+    async def test_create_order_injects_vat_types_from_recent_products(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(last_customer_id=108326217)
+        ctx.product_ids = [84411181, 84411184, 84411186]
+        ctx.product_snapshots = {
+            84411181: {"id": 84411181, "name": "Systemutvikling", "number": "8642", "vatTypeId": 3},
+            84411184: {"id": 84411184, "name": "Datarådgjeving", "number": "5857", "vatTypeId": 556},
+            84411186: {"id": 84411186, "name": "Nettverksteneste", "number": "9733", "vatTypeId": 0},
+        }
+
+        await _execute(
+            client,
+            "create_order",
+            {
+                "orderDate": "2026-03-21",
+                "deliveryDate": "2026-03-21",
+                "isPrioritizeAmountsIncludingVat": False,
+                "orderLines": [
+                    {"description": "Systemutvikling", "count": 1, "unitPriceExcludingVatCurrency": 9550},
+                    {"description": "Datarådgjeving", "count": 1, "unitPriceExcludingVatCurrency": 14600},
+                    {"description": "Nettverksteneste", "count": 1, "unitPriceExcludingVatCurrency": 19450},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/order", {
+            "customer": {"id": 108326217},
+            "orderDate": "2026-03-21",
+            "deliveryDate": "2026-03-21",
+            "isPrioritizeAmountsIncludingVat": False,
+            "orderLines": [
+                {
+                    "description": "Systemutvikling",
+                    "count": 1,
+                    "unitPriceExcludingVatCurrency": 9550,
+                    "product": {"id": 84411181},
+                    "vatType": {"id": 3},
+                },
+                {
+                    "description": "Datarådgjeving",
+                    "count": 1,
+                    "unitPriceExcludingVatCurrency": 14600,
+                    "product": {"id": 84411184},
+                    "vatType": {"id": 556},
+                },
+                {
+                    "description": "Nettverksteneste",
+                    "count": 1,
+                    "unitPriceExcludingVatCurrency": 19450,
+                    "product": {"id": 84411186},
+                    "vatType": {"id": 0},
+                },
+            ],
+        }))
+
     async def test_create_order_normalizes_fee_line_to_zero_vat(self):
         client = FakeTripletexClient(
             get_responses={
@@ -3077,7 +3134,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 }),
                 ("GET", "/employee/employment", {"employeeId": 18613724, "fields": "id,startDate,endDate", "count": 20}),
                 ("GET", "/division", {"fields": "id,name,organizationNumber", "count": 1}),
-                ("GET", "/employee/employment/2816401", {"fields": "id,division"}),
+                ("GET", "/employee/employment/2816401", {"fields": "*"}),
                 ("PUT", "/employee/employment/2816401", {"id": 2816401, "division": {"id": 7001}}, None),
                 ("POST", "/salary/transaction", {
                     "date": "2026-03-21",
@@ -3188,7 +3245,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                         }
                     ],
                 }),
-                ("GET", "/employee/employment/2817401", {"fields": "id,division"}),
+                ("GET", "/employee/employment/2817401", {"fields": "*"}),
                 ("PUT", "/employee/employment/2817401", {"id": 2817401, "division": {"id": 7001}}, None),
                 ("POST", "/salary/transaction", {
                     "date": "2026-03-21",
@@ -3631,6 +3688,125 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voucher_postings[1]["account"], {"id": 30})
         self.assertEqual(voucher_postings[1]["amountGross"], 10487.4)
         self.assertEqual(voucher_postings[2]["amountGross"], -52437)
+
+    async def test_create_voucher_normalizes_network_supplier_invoice_account_from_6300_to_6900(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "6900"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 50, "number": 6900, "name": "Telefon og internett"}],
+                },
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "2710"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 30, "number": 2710, "name": "Inngaaende mva"}],
+                },
+            }
+        )
+        ctx = EntityContext(prompt_text="Facture fournisseur attachee - Nettverkstjenester")
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6300,
+                "name": "Leie lokaler",
+                "vatType": {"id": 1},
+                "legalVatTypes": [{"id": 1}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+        ctx.vat_type_cache = {(25.0, "incoming"): 1}
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-06-06",
+                "description": "Leverandorfaktura INV-2026-8404 Etoile SARL - Nettverkstjenester",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 92750,
+                        "amountGrossCurrency": 92750,
+                        "vatType": {"id": 1},
+                        "description": "Nettverkstjenester",
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -92750,
+                        "amountGrossCurrency": -92750,
+                        "supplier": {"id": 108408833},
+                        "description": "INV-2026-8404",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        voucher_postings = client.calls[-1][2]["postings"]
+        self.assertEqual(voucher_postings[0]["account"], {"id": 50})
+        self.assertEqual(voucher_postings[0]["amountGross"], 74200)
+        self.assertEqual(voucher_postings[1]["account"], {"id": 30})
+        self.assertEqual(voucher_postings[1]["amountGross"], 18550)
+        self.assertEqual(voucher_postings[2]["amountGross"], -92750)
+
+    async def test_create_voucher_skips_prefetched_department_for_generic_supplier_invoice(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text="Vous avez recu une facture fournisseur. Enregistrez-la dans Tripletex.",
+            last_department_id=952388,
+            last_department_id_prefetched=True,
+        )
+        ctx.account_cache = {
+            10: {"id": 10, "number": 6300, "name": "Leie lokaler"},
+            20: {"id": 20, "number": 2400, "name": "Leverandorgjeld"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-06-06",
+                "description": "Leverandorfaktura INV-2026-8404 Etoile SARL",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 1000,
+                        "amountGrossCurrency": 1000,
+                        "description": "Nettverkstjenester",
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -1000,
+                        "amountGrossCurrency": -1000,
+                        "supplier": {"id": 108408833},
+                        "description": "INV-2026-8404",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertNotIn("department", client.calls[-1][2]["postings"][0])
 
     async def test_create_voucher_normalizes_year_end_depreciation_to_requested_accounts(self):
         client = FakeTripletexClient()

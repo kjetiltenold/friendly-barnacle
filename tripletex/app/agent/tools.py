@@ -51,6 +51,7 @@ class EntityContext:
     last_supplier_id: int | None = None
     last_product_id: int | None = None
     product_ids: list[int] | None = None  # All product IDs created/found
+    product_snapshots: dict[int, dict] | None = None
     project_ids: list[int] | None = None
     activity_ids: list[int] | None = None
     employee_ids: list[int] | None = None
@@ -75,6 +76,8 @@ class EntityContext:
     supplier_invoice_payment_action_count: int = 0
     reverse_voucher_action_count: int = 0
     last_reversed_voucher_id: int | None = None
+    salary_transaction_action_count: int = 0
+    last_salary_transaction_id: int | None = None
     last_hourly_rate_id: int | None = None
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
@@ -99,6 +102,8 @@ class EntityContext:
     def __post_init__(self):
         if self.product_ids is None:
             self.product_ids = []
+        if self.product_snapshots is None:
+            self.product_snapshots = {}
         if self.project_ids is None:
             self.project_ids = []
         if self.activity_ids is None:
@@ -122,6 +127,15 @@ class EntityContext:
         """Extract and store the entity ID from a creation response."""
         value = result.get("value", {})
         entity_id = value.get("id")
+        if name == "create_salary_transaction":
+            self.salary_transaction_action_count += 1
+            logger.info(
+                "EntityContext: salary_transaction_action_count = %s",
+                self.salary_transaction_action_count,
+            )
+            if entity_id is not None:
+                self.last_salary_transaction_id = entity_id
+                logger.info(f"EntityContext: last_salary_transaction_id = {entity_id}")
         if entity_id is None:
             return
         mapping = {
@@ -218,8 +232,19 @@ class EntityContext:
             if project_id is not None and activity_id is not None:
                 self.linked_project_activity_pairs.add((project_id, activity_id))
         # Track all product IDs for multi-product orders
-        if name == "create_product" and entity_id not in self.product_ids:
-            self.product_ids.append(entity_id)
+        if name == "create_product":
+            if entity_id not in self.product_ids:
+                self.product_ids.append(entity_id)
+            requested_vat_type_id = None
+            if isinstance(request_args, dict):
+                requested_vat_type_id = _extract_reference_id(request_args.get("vatType"))
+            actual_vat_type_id = _extract_reference_id(value.get("vatType"))
+            self.product_snapshots[entity_id] = {
+                "id": entity_id,
+                "name": value.get("name") or (request_args or {}).get("name"),
+                "number": value.get("number") or (request_args or {}).get("number"),
+                "vatTypeId": actual_vat_type_id if actual_vat_type_id is not None else requested_vat_type_id,
+            }
         if name == "create_project" and entity_id not in self.project_ids:
             self.project_ids.append(entity_id)
             start_date = value.get("startDate")
@@ -1929,6 +1954,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
             if (
                 ctx
                 and ctx.last_department_id
+                and not ctx.last_department_id_prefetched
                 and "department" not in posting
                 and posting.get("amountGross", 0) > 0
             ):
@@ -1936,6 +1962,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
                 logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
     _normalize_supplier_invoice_posting_references(args["postings"], ctx)
     await _normalize_supplier_invoice_software_account(client, args["postings"], ctx, args.get("description"))
+    await _normalize_supplier_invoice_network_account(client, args["postings"], ctx, args.get("description"))
     _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
     await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
     total = sum(
@@ -3112,6 +3139,28 @@ def _looks_like_software_service_text(*parts) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _looks_like_network_service_text(*parts) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    keywords = (
+        "nettverkstjenester",
+        "network service",
+        "network services",
+        "internet",
+        "internet access",
+        "fiber",
+        "broadband",
+        "bredband",
+        "bredbånd",
+        "telecom",
+        "telecommunication",
+        "telefoni",
+        "telephony",
+        "telephone service",
+        "connectivity",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
 async def _resolve_vat_type(
     client: TripletexClient,
     ctx: EntityContext | None,
@@ -3448,6 +3497,58 @@ async def _normalize_supplier_invoice_software_account(
     return True
 
 
+async def _normalize_supplier_invoice_network_account(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    ctx: EntityContext | None,
+    voucher_description: str | None = None,
+) -> bool:
+    if not isinstance(postings, list):
+        return False
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return False
+    expense_posting = positive_postings[0]
+    payable_posting = negative_postings[0]
+    payable_account = _get_cached_account(ctx, payable_posting) or {}
+    is_supplier_liability = "supplier" in payable_posting or str(payable_account.get("number")) == "2400"
+    if not is_supplier_liability:
+        return False
+    expense_account = _get_cached_account(ctx, expense_posting) or {}
+    if str(expense_account.get("number")) not in {"6300", "6340"}:
+        return False
+    if not _looks_like_network_service_text(
+        voucher_description,
+        expense_posting.get("description"),
+        payable_posting.get("description"),
+        ctx.prompt_text if ctx else None,
+    ):
+        return False
+    network_account = _find_cached_account_by_number(ctx, "6900")
+    if network_account is None:
+        result = await client.get(
+            "/ledger/account",
+            params={
+                "number": "6900",
+                "fields": "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount",
+            },
+        )
+        values = result.get("values", [])
+        if values:
+            network_account = values[0]
+            if ctx is not None:
+                ctx.account_cache[network_account["id"]] = network_account
+    if network_account is None:
+        return False
+    expense_posting["account"] = {"id": network_account["id"]}
+    logger.info(
+        "Normalized supplier invoice telecom/network expense account from %s to 6900",
+        expense_account.get("number"),
+    )
+    return True
+
+
 async def _expand_simple_supplier_invoice_vat_split(
     client: TripletexClient,
     postings: list[dict] | None,
@@ -3685,19 +3786,44 @@ async def _ensure_employment_division(
     division_id = _extract_reference_id(division)
     if division_id is None:
         return False
+    employment_snapshot: dict | None = None
     try:
         result = await client.get(
             f"/employee/employment/{employment_id}",
-            params={"fields": "id,division"},
+            params={"fields": "*"},
         )
-        existing_division_id = _extract_reference_id((result.get("value") or {}).get("division"))
+        employment_snapshot = result.get("value") or {}
+        existing_division_id = _extract_reference_id(employment_snapshot.get("division"))
         if existing_division_id == division_id:
+            logger.info(
+                "Employment id=%s is already linked to division id=%s for salary transaction retry",
+                employment_id,
+                division_id,
+            )
             return True
     except Exception as e:
         logger.warning(f"Failed to inspect employment {employment_id} division before repair: {e}")
+    update_payload = {"id": employment_id, "division": {"id": division_id}}
+    if isinstance(employment_snapshot, dict) and employment_snapshot:
+        for field in (
+            "version",
+            "employee",
+            "employmentId",
+            "startDate",
+            "endDate",
+            "employmentEndReason",
+            "lastSalaryChangeDate",
+            "noEmploymentRelationship",
+            "isMainEmployer",
+            "taxDeductionCode",
+            "isRemoveAccessAtEmploymentEnded",
+        ):
+            value = employment_snapshot.get(field)
+            if value not in (None, "", [], {}):
+                update_payload[field] = value
     await client.put(
         f"/employee/employment/{employment_id}",
-        json={"id": employment_id, "division": {"id": division_id}},
+        json=update_payload,
     )
     logger.info(
         "Linked employment id=%s to division id=%s for salary transaction retry",
@@ -4437,6 +4563,24 @@ async def _execute(
             has_ex_vat = False
             has_inc_vat = False
             for line in args["orderLines"]:
+                product_id = _extract_reference_id(line.get("product"))
+                product_snapshot = (
+                    ctx.product_snapshots.get(product_id)
+                    if ctx and product_id is not None and ctx.product_snapshots
+                    else None
+                )
+                product_vat_type_id = (
+                    product_snapshot.get("vatTypeId")
+                    if isinstance(product_snapshot, dict)
+                    else None
+                )
+                if "vatType" not in line and product_vat_type_id is not None:
+                    line["vatType"] = {"id": product_vat_type_id}
+                    logger.info(
+                        "Auto-injected product vatType id=%s into order line for product id=%s",
+                        product_vat_type_id,
+                        product_id,
+                    )
                 if _looks_like_fee_text(line.get("description")):
                     resolved_vat_type = await _resolve_vat_type(client, ctx, 0, direction="outgoing")
                     if resolved_vat_type is not None and _extract_reference_id(line.get("vatType")) != resolved_vat_type["id"]:
@@ -5152,15 +5296,34 @@ async def _execute(
                     employee_id = _extract_reference_id(payslip.get("employee"))
                     if employee_id is None:
                         continue
-                    employment_id = await _ensure_employment_for_employee(
-                        client,
-                        employee_id,
-                        effective_date,
-                        ctx,
-                        ensure_division=True,
-                    )
-                    if employment_id is not None:
-                        ensured_any = True
+                    if missing_employment:
+                        employment_id = await _ensure_employment_for_employee(
+                            client,
+                            employee_id,
+                            effective_date,
+                            ctx,
+                            ensure_division=True,
+                        )
+                        if employment_id is not None:
+                            ensured_any = True
+                    else:
+                        employment_id = await _resolve_employment_id(
+                            client,
+                            {"employeeId": employee_id, "date": effective_date},
+                            ctx,
+                        )
+                        if employment_id is None:
+                            employment_id = await _ensure_employment_for_employee(
+                                client,
+                                employee_id,
+                                effective_date,
+                                ctx,
+                                ensure_division=False,
+                            )
+                        if employment_id is None:
+                            continue
+                        if await _ensure_employment_division(client, employment_id, ctx):
+                            ensured_any = True
                 if not ensured_any:
                     raise
                 if missing_business_link:

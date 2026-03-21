@@ -61,7 +61,11 @@ def _prompt_likely_requires_writes(prompt: str) -> bool:
         "creez",
         "erstell",
     )
-    return any(marker in normalized for marker in write_markers) or _prompt_likely_requires_invoice_payment(prompt)
+    return (
+        any(marker in normalized for marker in write_markers)
+        or _prompt_likely_requires_invoice_payment(prompt)
+        or _prompt_likely_requires_salary_transaction(prompt)
+    )
 
 
 def _prompt_likely_requires_invoice_payment(prompt: str) -> bool:
@@ -208,6 +212,37 @@ def _prompt_likely_requires_contract_standard_time(prompt: str) -> bool:
     return any(marker in normalized for marker in standard_time_markers)
 
 
+def _prompt_likely_requires_salary_transaction(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    if _prompt_likely_requires_contract_onboarding_completion(prompt):
+        return False
+    payroll_markers = (
+        "salary",
+        "payroll",
+        "salary transaction",
+        "lon ",
+        "lonn",
+        "kjoyr lon",
+        "koyr lon",
+        "køyr løn",
+        "run payroll",
+        "execute payroll",
+        "nomina",
+        "nómina",
+        "paie",
+        "salaire de base",
+        "grunnlonn",
+        "grunnlønn",
+        "bonus",
+        "bonificacion",
+        "bonificación",
+        "prime unique",
+        "eingongsbonus",
+        "eingangsbonus",
+    )
+    return any(marker in normalized for marker in payroll_markers)
+
+
 def _should_retry_text_only_response(
     assistant_text: str,
     prompt: str,
@@ -251,6 +286,10 @@ def _should_retry_text_only_response(
                 logger.info("Onboarding task missing employment details; continuing before DONE")
             else:
                 logger.info("Onboarding task missing standard time; continuing before DONE")
+            return True
+    if _prompt_likely_requires_salary_transaction(prompt):
+        if getattr(ctx, "salary_transaction_action_count", 0) == 0:
+            logger.info("Payroll task missing successful salary transaction; continuing before DONE")
             return True
     return False
 
@@ -337,6 +376,24 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
             "The onboarding task is not complete yet. Re-inspect the attached contract or offer letter. "
             + missing_text
             + ". Reply only with DONE when the employee is created, employment details are written, and the required contract fields are registered, including an occupation code."
+        )
+    if _prompt_likely_requires_salary_transaction(prompt):
+        employee_hint = (
+            f"Use employee id={ctx.last_employee_id}. "
+            if ctx.last_employee_id is not None
+            else ""
+        )
+        employment_hint = (
+            f"Use employment id={ctx.last_employment_id} for any employment repairs. "
+            if ctx.last_employment_id is not None
+            else ""
+        )
+        return (
+            "The payroll task is not complete yet. Do not stop after employee lookup or employment repair. "
+            + employee_hint
+            + employment_hint
+            + "Ensure the employee has an employment in the period and that the employment is linked to a division/business, "
+            "then call create_salary_transaction again. Reply only with DONE when the salary transaction has succeeded."
         )
     return (
         "The task is not complete yet. Execute all requested Tripletex create, update, delete, "

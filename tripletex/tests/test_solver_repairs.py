@@ -488,6 +488,37 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_should_retry_text_only_response_when_payroll_not_registered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                "Køyr løn for Brita Berge for denne månaden. Grunnlønn er 36800 kr. Legg til ein eingongsbonus på 14100 kr.",
+                2,
+                0,
+                EntityContext(last_employee_id=18614354, last_employment_id=2831689),
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_payroll_was_registered(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                "Køyr løn for Brita Berge for denne månaden. Grunnlønn er 36800 kr. Legg til ein eingongsbonus på 14100 kr.",
+                2,
+                0,
+                EntityContext(salary_transaction_action_count=1),
+            )
+        )
+
+    def test_build_incomplete_task_reminder_for_payroll_mentions_salary_transaction(self):
+        reminder = _build_incomplete_task_reminder(
+            "Exécutez la paie de Chloé Dubois pour ce mois. Ajoutez une prime unique.",
+            EntityContext(last_employee_id=18614205, last_employment_id=2817401),
+        )
+
+        self.assertIn("create_salary_transaction again", reminder)
+        self.assertIn("employment is linked to a division/business", reminder)
+
     def test_should_not_retry_text_only_response_when_invoice_payment_reversal_was_registered(self):
         self.assertFalse(
             _should_retry_text_only_response(
@@ -591,6 +622,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("preserve the literal supplier name, organization number, invoice number, invoice date, and line description", prompt)
         self.assertIn("Prefer account `6420`", prompt)
+        self.assertIn("Prefer account `6900`", prompt)
         self.assertIn("supplier reference on the accounts-payable line only", prompt)
 
     def test_system_prompt_includes_bank_reconciliation_supplier_payment_guidance(self):
