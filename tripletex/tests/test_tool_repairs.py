@@ -763,6 +763,39 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["projectManager"], {"id": 901})
         self.assertTrue(body["isInternal"])
 
+    async def test_create_project_uses_existing_employee_when_project_manager_search_is_empty(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/project",
+                    (("count", 50), ("fields", "id,projectManager")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 500, "projectManager": None}],
+                },
+                (
+                    "/employee",
+                    (("count", 50), ("fields", "id")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 777}],
+                },
+            }
+        )
+
+        await _execute(
+            client,
+            "create_project",
+            {"name": "Internt prosjekt"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/project"))
+        self.assertEqual(body["projectManager"], {"id": 777})
+        self.assertTrue(body["isInternal"])
+
     async def test_create_project_retries_with_existing_project_manager_on_validation_error(self):
         client = FakeTripletexClient(
             get_responses={
@@ -2438,6 +2471,39 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             })],
         )
 
+    async def test_tripletex_api_call_strips_invalid_ledger_vat_type_ledger_type_field(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/vatType",
+                    (
+                        ("fields", "id,name,percentage"),
+                        ("percentage", "25"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 1, "name": "Utgående høy sats", "percentage": 25}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/ledger/vatType?percentage=25&fields=id,name,percentage,ledgerType",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 1)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/ledger/vatType", {"percentage": "25", "fields": "id,name,percentage"})],
+        )
+
     async def test_tripletex_api_call_blocks_ledger_result(self):
         client = FakeTripletexClient()
 
@@ -3912,6 +3978,88 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["value"]["id"], 999)
         self.assertNotIn("department", client.calls[-1][2]["postings"][0])
+
+    async def test_create_voucher_normalizes_office_supplies_account_and_skips_prefetched_department_on_vat_split(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "6800"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 80, "number": 6800, "name": "Kontorrekvisita"}],
+                },
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "2710"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 30, "number": 2710, "name": "Inngaende mva"}],
+                },
+            }
+        )
+        ctx = EntityContext(
+            prompt_text="Du har mottatt en leverandorfaktura. Registrer fakturaen i Tripletex.",
+            last_department_id=955719,
+            last_department_id_prefetched=True,
+        )
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6500,
+                "name": "Verktoy",
+                "vatType": {"id": 1},
+                "legalVatTypes": [{"id": 1}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+        ctx.vat_type_cache = {(25.0, "incoming"): 1}
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-01-11",
+                "description": "Leverandorfaktura INV-2026-5859 - Kontorrekvisita",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 38562,
+                        "amountGrossCurrency": 38562,
+                        "description": "Kontorrekvisita",
+                        "vatType": {"id": 1},
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -38562,
+                        "amountGrossCurrency": -38562,
+                        "supplier": {"id": 108417331},
+                        "description": "INV-2026-5859",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        voucher_postings = client.calls[-1][2]["postings"]
+        self.assertEqual(voucher_postings[0]["account"], {"id": 80})
+        self.assertNotIn("department", voucher_postings[0])
+        self.assertEqual(voucher_postings[1]["account"], {"id": 30})
+        self.assertNotIn("department", voucher_postings[1])
+        self.assertEqual(voucher_postings[2]["amountGross"], -38562)
 
     async def test_create_voucher_normalizes_year_end_depreciation_to_requested_accounts(self):
         client = FakeTripletexClient()

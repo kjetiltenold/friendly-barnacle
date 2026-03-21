@@ -1959,6 +1959,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
                 ctx
                 and ctx.last_department_id
                 and not ctx.last_department_id_prefetched
+                and not _looks_like_generic_supplier_invoice_without_department(ctx)
                 and "department" not in posting
                 and posting.get("amountGross", 0) > 0
             ):
@@ -1967,6 +1968,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
     _normalize_supplier_invoice_posting_references(args["postings"], ctx)
     await _normalize_supplier_invoice_software_account(client, args["postings"], ctx, args.get("description"))
     await _normalize_supplier_invoice_network_account(client, args["postings"], ctx, args.get("description"))
+    await _normalize_supplier_invoice_office_supplies_account(client, args["postings"], ctx, args.get("description"))
     _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
     await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
     total = sum(
@@ -3201,6 +3203,21 @@ def _looks_like_network_service_text(*parts) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _looks_like_office_supplies_text(*parts) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    keywords = (
+        "kontorrekvisita",
+        "office supplies",
+        "office supply",
+        "stationery",
+        "stationary",
+        "kontorartikler",
+        "kontormateriell",
+        "skrivesaker",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
 async def _resolve_vat_type(
     client: TripletexClient,
     ctx: EntityContext | None,
@@ -3622,6 +3639,77 @@ async def _normalize_supplier_invoice_network_account(
     return True
 
 
+async def _normalize_supplier_invoice_office_supplies_account(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    ctx: EntityContext | None,
+    voucher_description: str | None = None,
+) -> bool:
+    if not isinstance(postings, list):
+        return False
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return False
+    expense_posting = positive_postings[0]
+    payable_posting = negative_postings[0]
+    payable_account = _get_cached_account(ctx, payable_posting) or {}
+    is_supplier_liability = "supplier" in payable_posting or str(payable_account.get("number")) == "2400"
+    if not is_supplier_liability:
+        return False
+    expense_account = _get_cached_account(ctx, expense_posting) or {}
+    if str(expense_account.get("number")) != "6500":
+        return False
+    if not _looks_like_office_supplies_text(
+        voucher_description,
+        expense_posting.get("description"),
+        payable_posting.get("description"),
+        ctx.prompt_text if ctx else None,
+    ):
+        return False
+    office_account = _find_cached_account_by_number(ctx, "6800")
+    if office_account is None:
+        result = await client.get(
+            "/ledger/account",
+            params={
+                "number": "6800",
+                "fields": "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount",
+            },
+        )
+        values = result.get("values", [])
+        if values:
+            office_account = values[0]
+            if ctx is not None:
+                ctx.account_cache[office_account["id"]] = office_account
+    if office_account is None:
+        return False
+    expense_posting["account"] = {"id": office_account["id"]}
+    logger.info("Normalized supplier invoice office-supplies expense account from 6500 to 6800")
+    return True
+
+
+def _looks_like_generic_supplier_invoice_without_department(ctx: EntityContext | None) -> bool:
+    normalized_prompt = _normalize_prompt_text(ctx.prompt_text if ctx else None)
+    if not normalized_prompt:
+        return False
+    supplier_invoice_markers = (
+        "supplierinvoice",
+        "leverandorfaktura",
+        "facturefournisseur",
+        "facturafornecedor",
+        "invoicefournisseur",
+    )
+    department_markers = (
+        "department",
+        "departement",
+        "departamento",
+        "avdeling",
+    )
+    return any(marker in normalized_prompt for marker in supplier_invoice_markers) and not any(
+        marker in normalized_prompt for marker in department_markers
+    )
+
+
 async def _expand_simple_supplier_invoice_vat_split(
     client: TripletexClient,
     postings: list[dict] | None,
@@ -3678,7 +3766,11 @@ async def _expand_simple_supplier_invoice_vat_split(
         "amountGrossCurrency": vat_amount,
         "description": f"Inngående MVA {vat_percentage:g}%",
     }
-    if ctx and ctx.last_department_id:
+    if (
+        ctx
+        and ctx.last_department_id
+        and not _looks_like_generic_supplier_invoice_without_department(ctx)
+    ):
         vat_posting["department"] = {"id": ctx.last_department_id}
     insert_index = postings.index(expense_posting) + 1
     postings.insert(insert_index, vat_posting)
@@ -3740,7 +3832,7 @@ async def _ensure_department(client: TripletexClient) -> int | None:
 
 
 async def _ensure_project_manager(client: TripletexClient) -> int | None:
-    """Find a project manager from an existing project."""
+    """Find a reusable project manager from existing projects or employees."""
     try:
         result = await client.get("/project", params={"fields": "id,projectManager", "count": 50})
         values = result.get("values", [])
@@ -3752,6 +3844,16 @@ async def _ensure_project_manager(client: TripletexClient) -> int | None:
                 return project_manager_id
     except Exception as e:
         logger.warning(f"Failed to find reusable project manager: {e}")
+    try:
+        result = await client.get("/employee", params={"fields": "id", "count": 50})
+        values = result.get("values", [])
+        for employee in values:
+            employee_id = employee.get("id")
+            if employee_id:
+                logger.info(f"Reusing existing employee id={employee_id} as project manager fallback")
+                return employee_id
+    except Exception as e:
+        logger.warning(f"Failed to find reusable employee for project manager fallback: {e}")
     return None
 
 
@@ -5641,7 +5743,10 @@ async def _execute(
             logger.info(f"Extracted query params from path: {list(embedded.keys())}")
         _normalize_exclusive_date_range(path, params)
         if path.startswith("/ledger/vatType") and isinstance(params.get("fields"), str):
-            rewritten_fields = _rewrite_fields_filter(params["fields"], {"rate": "percentage", "direction": ""})
+            rewritten_fields = _rewrite_fields_filter(
+                params["fields"],
+                {"rate": "percentage", "direction": "", "ledgerType": ""},
+            )
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized vatType fields filter to {rewritten_fields}")

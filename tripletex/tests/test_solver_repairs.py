@@ -369,6 +369,62 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_should_retry_text_only_response_for_top_expense_followup_until_projects_activities_and_links_exist(self):
+        ctx = EntityContext(
+            last_top_expense_analysis={
+                "topAccounts": [
+                    {"account": {"name": "Account 1"}},
+                    {"account": {"name": "Account 2"}},
+                    {"account": {"name": "Account 3"}},
+                ]
+            }
+        )
+        ctx.project_ids = [101, 102, 103]
+        ctx.activity_ids = [201]
+        ctx.linked_project_activity_pairs = {(101, 201)}
+
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Los costos totales aumentaron significativamente. "
+                    "Cree un proyecto interno para cada una de las tres cuentas con el nombre de la cuenta. "
+                    "Tambien cree una actividad para cada proyecto."
+                ),
+                3,
+                0,
+                ctx,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_for_top_expense_followup_after_all_writes_exist(self):
+        ctx = EntityContext(
+            last_top_expense_analysis={
+                "topAccounts": [
+                    {"account": {"name": "Account 1"}},
+                    {"account": {"name": "Account 2"}},
+                    {"account": {"name": "Account 3"}},
+                ]
+            }
+        )
+        ctx.project_ids = [101, 102, 103]
+        ctx.activity_ids = [201, 202, 203]
+        ctx.linked_project_activity_pairs = {(101, 201), (102, 202), (103, 203)}
+
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Los costos totales aumentaron significativamente. "
+                    "Cree un proyecto interno para cada una de las tres cuentas con el nombre de la cuenta. "
+                    "Tambien cree una actividad para cada proyecto."
+                ),
+                9,
+                0,
+                ctx,
+            )
+        )
+
     def test_should_retry_text_only_response_for_offer_letter_onboarding_until_occupation_code_is_written(self):
         prompt = (
             "Du har motteke eit tilbodsbrev for ein ny tilsett. "

@@ -291,6 +291,25 @@ def _should_retry_text_only_response(
         if getattr(ctx, "salary_transaction_action_count", 0) == 0:
             logger.info("Payroll task missing successful salary transaction; continuing before DONE")
             return True
+    if ctx is not None and isinstance(ctx.last_top_expense_analysis, dict):
+        required_followup_writes = len(ctx.last_top_expense_analysis.get("topAccounts") or [])
+        if required_followup_writes > 0:
+            project_count = len(ctx.project_ids or [])
+            activity_count = len(ctx.activity_ids or [])
+            linked_count = len(ctx.linked_project_activity_pairs or set())
+            if (
+                project_count < required_followup_writes
+                or activity_count < required_followup_writes
+                or linked_count < required_followup_writes
+            ):
+                logger.info(
+                    "Top-expense follow-up task missing writes before DONE: projects=%s activities=%s links=%s required=%s",
+                    project_count,
+                    activity_count,
+                    linked_count,
+                    required_followup_writes,
+                )
+                return True
     return False
 
 
