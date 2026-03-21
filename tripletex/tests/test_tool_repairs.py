@@ -370,6 +370,57 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["value"]["isCustomer"])
         self.assertTrue(result["value"]["isSupplier"])
 
+    async def test_create_customer_retries_lookup_and_does_not_create_new_customer_for_invoice_payment_task(self):
+        class RetryLookupClient(FakeTripletexClient):
+            def __init__(self):
+                super().__init__()
+                self.customer_lookup_attempts = 0
+
+            async def get(self, path, params=None):
+                self.calls.append(("GET", path, params))
+                if path == "/customer":
+                    self.customer_lookup_attempts += 1
+                    if self.customer_lookup_attempts == 1:
+                        raise RuntimeError("500 Internal Server Error: <!DOCTYPE html><title>Feilsituasjon - Tripletex</title>")
+                    return {
+                        "fullResultSize": 1,
+                        "values": [
+                            {
+                                "id": 108393698,
+                                "name": "Rio Azul Lda",
+                                "organizationNumber": "932217643",
+                                "isCustomer": True,
+                                "isSupplier": False,
+                            }
+                        ],
+                    }
+                return await super().get(path, params)
+
+        client = RetryLookupClient()
+
+        result = await _execute(
+            client,
+            "create_customer",
+            {
+                "name": "Rio Azul Lda",
+                "organizationNumber": "932217643",
+                "isCustomer": True,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                prompt_text='O cliente Rio Azul Lda (org. nº 932217643) tem uma fatura pendente de 44100 NOK sem IVA por "Sessão de formação". Registe o pagamento total desta fatura.'
+            ),
+        )
+
+        self.assertEqual(result["value"]["id"], 108393698)
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/customer", {"organizationNumber": "932217643", "fields": "id,name,organizationNumber,isCustomer,isSupplier"}),
+                ("GET", "/customer", {"organizationNumber": "932217643", "fields": "id,name,organizationNumber,isCustomer,isSupplier"}),
+            ],
+        )
+
     async def test_create_product_reuses_existing_product_number(self):
         client = FakeTripletexClient(
             get_responses={
@@ -2009,6 +2060,48 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             })],
         )
 
+    async def test_tripletex_api_call_flattens_invalid_ledger_posting_postings_field(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/posting",
+                    (
+                        ("accountNumberFrom", "1700"),
+                        ("accountNumberTo", "1700"),
+                        ("dateFrom", "2025-01-01"),
+                        ("dateTo", "2026-01-01"),
+                        ("fields", "amountGross,account,date,voucher(number)"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"amountGross": 27650, "voucher": {"number": 83}}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/ledger/posting?dateFrom=2025-01-01&dateTo=2026-01-01&accountNumberFrom=1700&accountNumberTo=1700&fields=amountGross,account,date,postings(voucher(number))",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["voucher"]["number"], 83)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/ledger/posting", {
+                "dateFrom": "2025-01-01",
+                "dateTo": "2026-01-01",
+                "accountNumberFrom": "1700",
+                "accountNumberTo": "1700",
+                "fields": "amountGross,account,date,voucher(number)",
+            })],
+        )
+
     async def test_tripletex_api_call_normalizes_ledger_voucher_posting_voucher_number_field(self):
         client = FakeTripletexClient(
             get_responses={
@@ -2202,6 +2295,44 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                         "paymentType": "13",
                         "amount": "3650.00",
                         "partialPayment": True,
+                    },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_tracks_customer_invoice_payment_action(self):
+        client = FakeTripletexClient(
+            put_responses={
+                "/invoice/2147596454/:payment": {"value": {"id": 2147596454}}
+            }
+        )
+        ctx = EntityContext()
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "PUT",
+                "path": "/invoice/2147596454/:payment?paymentDate=2026-03-21&paymentTypeId=3&paidAmount=44100",
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 2147596454)
+        self.assertEqual(ctx.last_invoice_id, 2147596454)
+        self.assertEqual(ctx.invoice_payment_action_count, 1)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "PUT",
+                    "/invoice/2147596454/:payment",
+                    None,
+                    {
+                        "paymentDate": "2026-03-21",
+                        "paymentTypeId": "3",
+                        "paidAmount": "44100",
                     },
                 )
             ],
@@ -3053,6 +3184,86 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 999)
         self.assertEqual(client.calls[-1][2]["postings"][0]["account"], {"id": 1})
         self.assertEqual(client.calls[-1][2]["postings"][1]["account"], {"id": 2})
+
+    async def test_create_voucher_normalizes_year_end_prepaid_rent_counterpart_to_6300(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (("fields", "id,number,name"), ("number", "6300")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 3, "number": 6300, "name": "Leie lokaler"}],
+                }
+            }
+        )
+        ctx = EntityContext(
+            prompt_text=(
+                "Fuehren Sie den vereinfachten Jahresabschluss fuer 2025 durch. "
+                "Loesen Sie vorausbezahlte Aufwendungen auf (insgesamt 27650 NOK auf Konto 1700)."
+            ),
+        )
+        ctx.account_cache = {
+            1: {"id": 1, "number": 1700, "name": "Forskuddsbetalte kostnader"},
+            2: {"id": 2, "number": 1209, "name": "Akkumulert avskrivning"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2025-12-31",
+                "description": "Oppløsning forskuddsbetalt kostnad 2025",
+                "postings": [
+                    {
+                        "account": {"id": 1},
+                        "amountGross": 27650,
+                        "amountGrossCurrency": 27650,
+                        "description": "Oppløsning forskuddsbetalt leie",
+                    },
+                    {
+                        "account": {"id": 2},
+                        "amountGross": -27650,
+                        "amountGrossCurrency": -27650,
+                        "description": "Motkonto forskuddsbetalt leie",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/ledger/account", {"number": "6300", "fields": "id,number,name"}),
+                (
+                    "POST",
+                    "/ledger/voucher",
+                    {
+                        "date": "2025-12-31",
+                        "description": "Oppløsning forskuddsbetalt kostnad 2025",
+                        "postings": [
+                            {
+                                "account": {"id": 1},
+                                "amountGross": 27650,
+                                "amountGrossCurrency": 27650,
+                                "description": "Oppløsning forskuddsbetalt leie",
+                                "row": 1,
+                            },
+                            {
+                                "account": {"id": 3},
+                                "amountGross": -27650,
+                                "amountGrossCurrency": -27650,
+                                "description": "Motkonto forskuddsbetalt leie",
+                                "row": 2,
+                            },
+                        ],
+                    },
+                ),
+            ],
+        )
 
     async def test_create_voucher_splits_month_end_closing_and_normalizes_requested_accounts(self):
         client = FakeTripletexClient()

@@ -28,10 +28,14 @@ def _is_terminal_tripletex_proxy_token_error_message(message: str | None) -> boo
     return TERMINAL_PROXY_TOKEN_MARKER in str(message or "").lower()
 
 
-def _prompt_likely_requires_writes(prompt: str) -> bool:
-    lowered = (prompt or "").lower()
+def _normalize_text(value: str | None) -> str:
+    lowered = (value or "").lower()
     normalized = unicodedata.normalize("NFKD", lowered)
-    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _prompt_likely_requires_writes(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
     write_markers = (
         "create",
         "opprett",
@@ -60,18 +64,56 @@ def _prompt_likely_requires_writes(prompt: str) -> bool:
     return any(marker in normalized for marker in write_markers)
 
 
+def _prompt_likely_requires_invoice_payment(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    invoice_markers = (
+        "invoice",
+        "fatura",
+        "factura",
+        "facture",
+        "faktura",
+        "rechnung",
+    )
+    payment_markers = (
+        "payment",
+        "pay ",
+        "pagamento",
+        "pagar",
+        "betaling",
+        "betale",
+        "paiement",
+        "payer",
+        "zahlung",
+        "bezahlen",
+        "registe o pagamento",
+        "registrer betaling",
+        "register payment",
+        "registrez le paiement",
+    )
+    return any(marker in normalized for marker in invoice_markers) and any(
+        marker in normalized for marker in payment_markers
+    )
+
+
 def _should_retry_text_only_response(
     assistant_text: str,
     prompt: str,
     write_call_count: int,
     reminder_count: int,
+    ctx: EntityContext | None = None,
 ) -> bool:
     if reminder_count >= 2:
         return False
     normalized = assistant_text.strip().upper()
     if normalized != "DONE":
         return True
-    return _prompt_likely_requires_writes(prompt) and write_call_count == 0
+    if not _prompt_likely_requires_writes(prompt):
+        return False
+    if write_call_count == 0:
+        return True
+    if _prompt_likely_requires_invoice_payment(prompt):
+        return getattr(ctx, "invoice_payment_action_count", 0) == 0
+    return False
 
 
 def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
@@ -90,6 +132,24 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
                 "create_project with isInternal=true for each account name, create_activity with the same name, "
                 "and create_project_activity to link each activity to its project. Reply only with DONE when the writes are finished."
             )
+    if _prompt_likely_requires_invoice_payment(prompt):
+        payment_type_hint = (
+            f"Use paymentType id={ctx.last_payment_type_id}. "
+            if ctx.last_payment_type_id is not None
+            else "Use GET /invoice/paymentType if you still need the payment type. "
+        )
+        invoice_hint = (
+            f"Use the matched invoice id={ctx.last_invoice_id}. "
+            if ctx.last_invoice_id is not None
+            else "Find the matching open invoice first by customer and outstanding amount/description. "
+        )
+        return (
+            "The task is not complete yet. Do not stop after customer or invoice lookup. "
+            + invoice_hint
+            + payment_type_hint
+            + "Register the payment with PUT /invoice/{invoice_id}/:payment using paymentDate, paymentTypeId, and paidAmount. "
+            "Reply only with DONE when the payment registration is finished."
+        )
     return (
         "The task is not complete yet. Execute all requested Tripletex create, update, delete, "
         "or posting actions before stopping. Reply only with DONE when the requested actions are finished."
@@ -150,6 +210,7 @@ async def solve_task(request: SolveRequest) -> None:
                     request.prompt,
                     tx.write_call_count,
                     completion_reminder_count,
+                    ctx,
                 ):
                     completion_reminder_count += 1
                     logger.info("Model stopped before completing requested actions; nudging to continue")

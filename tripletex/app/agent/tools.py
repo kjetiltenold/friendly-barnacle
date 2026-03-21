@@ -69,6 +69,7 @@ class EntityContext:
     last_cost_category_id: int | None = None
     last_cost_categories: list[dict] | None = None
     last_payment_type_id: int | None = None
+    invoice_payment_action_count: int = 0
     last_hourly_rate_id: int | None = None
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
@@ -910,6 +911,40 @@ def _normalize_ledger_voucher_fields_filter(fields: str) -> str:
     return ",".join(rewritten)
 
 
+def _normalize_ledger_posting_fields_filter(fields: str) -> str:
+    """Normalize common invalid ledger/posting fields to schema-valid Posting fields."""
+    replacements = {
+        "accountingDate": "date",
+        "voucherNumber": "voucher(number)",
+        "voucherTempNumber": "voucher(tempNumber)",
+        "voucherYear": "voucher(year)",
+    }
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for raw_part in _split_filter_parts(fields):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if part.startswith("postings(") and part.endswith(")"):
+            inner = part[len("postings("):-1]
+            for raw_child in _split_filter_parts(inner):
+                child = raw_child.strip()
+                if not child:
+                    continue
+                normalized_child = replacements.get(child, child)
+                if normalized_child in seen:
+                    continue
+                seen.add(normalized_child)
+                rewritten.append(normalized_child)
+            continue
+        part = replacements.get(part, part)
+        if part in seen:
+            continue
+        seen.add(part)
+        rewritten.append(part)
+    return ",".join(rewritten)
+
+
 def _normalize_exclusive_date_range(path: str, params: dict) -> None:
     """Adjust common inclusive end-date mistakes for exclusive-range Tripletex endpoints."""
     if path != "/ledger/posting":
@@ -942,6 +977,25 @@ def _find_cached_account_by_number(ctx: EntityContext | None, number: str) -> di
         if str(account.get("number")) == target:
             return account
     return None
+
+
+def _is_year_end_prepaid_reversal_description(description: str | None) -> bool:
+    normalized_description = _normalize_prompt_text(description)
+    return any(
+        token in normalized_description
+        for token in (
+            "prepaid",
+            "forskudds",
+            "vorausbezahlt",
+            "auflos",
+            "tilbakeforing",
+            "reversal",
+            "extourne",
+            "cca",
+            "chargeconstateedavance",
+            "chargesconstateesdavance",
+        )
+    )
 
 
 def _normalize_year_end_depreciation_postings(postings: list[dict] | None, description: str | None, ctx: EntityContext | None) -> None:
@@ -1116,22 +1170,7 @@ def _normalize_year_end_prepaid_reversal_postings(
 ) -> None:
     if ctx is None or not isinstance(postings, list) or len(postings) != 2:
         return
-    normalized_description = _normalize_prompt_text(description)
-    if not any(
-        token in normalized_description
-        for token in (
-            "prepaid",
-            "forskudds",
-            "vorausbezahlt",
-            "auflos",
-            "tilbakeforing",
-            "reversal",
-            "extourne",
-            "cca",
-            "chargeconstateedavance",
-            "chargesconstateesdavance",
-        )
-    ):
+    if not _is_year_end_prepaid_reversal_description(description):
         return
     target_amount = _extract_prompt_year_end_prepaid_amount(ctx, "1700")
     if target_amount in (None, 0):
@@ -1158,6 +1197,62 @@ def _normalize_year_end_prepaid_reversal_postings(
         target_amount,
         current_amount,
     )
+
+
+async def _normalize_year_end_prepaid_reversal_counterpart_account(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    description: str | None,
+    ctx: EntityContext | None,
+) -> None:
+    if ctx is None or not isinstance(postings, list) or len(postings) != 2:
+        return
+    if not _is_year_end_prepaid_reversal_description(description):
+        return
+    combined_text = " ".join(
+        [str(description or ""), str((ctx.prompt_text if ctx else None) or "")]
+        + [str((posting or {}).get("description") or "") for posting in postings if isinstance(posting, dict)]
+    )
+    normalized_text = _normalize_prompt_text(combined_text)
+    if not any(token in normalized_text for token in ("leie", "rent", "miete", "loyer", "lease", "husleie", "lokale")):
+        return
+    debit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    credit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(debit_postings) != 1 or len(credit_postings) != 1:
+        return
+    debit_posting = debit_postings[0]
+    credit_posting = credit_postings[0]
+    debit_account = _get_cached_account(ctx, debit_posting) or {}
+    credit_account = _get_cached_account(ctx, credit_posting) or {}
+    if str(debit_account.get("number") or "") == "1700":
+        counterpart_posting = credit_posting
+        counterpart_account = credit_account
+    elif str(credit_account.get("number") or "") == "1700":
+        counterpart_posting = debit_posting
+        counterpart_account = debit_account
+    else:
+        return
+    counterpart_number = str(counterpart_account.get("number") or "")
+    if counterpart_number == "6300":
+        return
+    if counterpart_number and counterpart_number[0] not in {"1", "2"}:
+        return
+    preferred_rent = _find_cached_account_by_number(ctx, "6300")
+    source_label = "cached lookup"
+    if preferred_rent is None:
+        result = await client.get("/ledger/account", params={"number": "6300", "fields": "id,number,name"})
+        values = result.get("values", [])
+        if not values:
+            return
+        preferred_rent = values[0]
+        account_id = preferred_rent.get("id")
+        if account_id is not None:
+            ctx.account_cache[account_id] = preferred_rent
+            ctx.last_account_id = account_id
+        source_label = "lookup"
+        logger.info("Resolved year-end prepaid rent expense account 6300 from ledger/account lookup")
+    counterpart_posting["account"] = {"id": preferred_rent["id"]}
+    logger.info("Normalized year-end prepaid rent counterpart posting to account 6300 from %s", source_label)
 
 
 def _normalize_year_end_tax_provision_postings(
@@ -1299,6 +1394,11 @@ def _normalize_month_end_closing_pair_postings(
 ) -> None:
     if ctx is None or not isinstance(postings, list) or len(postings) != 2:
         return
+    if (
+        _is_year_end_prepaid_reversal_description(description)
+        and _extract_prompt_year_end_prepaid_amount(ctx, "1700") not in (None, 0)
+    ):
+        return
     topic = _classify_month_end_closing_pair(postings, description)
     if topic is None:
         return
@@ -1405,6 +1505,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
         return None
     _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
     _normalize_year_end_prepaid_reversal_postings(args["postings"], args.get("description"), ctx)
+    await _normalize_year_end_prepaid_reversal_counterpart_account(client, args["postings"], args.get("description"), ctx)
     _normalize_year_end_tax_provision_postings(args["postings"], args.get("description"), ctx)
     correction_error = _validate_ledger_error_correction_postings(args["postings"], args.get("description"), ctx)
     if correction_error is not None:
@@ -2020,6 +2121,49 @@ def _prompt_mentions_partial_payments(ctx: EntityContext | None) -> bool:
         "paiementspartiels",
     )
     return any(token in normalized for token in partial_tokens)
+
+
+def _prompt_requests_invoice_payment(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    invoice_tokens = (
+        "invoice",
+        "fatura",
+        "factura",
+        "facture",
+        "faktura",
+        "rechnung",
+    )
+    payment_tokens = (
+        "payment",
+        "pay",
+        "pagamento",
+        "pagar",
+        "betaling",
+        "betale",
+        "paiement",
+        "payer",
+        "zahlung",
+        "bezahlen",
+        "registerpayment",
+        "registreopagamento",
+        "registrerbetaling",
+        "registrezlepaiement",
+    )
+    return any(token in normalized for token in invoice_tokens) and any(
+        token in normalized for token in payment_tokens
+    )
+
+
+def _looks_like_retryable_server_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "500" in message
+        or "internal server error" in message
+        or "<!doctype html>" in message
+        or "feilsituasjon" in message
+    )
 
 
 def _parse_iso_date(value: str | None) -> datetime.date | None:
@@ -3472,31 +3616,49 @@ async def _execute(
         # Search first by org number — sandbox may have pre-existing customer
         org_number = args.get("organizationNumber")
         if org_number:
-            try:
-                result = await client.get("/customer", params={
-                    "organizationNumber": org_number, "fields": "id,name,organizationNumber,isCustomer,isSupplier"
-                })
-                values = result.get("values", [])
-                if values:
-                    customer = values[0]
-                    customer_id = customer["id"]
-                    update_fields = {}
-                    requested_is_customer = args.get("isCustomer")
-                    requested_is_supplier = args.get("isSupplier")
-                    if requested_is_customer is not None and requested_is_customer != customer.get("isCustomer"):
-                        update_fields["isCustomer"] = requested_is_customer
-                    if requested_is_supplier is not None and requested_is_supplier != customer.get("isSupplier"):
-                        update_fields["isSupplier"] = requested_is_supplier
-                    if update_fields:
-                        try:
-                            logger.info(f"Updating existing customer id={customer_id} for org {org_number}")
-                            return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
-                        except Exception as update_error:
-                            logger.warning(f"Customer update failed for existing customer id={customer_id}; reusing existing entity: {update_error}")
-                    logger.info(f"Reusing existing customer id={customer_id} for org {org_number}")
-                    return {"value": customer}
-            except Exception:
-                pass
+            customer_lookup_params = {
+                "organizationNumber": org_number,
+                "fields": "id,name,organizationNumber,isCustomer,isSupplier",
+            }
+            for attempt in range(2):
+                try:
+                    result = await client.get("/customer", params=customer_lookup_params)
+                    values = result.get("values", [])
+                    if values:
+                        customer = values[0]
+                        customer_id = customer["id"]
+                        update_fields = {}
+                        requested_is_customer = args.get("isCustomer")
+                        requested_is_supplier = args.get("isSupplier")
+                        if requested_is_customer is not None and requested_is_customer != customer.get("isCustomer"):
+                            update_fields["isCustomer"] = requested_is_customer
+                        if requested_is_supplier is not None and requested_is_supplier != customer.get("isSupplier"):
+                            update_fields["isSupplier"] = requested_is_supplier
+                        if update_fields:
+                            try:
+                                logger.info(f"Updating existing customer id={customer_id} for org {org_number}")
+                                return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
+                            except Exception as update_error:
+                                logger.warning(f"Customer update failed for existing customer id={customer_id}; reusing existing entity: {update_error}")
+                        logger.info(f"Reusing existing customer id={customer_id} for org {org_number}")
+                        return {"value": customer}
+                    break
+                except Exception as lookup_error:
+                    if attempt == 0 and _looks_like_retryable_server_error(lookup_error):
+                        logger.warning(
+                            "Customer lookup by organization number failed with server error; retrying once for org %s: %s",
+                            org_number,
+                            lookup_error,
+                        )
+                        continue
+                    if _prompt_requests_invoice_payment(ctx):
+                        logger.warning(
+                            "Customer lookup still failed during invoice-payment task; refusing to create new customer for org %s: %s",
+                            org_number,
+                            lookup_error,
+                        )
+                        raise
+                    break
         # Ensure isCustomer is set unless this is a supplier-only entity
         if "isCustomer" not in args and not args.get("isSupplier"):
             args["isCustomer"] = True
@@ -4645,12 +4807,7 @@ async def _execute(
                 params.pop("accountNumber", None)
                 logger.info("Normalized ledger/posting accountNumber filter to accountNumberFrom/accountNumberTo")
             if isinstance(params.get("fields"), str):
-                rewritten_fields = _rewrite_fields_filter(
-                    params["fields"],
-                    {
-                        "accountingDate": "date",
-                    },
-                )
+                rewritten_fields = _normalize_ledger_posting_fields_filter(params["fields"])
                 if rewritten_fields != params["fields"]:
                     params["fields"] = rewritten_fields
                     logger.info(f"Normalized ledger/posting fields filter to {rewritten_fields}")
@@ -4814,8 +4971,19 @@ async def _execute(
             return await client.post(path, json=body)
         if method == "PUT":
             if "/invoice" in path or "/:invoice" in path:
-                return await _run_with_bank_retry(lambda: client.put(path, json=body, params=params))
-            return await client.put(path, json=body, params=params)
+                result = await _run_with_bank_retry(lambda: client.put(path, json=body, params=params))
+            else:
+                result = await client.put(path, json=body, params=params)
+            if ctx and re.fullmatch(r"/invoice/\d+/:payment", path):
+                invoice_id = int(path.split("/")[2])
+                ctx.invoice_payment_action_count += 1
+                ctx.last_invoice_id = invoice_id
+                logger.info(f"Tracked customer invoice payment action for invoice id={invoice_id}")
+            elif ctx and re.fullmatch(r"/supplierInvoice/\d+/:addPayment", path):
+                invoice_id = int(path.split("/")[2])
+                ctx.invoice_payment_action_count += 1
+                logger.info(f"Tracked supplier invoice payment action for invoice id={invoice_id}")
+            return result
         if method == "DELETE":
             return await client.delete(path)
 

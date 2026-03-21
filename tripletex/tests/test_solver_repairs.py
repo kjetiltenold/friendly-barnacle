@@ -332,6 +332,28 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_should_retry_text_only_response_when_invoice_payment_not_registered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                'O cliente Rio Azul Lda tem uma fatura pendente. Registe o pagamento total desta fatura.',
+                1,
+                0,
+                EntityContext(),
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_invoice_payment_was_registered(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                'O cliente Rio Azul Lda tem uma fatura pendente. Registe o pagamento total desta fatura.',
+                1,
+                0,
+                EntityContext(invoice_payment_action_count=1),
+            )
+        )
+
     def test_should_not_retry_text_only_response_after_two_reminders(self):
         self.assertFalse(
             _should_retry_text_only_response(
