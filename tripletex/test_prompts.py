@@ -102,14 +102,16 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
     if name == "create_employee":
         eid = _new_id()
         return {"value": {"id": eid, "firstName": args.get("firstName", ""), "lastName": args.get("lastName", ""),
-                          "email": args.get("email", ""), "userType": "STANDARD",
+                          "email": args.get("email", ""), "userType": args.get("userType", "STANDARD"),
+                          "nationalIdentityNumber": args.get("nationalIdentityNumber", ""),
                           "employments": [{"id": _new_id(), "startDate": args.get("startDate", "2026-01-01")}],
                           "department": args.get("department")}}
 
     if name == "create_employment_details":
         return {"value": {"id": _new_id(), "employment": args.get("employment"), "date": args.get("date", args.get("fromDate", "")),
                           "annualSalary": args.get("annualSalary", args.get("salary")), "percentageOfFullTimeEquivalent": args.get("percentageOfFullTimeEquivalent", args.get("employmentPercentage")),
-                          "workingHoursScheme": args.get("workingHoursScheme", "NOT_SHIFT")}}
+                          "workingHoursScheme": args.get("workingHoursScheme", "NOT_SHIFT"), "employmentType": args.get("employmentType", "ORDINARY"),
+                          "occupationCode": args.get("occupationCode")}}
 
     if name == "create_standard_time":
         return {"value": {"id": _new_id(), "employee": args.get("employee"), "fromDate": args.get("fromDate", args.get("date", args.get("startDate", ""))),

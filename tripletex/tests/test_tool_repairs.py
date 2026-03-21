@@ -90,6 +90,30 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[1][0:2], ("POST", "/employee"))
         self.assertEqual(client.calls[1][2]["department"], {"id": 926884})
 
+    async def test_create_employee_without_email_defaults_to_no_access_and_normalizes_identity(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_employee",
+            {
+                "firstName": "Marit",
+                "lastName": "Lunde",
+                "dateOfBirth": "1982-09-19",
+                "nationalIdentityNumber": "190982 12345",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls, [("POST", "/employee", {
+            "firstName": "Marit",
+            "lastName": "Lunde",
+            "dateOfBirth": "1982-09-19",
+            "nationalIdentityNumber": "19098212345",
+            "userType": "NO_ACCESS",
+        })])
+
     async def test_create_employee_updates_existing_department_when_requested(self):
         client = FakeTripletexClient(
             get_responses={
@@ -416,6 +440,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 ("POST", "/employee/employment/details", {
                     "employment": {"id": 2813136},
                     "date": "2026-06-24",
+                    "employmentType": "ORDINARY",
                     "remunerationType": "MONTHLY_WAGE",
                     "workingHoursScheme": "NOT_SHIFT",
                     "percentageOfFullTimeEquivalent": 100.0,
@@ -426,6 +451,56 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                     "employee": {"id": 18618852},
                     "fromDate": "2026-06-24",
                     "hoursPerDay": 7.5,
+                }),
+            ],
+        )
+
+    async def test_create_employment_details_defaults_to_ordinary_and_resolves_occupation_code(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/occupationCode",
+                    (("code", "2512"), ("count", 20), ("fields", "id,nameNO,code")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 881, "code": "2512", "nameNO": "Programvareutvikler"}],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2813136"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employmentId": 2813136,
+                "date": "2026-07-25",
+                "annualSalary": 480000,
+                "percentageOfFullTimeEquivalent": 80,
+                "stillingskode": "2512",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/employee/employment/2813136", None),
+                ("GET", "/employee/employment/occupationCode", {"code": "2512", "fields": "id,nameNO,code", "count": 20}),
+                ("GET", "/employee/employment/details", {"employmentId": "2813136", "fields": "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme", "count": 100}),
+                ("POST", "/employee/employment/details", {
+                    "employment": {"id": 2813136},
+                    "date": "2026-07-25",
+                    "employmentType": "ORDINARY",
+                    "remunerationType": "MONTHLY_WAGE",
+                    "workingHoursScheme": "NOT_SHIFT",
+                    "occupationCode": {"id": 881},
+                    "percentageOfFullTimeEquivalent": 80.0,
+                    "annualSalary": 480000.0,
                 }),
             ],
         )

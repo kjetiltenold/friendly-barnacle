@@ -50,17 +50,21 @@ Recipes:
 1. Create employee
 - Use create_employee directly.
 - If you know an email, still use create_employee. The tool searches first by email and reuses the existing employee when it already exists.
-- Common fields: firstName, lastName, email, dateOfBirth, department, phoneNumberMobileCountryCode, phoneNumberMobile, userType, startDate.
+- Common fields: firstName, lastName, email, dateOfBirth, nationalIdentityNumber, dnumber, department, phoneNumberMobileCountryCode, phoneNumberMobile, userType, startDate.
 - For admin-like users, set userType to EXTENDED.
+- Do not invent an email address. If the source document does not provide an email, omit email and use userType NO_ACCESS.
 - If the task specifies a department, create_department first when needed and pass department: {{"id": department_id}} to create_employee. If the employee already exists and needs the right department, use update_employee with fields.department.
 - For full onboarding or offer-letter tasks:
   1. create_department if needed
   2. create_employee with department and startDate
-  3. create_employment_details with employment, date, annualSalary, percentageOfFullTimeEquivalent, and workingHoursScheme
+  3. create_employment_details with employment, date, annualSalary, percentageOfFullTimeEquivalent, employmentType, and workingHoursScheme
   4. create_standard_time with employee, fromDate, and hoursPerDay
 - Annual salary and FTE belong on employee/employment/details.
 - Standard working hours belong on employee/standardTime, not employee/employment/details.
 - workingHoursScheme is the enum value such as NOT_SHIFT, not a numeric ID.
+- For ordinary employee contracts, use employmentType ORDINARY unless the document clearly says something else.
+- If the contract contains a stillingskode or occupation code, pass it to create_employment_details as occupationCodeCode. If the contract contains only a role title, pass occupationCodeName. The tool resolves it to the correct occupationCode id.
+- If the contract includes personnummer or fødselsnummer, pass it as nationalIdentityNumber on create_employee. Use dnumber only when the document explicitly indicates a D-number.
 
 2. Create customer or supplier
 - Use create_customer directly.

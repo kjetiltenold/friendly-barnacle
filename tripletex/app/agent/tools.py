@@ -199,6 +199,8 @@ BASE_TOOL_DEFINITIONS = [
             "lastName": {"type": "string"},
             "email": {"type": "string"},
             "dateOfBirth": {"type": "string", "description": "YYYY-MM-DD"},
+            "nationalIdentityNumber": {"type": "string", "description": "National identity number / personnummer"},
+            "dnumber": {"type": "string", "description": "D-number if applicable"},
             "department": {"type": "object", "description": "{\"id\": department_id}"},
             "phoneNumberMobileCountryCode": {"type": "string", "description": "Country code, e.g. +47"},
             "phoneNumberMobile": {"type": "string"},
@@ -351,6 +353,9 @@ BASE_TOOL_DEFINITIONS = [
             "hourlyWage": {"type": "number"},
             "shiftDurationHours": {"type": "number"},
             "occupationCode": {"type": "object", "description": "{\"id\": occupation_code_id}"},
+            "occupationCodeCode": {"type": "string", "description": "STYRK/occupation code from the contract. The executor resolves it to occupationCode.id."},
+            "occupationCodeName": {"type": "string", "description": "Occupation title/name from the contract. The executor resolves it to occupationCode.id."},
+            "stillingskode": {"type": "string", "description": "Alias for occupationCodeCode or occupationCodeName from Norwegian contracts."},
             "payrollTaxMunicipalityId": {"type": "object", "description": "{\"id\": municipality_id}"},
         },
     }),
@@ -709,6 +714,13 @@ WORKING_HOURS_SCHEME_VALUES = {
 }
 
 
+def _normalize_identifier(value: str | None) -> str | None:
+    if value in (None, ""):
+        return None
+    normalized = re.sub(r"\D+", "", str(value))
+    return normalized or None
+
+
 async def dispatch_tool(
     client: TripletexClient,
     name: str,
@@ -883,6 +895,64 @@ async def _resolve_working_hours_scheme(client: TripletexClient, scheme_value) -
     return None
 
 
+async def _resolve_occupation_code(client: TripletexClient, args: dict):
+    occupation_code = args.get("occupationCode")
+    if isinstance(occupation_code, dict) and occupation_code.get("id"):
+        return occupation_code
+    stillingskode = args.get("stillingskode")
+    occupation_code_code = args.get("occupationCodeCode")
+    occupation_code_name = args.get("occupationCodeName")
+    if isinstance(occupation_code, dict):
+        occupation_code_code = occupation_code_code or occupation_code.get("code")
+        occupation_code_name = occupation_code_name or occupation_code.get("nameNO")
+    elif isinstance(occupation_code, (str, int)):
+        raw_occupation = str(occupation_code).strip()
+        if raw_occupation:
+            if raw_occupation.isdigit():
+                occupation_code_code = occupation_code_code or raw_occupation
+            else:
+                occupation_code_name = occupation_code_name or raw_occupation
+    if stillingskode:
+        stillingskode_text = str(stillingskode).strip()
+        if stillingskode_text.isdigit():
+            occupation_code_code = occupation_code_code or stillingskode_text
+        else:
+            occupation_code_name = occupation_code_name or stillingskode_text
+    if occupation_code_code:
+        try:
+            result = await client.get("/employee/employment/occupationCode", params={
+                "code": str(occupation_code_code),
+                "fields": "id,nameNO,code",
+                "count": 20,
+            })
+            values = result.get("values", [])
+            normalized_code = str(occupation_code_code).strip()
+            for item in values:
+                if str(item.get("code", "")).strip() == normalized_code and item.get("id") is not None:
+                    return {"id": item["id"]}
+            if values and values[0].get("id") is not None:
+                return {"id": values[0]["id"]}
+        except Exception as e:
+            logger.warning(f"Failed to resolve occupation code {occupation_code_code}: {e}")
+    if occupation_code_name:
+        try:
+            result = await client.get("/employee/employment/occupationCode", params={
+                "nameNO": str(occupation_code_name),
+                "fields": "id,nameNO,code",
+                "count": 20,
+            })
+            values = result.get("values", [])
+            normalized_name = str(occupation_code_name).strip().lower()
+            for item in values:
+                if str(item.get("nameNO", "")).strip().lower() == normalized_name and item.get("id") is not None:
+                    return {"id": item["id"]}
+            if values and values[0].get("id") is not None:
+                return {"id": values[0]["id"]}
+        except Exception as e:
+            logger.warning(f"Failed to resolve occupation name {occupation_code_name}: {e}")
+    return None
+
+
 async def _upsert_standard_time(
     client: TripletexClient,
     employee_id: int,
@@ -1006,7 +1076,13 @@ async def _execute(
 ) -> dict:
     if name == "create_employee":
         if "userType" not in args:
-            args["userType"] = "STANDARD"
+            args["userType"] = "STANDARD" if args.get("email") else "NO_ACCESS"
+        national_identity_number = _normalize_identifier(args.get("nationalIdentityNumber"))
+        if national_identity_number:
+            args["nationalIdentityNumber"] = national_identity_number
+        dnumber = _normalize_identifier(args.get("dnumber"))
+        if dnumber:
+            args["dnumber"] = dnumber
         if "department" not in args and ctx and ctx.last_department_id:
             args["department"] = {"id": ctx.last_department_id}
             logger.info(f"Auto-injected department id={ctx.last_department_id} into employee")
@@ -1331,6 +1407,10 @@ async def _execute(
                 remuneration_type = "HOURLY_WAGE"
             elif annual_salary not in (None, 0):
                 remuneration_type = "MONTHLY_WAGE"
+        occupation_code = await _resolve_occupation_code(client, args)
+        employment_type = args.get("employmentType")
+        if employment_type is None:
+            employment_type = "ORDINARY"
         working_hours_scheme = await _resolve_working_hours_scheme(client, args.get("workingHoursScheme"))
         if working_hours_scheme is None:
             working_hours_scheme = await _resolve_working_hours_scheme(client, args.get("workingHoursSchemeId"))
@@ -1339,12 +1419,12 @@ async def _execute(
         payload = _compact_dict({
             "employment": {"id": employment_id},
             "date": effective_date,
-            "employmentType": args.get("employmentType"),
+            "employmentType": employment_type,
             "employmentForm": args.get("employmentForm"),
             "remunerationType": remuneration_type,
             "workingHoursScheme": working_hours_scheme,
             "shiftDurationHours": args.get("shiftDurationHours"),
-            "occupationCode": args.get("occupationCode"),
+            "occupationCode": occupation_code,
             "percentageOfFullTimeEquivalent": percentage,
             "annualSalary": annual_salary,
             "hourlyWage": hourly_wage,
