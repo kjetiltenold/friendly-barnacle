@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from app.agent.solver import (
     TerminalTripletexProxyTokenError,
+    _build_context_prompt_text,
     _build_incomplete_task_reminder,
     _build_user_content,
     _compress_messages,
@@ -260,10 +261,45 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(content[0]["type"], "text")
         self.assertEqual(content[1]["type"], "image_url")
         self.assertEqual(content[2]["type"], "text")
-        self.assertEqual(content[3]["type"], "text")
-        self.assertIn("Attachment handling", content[0]["text"])
-        self.assertIn("Receipt OCR text", content[2]["text"])
-        self.assertIn("Complete this accounting task", content[3]["text"])
+
+    def test_build_context_prompt_text_includes_attachment_ocr_without_generic_guidance(self):
+        request = SolveRequest(
+            prompt="Registrer bare Overnatting fra dette vedlegget.",
+            files=[
+                FileAttachment(
+                    filename="receipt.pdf",
+                    mime_type="application/pdf",
+                    content_base64="cGRm",
+                )
+            ],
+            tripletex_credentials=TripletexCredentials(
+                base_url="https://example.invalid/v2",
+                session_token="token",
+            ),
+        )
+
+        with patch(
+            "app.agent.solver.process_attachments",
+            return_value=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U=",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "[Content from receipt.pdf]\n\nOvernatting 4 200,00\nTotal 4 850,00",
+                },
+            ],
+        ):
+            context_text = _build_context_prompt_text(request)
+
+        self.assertIn("Registrer bare Overnatting", context_text)
+        self.assertIn("Overnatting 4 200,00", context_text)
+        self.assertNotIn("Treat attached files as the source of truth", context_text)
 
     def test_should_retry_text_only_response_when_model_stops_without_done(self):
         self.assertTrue(

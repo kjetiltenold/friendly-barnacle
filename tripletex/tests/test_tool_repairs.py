@@ -4824,6 +4824,68 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((method, path), ("POST", "/ledger/voucher"))
         self.assertEqual(body["postings"][0]["vatType"], {"id": 61})
 
+    async def test_create_voucher_receipt_uses_named_attachment_line_amount_instead_of_total(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Necesitamos el gasto de Overnatting de este recibo registrado en el departamento Drift.\n\n"
+                "[Content from kvittering_es_08.pdf]\n\n"
+                "Thon Hotels\n"
+                "Overnatting 4 200,00\n"
+                "Frokost 650,00\n"
+                "Total 4 850,00"
+            ),
+            account_cache={
+                364015653: {
+                    "id": 364015653,
+                    "number": 7140,
+                    "name": "Reisekostnad",
+                    "vatType": {"id": 12},
+                    "legalVatTypes": [{"id": 12}],
+                    "vatLocked": False,
+                },
+                364015350: {
+                    "id": 364015350,
+                    "number": 1920,
+                    "name": "Bank",
+                    "isBankAccount": True,
+                },
+            },
+        )
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-06-20",
+                "description": "Thon Hotels KVITTERING 20.06.2026 - Overnatting",
+                "postings": [
+                    {
+                        "account": {"id": 364015653},
+                        "amountGross": 4850,
+                        "amountGrossCurrency": 4850,
+                        "vatType": {"id": 1},
+                        "description": "Overnatting",
+                    },
+                    {
+                        "account": {"id": 364015350},
+                        "amountGross": -4850,
+                        "amountGrossCurrency": -4850,
+                        "description": "Betalt med: Bedriftskort",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["amountGross"], 4200.0)
+        self.assertEqual(body["postings"][0]["amountGrossCurrency"], 4200.0)
+        self.assertEqual(body["postings"][1]["amountGross"], -4200.0)
+        self.assertEqual(body["postings"][1]["amountGrossCurrency"], -4200.0)
+
     async def test_create_voucher_blocks_duplicate_correction_with_guessed_bank_balancing_account(self):
         client = FakeTripletexClient()
         ctx = EntityContext(

@@ -1808,6 +1808,7 @@ def _split_month_end_closing_vouchers(args: dict) -> list[dict] | None:
 async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: EntityContext | None) -> dict | None:
     if "postings" not in args or not isinstance(args["postings"], list):
         return None
+    _normalize_selective_receipt_voucher_amounts(args["postings"], ctx)
     _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
     await _normalize_exchange_difference_voucher_postings(client, args["postings"], args.get("description"), ctx)
     _normalize_year_end_prepaid_reversal_postings(args["postings"], args.get("description"), ctx)
@@ -3193,6 +3194,90 @@ def _looks_like_paid_receipt_voucher(ctx: EntityContext | None, postings: list[d
         if str(account.get("number")) == "1920" or account.get("isBankAccount") is True:
             return True
     return False
+
+
+def _extract_attachment_receipt_line_amount(ctx: EntityContext | None, line_label: str | None) -> float | None:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if "[Content from" not in raw_text or not str(line_label or "").strip():
+        return None
+    label_tokens = [
+        token
+        for token in re.split(r"[^a-z0-9]+", _normalize_prompt_text(line_label))
+        if len(token) >= 4
+    ]
+    if not label_tokens:
+        return None
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    amount_pattern = r"\d[\d\s\u00a0.,']*"
+    best_amount: float | None = None
+    best_score = 0
+
+    def _candidate_amounts(text: str) -> list[float]:
+        amounts: list[float] = []
+        for token in re.findall(amount_pattern, text):
+            value = _parse_localized_prompt_number(token)
+            if value is None or value <= 0 or value >= 1_000_000:
+                continue
+            amounts.append(round(value, 2))
+        return amounts
+
+    for index, line in enumerate(lines):
+        normalized_line = _normalize_prompt_text(line)
+        score = sum(1 for token in label_tokens if token in normalized_line)
+        if score <= 0:
+            continue
+        same_line_amounts = _candidate_amounts(line)
+        if same_line_amounts:
+            candidate = same_line_amounts[-1]
+            if score > best_score:
+                best_score = score
+                best_amount = candidate
+            continue
+        if index + 1 >= len(lines):
+            continue
+        next_line = lines[index + 1]
+        if next_line.startswith("[Content from"):
+            continue
+        normalized_next = _normalize_prompt_text(next_line)
+        if any(token in normalized_next for token in ("mva", "vat", "total", "sum", "kort", "card", "betaltmed")):
+            continue
+        next_line_amounts = _candidate_amounts(next_line)
+        if next_line_amounts:
+            candidate = next_line_amounts[-1]
+            if score > best_score:
+                best_score = score
+                best_amount = candidate
+    return best_amount
+
+
+def _normalize_selective_receipt_voucher_amounts(postings: list[dict] | None, ctx: EntityContext | None) -> None:
+    if ctx is None or not isinstance(postings, list) or not _looks_like_paid_receipt_voucher(ctx, postings):
+        return
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return
+    expense_posting = positive_postings[0]
+    payment_posting = negative_postings[0]
+    line_label = str(expense_posting.get("description") or "").strip()
+    if len(line_label) < 4:
+        return
+    target_amount = _extract_attachment_receipt_line_amount(ctx, line_label)
+    if target_amount in (None, 0):
+        return
+    current_amount = round(abs(_coerce_number(expense_posting.get("amountGross"))), 2)
+    if abs(current_amount - target_amount) <= 0.01:
+        return
+    expense_posting["amountGross"] = target_amount
+    expense_posting["amountGrossCurrency"] = target_amount
+    payment_posting["amountGross"] = -target_amount
+    payment_posting["amountGrossCurrency"] = -target_amount
+    logger.info(
+        "Normalized selective receipt voucher amount for line '%s' to attachment amount %.2f from current %.2f",
+        line_label,
+        target_amount,
+        current_amount,
+    )
 
 
 def _normalize_simple_supplier_invoice_amounts(postings: list[dict] | None, ctx: EntityContext | None) -> bool:

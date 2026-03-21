@@ -357,7 +357,7 @@ async def solve_task(request: SolveRequest) -> None:
         today = datetime.date.today().isoformat()
         system_prompt = get_system_prompt(today)
         ctx = EntityContext()
-        ctx.prompt_text = request.prompt
+        ctx.prompt_text = _build_context_prompt_text(request)
         completion_reminder_count = 0
 
         await _prime_context(tx, ctx)
@@ -624,3 +624,16 @@ def _build_user_content(request: SolveRequest) -> str | list[dict]:
 
     multimodal_blocks.append({"type": "text", "text": task_text})
     return multimodal_blocks
+
+
+def _build_context_prompt_text(request: SolveRequest) -> str:
+    """Build prompt text for executor-side heuristics without generic guidance text."""
+    parts = [request.prompt]
+    if request.files:
+        for block in process_attachments(request.files):
+            if block.get("type") != "text":
+                continue
+            text = str(block.get("text") or "").strip()
+            if text:
+                parts.append(text)
+    return "\n\n".join(part for part in parts if part)

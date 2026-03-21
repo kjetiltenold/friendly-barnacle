@@ -263,6 +263,7 @@ Recipes:
 
 15. Receipt or expense voucher
 - If a file is attached, extract: merchant name, date, total amount (incl. VAT), VAT rate or amount, payment method, and any department or category hints.
+- If the prompt asks for a specific named receipt line such as Overnatting, Taxi, or Frokost from an attached receipt, post only that named line from the attachment, not the full receipt total.
 - Common Norwegian expense account mappings:
   - Restaurant, representation, business lunch: 7350
   - Office supplies, kontorrekvisita: 6540
