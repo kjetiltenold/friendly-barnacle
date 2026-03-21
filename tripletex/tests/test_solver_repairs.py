@@ -161,6 +161,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(content, str)
         self.assertIn("Treat attached files as the source of truth", content)
         self.assertIn("109,00 means 109.00", content)
+        self.assertIn("Do not translate literal supplier names, invoice titles, or line descriptions", content)
         self.assertIn("inspect the image first", content)
         self.assertIn("contracts, and offer letters", content)
 

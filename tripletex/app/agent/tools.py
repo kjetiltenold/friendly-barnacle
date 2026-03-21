@@ -1650,6 +1650,64 @@ def _normalize_occupation_name(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def _occupation_name_tokens(value: str | None) -> list[str]:
+    if value in (None, ""):
+        return []
+    text = str(value).strip().lower()
+    text = (
+        text.replace("Ã¦", "ae")
+        .replace("Ã¸", "o")
+        .replace("Ã¥", "a")
+        .replace("Ã¤", "a")
+        .replace("Ã¶", "o")
+        .replace("Ã¼", "u")
+        .replace("ÃŸ", "ss")
+    )
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return [token for token in re.split(r"[^a-z0-9]+", text) if token]
+
+
+def _find_occupation_code_by_name(
+    values: list[dict],
+    occupation_name: str | None,
+    *,
+    min_score: int = 1,
+) -> dict | None:
+    normalized_name = _normalize_occupation_name(occupation_name)
+    tokens = _occupation_name_tokens(occupation_name)
+    token_set = set(tokens)
+    best: tuple[int, int, dict] | None = None
+
+    for item in values:
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        candidate_name = str(item.get("nameNO") or "")
+        candidate_normalized = _normalize_occupation_name(candidate_name)
+        candidate_tokens = set(_occupation_name_tokens(candidate_name))
+        score = 0
+        if candidate_normalized == normalized_name and normalized_name:
+            score = 300
+        elif token_set and candidate_tokens == token_set:
+            score = 250
+        elif token_set and token_set.issubset(candidate_tokens):
+            score = 200
+        elif normalized_name and candidate_normalized.startswith(normalized_name):
+            score = 150
+        elif normalized_name and normalized_name.startswith(candidate_normalized) and candidate_normalized:
+            score = 120
+        elif token_set and token_set.intersection(candidate_tokens):
+            score = 50 + len(token_set.intersection(candidate_tokens))
+        if score <= 0:
+            continue
+        candidate = (score, len(candidate_normalized), item)
+        if best is None or candidate[0] > best[0] or (candidate[0] == best[0] and candidate[1] < best[1]):
+            best = candidate
+    if best is None or best[0] < min_score:
+        return None
+    return best[2]
+
+
 def _normalize_percentage(value) -> float | None:
     if value in (None, ""):
         return None
@@ -2317,19 +2375,39 @@ async def _resolve_occupation_code(client: TripletexClient, args: dict):
                 "count": 20,
             })
             values = result.get("values", [])
-            normalized_name = _normalize_occupation_name(occupation_code_name)
-            for item in values:
-                if _normalize_occupation_name(item.get("nameNO")) == normalized_name and item.get("id") is not None:
-                    return {"id": item["id"]}
-            if not values:
+            match = _find_occupation_code_by_name(values, occupation_code_name, min_score=120)
+            if match is not None:
+                logger.info(
+                    "Resolved occupation name %s from direct occupationCode search to id=%s code=%s",
+                    occupation_code_name,
+                    match.get("id"),
+                    match.get("code"),
+                )
+                return {"id": match["id"]}
+            if values:
+                logger.info(
+                    "No exact occupation-name match for %s in direct search results; scanning full occupation code list",
+                    occupation_code_name,
+                )
+            if not values or match is None:
                 fallback_result = await client.get("/employee/employment/occupationCode", params={
                     "fields": "id,nameNO,code",
                     "count": 500,
                 })
                 fallback_values = fallback_result.get("values", [])
-                for item in fallback_values:
-                    if _normalize_occupation_name(item.get("nameNO")) == normalized_name and item.get("id") is not None:
-                        return {"id": item["id"]}
+                fallback_match = _find_occupation_code_by_name(fallback_values, occupation_code_name, min_score=120)
+                if fallback_match is not None:
+                    logger.info(
+                        "Resolved occupation name %s from fallback occupationCode scan to id=%s code=%s",
+                        occupation_code_name,
+                        fallback_match.get("id"),
+                        fallback_match.get("code"),
+                    )
+                    return {"id": fallback_match["id"]}
+                logger.warning(
+                    "Unable to resolve occupation name %s after fallback occupationCode scan",
+                    occupation_code_name,
+                )
             if values and values[0].get("id") is not None:
                 return {"id": values[0]["id"]}
         except Exception as e:
