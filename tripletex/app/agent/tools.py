@@ -60,6 +60,7 @@ class EntityContext:
     last_hourly_rate_id: int | None = None
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
+    last_department_id: int | None = None
 
     def __post_init__(self):
         if self.product_ids is None:
@@ -79,6 +80,7 @@ class EntityContext:
             "create_project": "last_project_id",
             "create_invoice": "last_invoice_id",
             "create_travel_expense": "last_travel_expense_id",
+            "create_department": "last_department_id",
         }
         attr = mapping.get(name)
         if attr:
@@ -117,6 +119,8 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         ctx.last_payment_type_id = first_id
     elif path.startswith("/project/hourlyRates"):
         ctx.last_hourly_rate_id = first_id
+    elif path.startswith("/department"):
+        ctx.last_department_id = first_id
 
 
 def _tool(name: str, description: str, parameters: dict) -> dict:
@@ -371,6 +375,7 @@ BASE_TOOL_DEFINITIONS = [
                         "employee": {"type": "object", "description": "{\"id\": employee_id}"},
                         "project": {"type": "object", "description": "{\"id\": project_id}"},
                         "product": {"type": "object", "description": "{\"id\": product_id}"},
+                        "department": {"type": "object", "description": "{\"id\": department_id}"},
                         "vatType": {"type": "object", "description": "{\"id\": vat_type_id}"},
                         "description": {"type": "string"},
                         "freeAccountingDimension1": {"type": "object", "description": "{\"id\": dimension_value_id}"},
@@ -520,6 +525,18 @@ def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
         seen.add(normalized)
         rewritten.append(normalized)
     return ",".join(rewritten)
+
+
+def _extend_fields_filter(fields: str, extra_fields: list[str]) -> str:
+    """Append extra fields to a fields filter if they are missing."""
+    base_fields = _rewrite_fields_filter(fields, {})
+    current = [field for field in base_fields.split(",") if field]
+    seen = set(current)
+    for field in extra_fields:
+        if field not in seen:
+            current.append(field)
+            seen.add(field)
+    return ",".join(current)
 
 
 def _has_meaningful_search_filters(params: dict) -> bool:
@@ -880,6 +897,18 @@ async def _execute(
         return await client.post("/project", json=args)
 
     if name == "create_department":
+        department_name = args.get("name")
+        if department_name:
+            try:
+                result = await client.get("/department", params={"name": department_name, "fields": "id,name", "count": 10})
+                values = result.get("values", [])
+                normalized_name = department_name.strip().lower()
+                for department in values:
+                    if str(department.get("name", "")).strip().lower() == normalized_name:
+                        logger.info(f"Reusing existing department id={department['id']} for name {department_name}")
+                        return {"value": department}
+            except Exception:
+                pass
         return await client.post("/department", json=args)
 
     if name == "create_travel_expense":
@@ -974,7 +1003,43 @@ async def _execute(
                 if isinstance(posting, dict):
                     posting.pop("guiRow", None)
                     posting["row"] = i + 1
-        return await client.post("/ledger/voucher", json=args)
+                    if (
+                        ctx
+                        and ctx.last_department_id
+                        and "department" not in posting
+                        and posting.get("amountGross", 0) > 0
+                    ):
+                        posting["department"] = {"id": ctx.last_department_id}
+                        logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+        try:
+            return await client.post("/ledger/voucher", json=args)
+        except Exception as e:
+            retry_args = json.loads(json.dumps(args))
+            retried = False
+            error_text = str(e).lower()
+            if "mva-kode 0" in error_text or "ingen avgiftsbehandling" in error_text:
+                for posting in retry_args.get("postings", []):
+                    if isinstance(posting, dict) and "vatType" in posting:
+                        posting.pop("vatType", None)
+                        retried = True
+                if retried:
+                    logger.info("Voucher account is locked to no VAT; retrying without vatType on postings")
+            if "leverandør mangler" in error_text and ctx and ctx.last_customer_id:
+                for posting in retry_args.get("postings", []):
+                    if (
+                        isinstance(posting, dict)
+                        and posting.get("amountGross", 0) < 0
+                        and "supplier" not in posting
+                    ):
+                        posting["supplier"] = {"id": ctx.last_customer_id}
+                        retried = True
+                        logger.info(f"Auto-injected supplier id={ctx.last_customer_id} into voucher posting retry")
+            if retried:
+                for i, posting in enumerate(retry_args.get("postings", [])):
+                    if isinstance(posting, dict):
+                        posting["row"] = i + 1
+                return await client.post("/ledger/voucher", json=retry_args)
+            raise
 
     if name == "create_salary_transaction":
         return await client.post("/salary/transaction", json=args)
@@ -1004,6 +1069,7 @@ async def _execute(
                     "customer": "last_customer_id",
                     "project": "last_project_id",
                     "invoice": "last_invoice_id",
+                    "department": "last_department_id",
                 }
                 attr = attr_map.get(entity_type)
                 if attr and first_id:
@@ -1039,6 +1105,14 @@ async def _execute(
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized vatType fields filter to {rewritten_fields}")
+        if path.startswith("/ledger/account") and isinstance(params.get("fields"), str):
+            enriched_fields = _extend_fields_filter(
+                params["fields"],
+                ["vatType", "vatLocked", "requiresDepartment", "isApplicableForSupplierInvoice"],
+            )
+            if enriched_fields != params["fields"]:
+                params["fields"] = enriched_fields
+                logger.info(f"Enriched ledger account fields filter to {enriched_fields}")
         if path == "/product" and "number" in params and "productNumber" not in params:
             number_value = params.get("number")
             if isinstance(number_value, str) and not re.fullmatch(r"\s*\d+(?:\s*,\s*\d+)*\s*", number_value):

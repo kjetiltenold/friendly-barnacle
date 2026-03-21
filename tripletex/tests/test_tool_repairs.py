@@ -18,7 +18,13 @@ class FakeTripletexClient:
     async def post(self, path, json=None):
         self.calls.append(("POST", path, json))
         if path in self.post_errors:
-            raise self.post_errors[path]
+            error = self.post_errors[path]
+            if isinstance(error, list):
+                current = error.pop(0)
+                if current is not None:
+                    raise current
+            else:
+                raise error
         return {"value": {"id": 999, **(json or {})}}
 
     async def put(self, path, json=None, params=None):
@@ -191,6 +197,33 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(body["number"], r"^P-\d{8}-[0-9A-F]{6}$")
         self.assertRegex(body["startDate"], r"^\d{4}-\d{2}-\d{2}$")
 
+    async def test_create_department_reuses_existing_by_name(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/department",
+                    (("count", 10), ("fields", "id,name"), ("name", "Salg")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 55, "name": "Salg"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_department",
+            {"name": "Salg"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 55)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/department", {"name": "Salg", "fields": "id,name", "count": 10})],
+        )
+
     async def test_create_order_sets_ex_vat_mode_flag_and_project(self):
         client = FakeTripletexClient()
 
@@ -244,6 +277,87 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
             [("GET", "/ledger/vatType", {"fields": "id,name,percentage"})],
         )
+
+    async def test_tripletex_api_call_enriches_ledger_account_fields(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (("fields", "id,number,name,vatType,vatLocked,requiresDepartment,isApplicableForSupplierInvoice"), ("number", "7350")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 10, "number": 7350, "name": "Representasjon", "vatLocked": True}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/ledger/account?number=7350&fields=id,number,name"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertTrue(result["values"][0]["vatLocked"])
+        self.assertEqual(
+            client.calls,
+            [("GET", "/ledger/account", {"number": "7350", "fields": "id,number,name,vatType,vatLocked,requiresDepartment,isApplicableForSupplierInvoice"})],
+        )
+
+    async def test_create_voucher_injects_department_into_positive_posting(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-09",
+                "description": "Receipt",
+                "postings": [
+                    {"account": {"id": 10}, "amountGross": 13200},
+                    {"account": {"id": 20}, "amountGross": -13200},
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(last_department_id=44),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["department"], {"id": 44})
+        self.assertNotIn("department", body["postings"][1])
+
+    async def test_create_voucher_retries_without_locked_vattype(self):
+        client = FakeTripletexClient(
+            post_errors={
+                "/ledger/voucher": [
+                    Exception("422 Validation failed: Kontoen er låst til mva-kode 0: Ingen avgiftsbehandling."),
+                    None,
+                ]
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-09",
+                "description": "Receipt",
+                "postings": [
+                    {"account": {"id": 10}, "amountGross": 13200, "vatType": {"id": 1}},
+                    {"account": {"id": 20}, "amountGross": -13200},
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[0][0:2], ("POST", "/ledger/voucher"))
+        self.assertEqual(client.calls[1][0:2], ("POST", "/ledger/voucher"))
+        self.assertIn("vatType", client.calls[0][2]["postings"][0])
+        self.assertNotIn("vatType", client.calls[1][2]["postings"][0])
 
     async def test_create_per_diem_uses_last_travel_expense_context(self):
         client = FakeTripletexClient()

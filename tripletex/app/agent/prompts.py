@@ -35,6 +35,7 @@ Data extraction:
 - Parse amounts as numbers, not strings.
 - Detect supplier intent in all languages. Supplier means create_customer with isSupplier=true and isCustomer=false.
 - Detect VAT percentages from the prompt and map them to vatType.
+- Department or avdeling means a real Tripletex department on posting.department, not a free accounting dimension.
 
 Response formats:
 - POST and PUT usually return {{"value": {{...}}}}.
@@ -163,11 +164,11 @@ Recipes:
 - Reverse it with PUT /ledger/voucher/{{voucher_id}}/:reverse and query param date.
 
 12. Accounting dimensions and vouchers
-- Create dimension name with create_accounting_dimension_name.
-- Create dimension values with create_accounting_dimension_value using the returned dimensionIndex.
+- Only use create_accounting_dimension_name and create_accounting_dimension_value when the prompt explicitly asks for accounting dimensions or free dimensions.
 - Look up account IDs with GET /ledger/account?number=XXXX&fields=id,number,name.
 - Create vouchers with create_voucher.
 - Voucher postings must use account IDs, not account numbers.
+- Use posting.department when the task says department or avdeling.
 - Use freeAccountingDimension1, freeAccountingDimension2, or freeAccountingDimension3 according to the dimensionIndex.
 - Positive amountGross is debit. Negative amountGross is credit.
 
@@ -182,11 +183,20 @@ Recipes:
   - date
   - description
   - postings
-- Expense posting should include account, amountGross, amountGrossCurrency, and vatType.
+- When you look up ledger accounts for vouchers, request fields including vatType, vatLocked, and requiresDepartment.
+- Expense posting should include account, amountGross, amountGrossCurrency, and vatType only when the account is not locked to no-VAT handling.
 - Accounts payable posting should include account, amountGross, amountGrossCurrency, and supplier.
 - For NOK transactions, amountGrossCurrency must match amountGross.
 - Use a VAT type that is valid for the chosen ledger account and for incoming VAT.
 - When only a VAT-inclusive amount is given, compute amount excluding VAT from the stated VAT rate.
+
+15. Receipt or expense voucher
+- If a file is attached, extract merchant, date, total amount, VAT clues, payment status, and department hints from the file content.
+- For ordinary receipts or kvittering tasks, do not create free accounting dimensions unless the prompt explicitly asks for them.
+- If the prompt specifies a department, find or create the Tripletex department and put it on posting.department.
+- A receipt is normally already paid. Do not use account 2400 or supplier postings unless the task explicitly says supplier invoice, payable, or leverandorfaktura.
+- If account lookup shows vatLocked=true or VAT code 0 / no VAT handling, omit vatType on that posting.
+- Representation and business lunch expenses may be non-deductible for VAT. Follow the account's VAT lock instead of forcing 25 percent input VAT.
 
 14. Salary or payroll
 - Flow:
