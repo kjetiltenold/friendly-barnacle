@@ -375,6 +375,13 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not collapse all hours onto the last created employee", prompt)
         self.assertIn("derive the hourly rate as budget divided by total hours before invoicing", prompt)
 
+    def test_system_prompt_includes_fixed_price_milestone_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("Fixed-price project with milestone invoice", prompt)
+        self.assertIn("fixedprice: amount", prompt)
+        self.assertIn("create order lines for the milestone", prompt)
+
     def test_system_prompt_includes_supplier_invoice_attachment_and_software_account_guidance(self):
         prompt = get_system_prompt("2026-03-21")
 

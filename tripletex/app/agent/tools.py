@@ -1919,6 +1919,90 @@ def _prompt_describes_budget_not_fixed_price(ctx: EntityContext | None) -> bool:
     )
 
 
+def _parse_localized_amount_token(token: str | None) -> float | None:
+    text = str(token or "").strip().replace("\u00a0", " ")
+    if not text:
+        return None
+    text = re.sub(r"\s+", "", text).replace("'", "")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        if text.count(",") == 1 and len(text.split(",")[-1]) in (1, 2):
+            text = text.replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "." in text and text.count(".") > 1:
+        text = text.replace(".", "")
+    elif "." in text and len(text.split(".")[-1]) > 2:
+        text = text.replace(".", "")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _extract_prompt_fixed_price_amount(ctx: EntityContext | None) -> float | None:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    normalized_text = unicodedata.normalize("NFKD", raw_text.lower())
+    normalized_text = "".join(ch for ch in normalized_text if not unicodedata.combining(ch))
+    match = re.search(
+        r"(?:fixed\s*price|fastpris|prix\s*fixe|preco\s*fixo|forfait)\D{0,25}([0-9][0-9\s\u00a0.,']*)\s*(?:nok|kr)\b",
+        normalized_text,
+    )
+    if not match:
+        return None
+    amount = _parse_localized_amount_token(match.group(1))
+    return round(amount, 2) if amount and amount > 0 else None
+
+
+def _prompt_mentions_fixed_price(ctx: EntityContext | None) -> bool:
+    return _extract_prompt_fixed_price_amount(ctx) not in (None, 0)
+
+
+def _prompt_mentions_milestone_invoice(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "milestone",
+            "stagepayment",
+            "paymentbystage",
+            "pagamentoporetapa",
+            "pagamentodeetapa",
+            "etapa",
+            "delbetaling",
+            "tranche",
+        )
+    )
+
+
+def _extract_prompt_milestone_invoice_fraction(ctx: EntityContext | None) -> float | None:
+    if not _prompt_mentions_milestone_invoice(ctx):
+        return None
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    normalized_text = unicodedata.normalize("NFKD", raw_text.lower())
+    normalized_text = "".join(ch for ch in normalized_text if not unicodedata.combining(ch))
+    match = re.search(
+        r"([0-9]+(?:[.,][0-9]+)?)\s*(?:%|percent|prosent|porcento|pourcent)",
+        normalized_text,
+    )
+    if not match:
+        return None
+    percentage = _coerce_number(str(match.group(1)).replace(",", "."))
+    if percentage <= 0:
+        return None
+    return round(percentage / 100.0, 4) if percentage > 1 else round(percentage, 4)
+
+
 def _prompt_mentions_partial_payments(ctx: EntityContext | None) -> bool:
     normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
     if not normalized:
@@ -3546,6 +3630,51 @@ async def _execute(
                 for line in lines_without_product:
                     line["product"] = {"id": ctx.product_ids[0]}
                     logger.info(f"Auto-injected single product id={ctx.product_ids[0]} into order line")
+        if (
+            "orderLines" in args
+            and isinstance(args["orderLines"], list)
+            and len(args["orderLines"]) == 1
+            and _prompt_mentions_fixed_price(ctx)
+            and _prompt_mentions_milestone_invoice(ctx)
+        ):
+            fixed_price_amount = _extract_prompt_fixed_price_amount(ctx)
+            milestone_fraction = _extract_prompt_milestone_invoice_fraction(ctx)
+            if fixed_price_amount not in (None, 0) and milestone_fraction not in (None, 0):
+                target_amount = round(fixed_price_amount * milestone_fraction, 2)
+                line = args["orderLines"][0]
+                count = _coerce_number(line.get("count") or 1)
+                if count <= 0:
+                    count = 1.0
+                    line["count"] = 1
+                if "unitPriceExcludingVatCurrency" in line:
+                    current_total = round(_coerce_number(line.get("unitPriceExcludingVatCurrency")) * count, 2)
+                    if abs(current_total - target_amount) > 0.01:
+                        line["unitPriceExcludingVatCurrency"] = round(target_amount / count, 2)
+                        logger.info(
+                            "Normalized fixed-price milestone order line to %.2f from prompt fixed price %.2f * fraction %.4f",
+                            target_amount,
+                            fixed_price_amount,
+                            milestone_fraction,
+                        )
+                elif "unitPriceIncludingVatCurrency" in line:
+                    current_total = round(_coerce_number(line.get("unitPriceIncludingVatCurrency")) * count, 2)
+                    if abs(current_total - target_amount) > 0.01:
+                        line["unitPriceIncludingVatCurrency"] = round(target_amount / count, 2)
+                        logger.info(
+                            "Normalized fixed-price milestone inclusive order line to %.2f from prompt fixed price %.2f * fraction %.4f",
+                            target_amount,
+                            fixed_price_amount,
+                            milestone_fraction,
+                        )
+                else:
+                    line["count"] = count
+                    line["unitPriceExcludingVatCurrency"] = target_amount
+                    logger.info(
+                        "Auto-set fixed-price milestone order line to %.2f from prompt fixed price %.2f * fraction %.4f",
+                        target_amount,
+                        fixed_price_amount,
+                        milestone_fraction,
+                    )
         # Auto-inject default vatType (25% = id 3) on order lines missing it
         if "orderLines" in args:
             has_ex_vat = False
@@ -3591,6 +3720,14 @@ async def _execute(
         if "fixedprice" not in args and args.get("fixedPrice") not in (None, ""):
             args["fixedprice"] = _coerce_number(args.pop("fixedPrice"))
             logger.info(f"Normalized create_project fixedPrice -> fixedprice ({args['fixedprice']})")
+        if "fixedprice" not in args and _prompt_mentions_fixed_price(ctx):
+            fixed_price_amount = _extract_prompt_fixed_price_amount(ctx)
+            if fixed_price_amount not in (None, 0):
+                args["fixedprice"] = fixed_price_amount
+                logger.info(f"Auto-inferred create_project fixedprice={fixed_price_amount} from prompt")
+        if _prompt_mentions_fixed_price(ctx) and args.get("isFixedPrice") is not True:
+            args["isFixedPrice"] = True
+            logger.info("Auto-set create_project isFixedPrice=true from prompt")
         if _prompt_describes_budget_not_fixed_price(ctx) and (
             args.get("isFixedPrice") is True or args.get("fixedprice") not in (None, "")
         ):

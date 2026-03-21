@@ -718,6 +718,35 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["fixedprice"], 362300)
         self.assertNotIn("fixedPrice", body)
 
+    async def test_create_project_infers_fixed_price_from_portuguese_prompt(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_project",
+            {
+                "name": "Melhoria de infraestrutura",
+                "number": "PRJ-20260321-050",
+                "startDate": "2026-03-21",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_customer_id=100,
+                last_sales_customer_id=100,
+                last_employee_id=200,
+                employee_ids=[200],
+                prompt_text=(
+                    "Defina um preço fixo de 228150 NOK no projeto "
+                    "\"Melhoria de infraestrutura\" para Horizonte Lda."
+                ),
+            ),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/project"))
+        self.assertTrue(body["isFixedPrice"])
+        self.assertEqual(body["fixedprice"], 228150)
+
     async def test_create_project_does_not_force_fixed_price_when_prompt_only_says_budget(self):
         client = FakeTripletexClient()
 
@@ -1533,6 +1562,42 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["project"], {"id": 987})
         self.assertEqual(body["orderLines"][0]["product"], {"id": 654})
         self.assertEqual(body["orderLines"][0]["vatType"], {"id": 3})
+        self.assertFalse(body["isPrioritizeAmountsIncludingVat"])
+
+    async def test_create_order_normalizes_fixed_price_milestone_amount_from_prompt(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_order",
+            {
+                "orderLines": [
+                    {
+                        "description": "Pagamento por etapa",
+                        "count": 1,
+                        "unitPriceExcludingVatCurrency": 228150,
+                    }
+                ]
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_customer_id=100,
+                last_sales_customer_id=100,
+                last_project_id=987,
+                product_ids=[654],
+                prompt_text=(
+                    "Defina um preço fixo de 228150 NOK no projeto \"Melhoria de infraestrutura\". "
+                    "Fature ao cliente 50 % do preço fixo como pagamento por etapa."
+                ),
+            ),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/order"))
+        self.assertEqual(body["customer"], {"id": 100})
+        self.assertEqual(body["project"], {"id": 987})
+        self.assertEqual(body["orderLines"][0]["product"], {"id": 654})
+        self.assertEqual(body["orderLines"][0]["unitPriceExcludingVatCurrency"], 114075.0)
         self.assertFalse(body["isPrioritizeAmountsIncludingVat"])
 
     async def test_create_order_normalizes_fee_line_to_zero_vat(self):
