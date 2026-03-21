@@ -3512,6 +3512,70 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((method, path), ("POST", "/ledger/voucher"))
         self.assertEqual(body["postings"][0]["vatType"], {"id": 61})
 
+    async def test_create_voucher_blocks_duplicate_correction_with_guessed_bank_balancing_account(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "We have discovered errors in the general ledger for January and February 2026. "
+                "Review all vouchers and find the 4 errors: a duplicate voucher (account 6860, amount 3900 NOK)."
+            ),
+            account_cache={
+                466691059: {"id": 466691059, "number": 6860, "name": "Kontorkostnad"},
+                466690878: {"id": 466690878, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Correction voucher: reverse duplicate voucher on account 6860",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466691059}, "amountGross": -3900, "amountGrossCurrency": -3900},
+                    {"account": {"id": 466690878}, "amountGross": 3900, "amountGrossCurrency": 3900},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("use reverse_voucher", result["error"])
+        self.assertEqual(client.calls, [])
+
+    async def test_create_voucher_blocks_wrong_amount_correction_with_guessed_bank_balancing_account(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "We have discovered errors in the general ledger for January and February 2026. "
+                "Review all vouchers and find the 4 errors: an incorrect amount (account 6340, 21950 NOK posted instead of 15550 NOK)."
+            ),
+            account_cache={
+                466691025: {"id": 466691025, "number": 6340, "name": "Leie maskiner"},
+                466690878: {"id": 466690878, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Correction voucher: correct overstated amount on account 6340",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466691025}, "amountGross": -6400, "amountGrossCurrency": -6400},
+                    {"account": {"id": 466690878}, "amountGross": 6400, "amountGrossCurrency": 6400},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("original voucher's counterpart account", result["error"])
+        self.assertEqual(client.calls, [])
+
     async def test_create_voucher_removes_locked_vat_type_before_post(self):
         client = FakeTripletexClient()
         ctx = EntityContext(

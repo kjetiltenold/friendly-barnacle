@@ -331,6 +331,13 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("copy department, occupation code, salary, FTE, standard working hours, start date, birth date, and national identity number literally from the attachment", prompt)
         self.assertIn("use those literal hours for create_standard_time instead of deriving hoursPerDay from FTE", prompt)
 
+    def test_system_prompt_includes_ledger_error_counterpart_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("inspect the original voucher/postings first to recover the real counterpart account", prompt)
+        self.assertIn("identify the duplicate voucher ID and use reverse_voucher", prompt)
+        self.assertIn("Do not guess balancing accounts such as `1920`, `2400`, `2050`, or `2990`", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

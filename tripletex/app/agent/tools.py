@@ -1076,6 +1076,54 @@ def _normalize_year_end_tax_provision_postings(
         )
 
 
+def _validate_ledger_error_correction_postings(
+    postings: list[dict] | None,
+    description: str | None,
+    ctx: EntityContext | None,
+) -> dict | None:
+    if ctx is None or not isinstance(postings, list) or len(postings) < 2:
+        return None
+    normalized_prompt = _normalize_prompt_text(ctx.prompt_text)
+    if not any(token in normalized_prompt for token in ("generalledger", "ledgererrors", "findthe4errors")):
+        return None
+    normalized_description = _normalize_prompt_text(description)
+    account_numbers = {
+        str((_get_cached_account(ctx, posting) or {}).get("number") or "")
+        for posting in postings
+        if isinstance(posting, dict)
+    }
+    suspicious_numbers = sorted(
+        number for number in account_numbers if number in {"1920", "2400", "2050", "2990"}
+    )
+    if not suspicious_numbers:
+        return None
+    if "duplicatevoucher" in normalized_description:
+        logger.warning(
+            "Blocked duplicate-voucher correction using guessed balancing account(s): %s",
+            ", ".join(suspicious_numbers),
+        )
+        return {
+            "error": (
+                "Duplicate-voucher corrections must identify the duplicate voucher and use reverse_voucher "
+                "on that voucher ID after reviewing the original voucher/postings. Do not create a manual "
+                "balancing line on guessed bank/liability accounts such as 1920, 2400, 2050, or 2990."
+            )
+        }
+    if any(token in normalized_description for token in ("overstatedamount", "incorrectamount", "wrongamount")):
+        logger.warning(
+            "Blocked wrong-amount correction using guessed balancing account(s): %s",
+            ", ".join(suspicious_numbers),
+        )
+        return {
+            "error": (
+                "Wrong-amount corrections must use the original voucher's counterpart account and correct only "
+                "the delta. Review the original voucher/postings first; do not guess bank/liability accounts "
+                "such as 1920, 2400, 2050, or 2990."
+            )
+        }
+    return None
+
+
 def _normalize_month_end_closing_pair_postings(
     postings: list[dict] | None,
     description: str | None,
@@ -1162,6 +1210,9 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
     _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
     _normalize_year_end_prepaid_reversal_postings(args["postings"], args.get("description"), ctx)
     _normalize_year_end_tax_provision_postings(args["postings"], args.get("description"), ctx)
+    correction_error = _validate_ledger_error_correction_postings(args["postings"], args.get("description"), ctx)
+    if correction_error is not None:
+        return correction_error
     _normalize_month_end_closing_pair_postings(args["postings"], args.get("description"), ctx)
     is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
     for i, posting in enumerate(args["postings"]):

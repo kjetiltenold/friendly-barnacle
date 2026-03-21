@@ -330,7 +330,9 @@ Recipes:
 - If a voucher is duplicated, reverse the duplicate voucher directly. Do not add an extra manual correction voucher on top of the reversal unless the prompt explicitly requires it.
 - For a wrong-account correction on an already posted expense voucher, move the amount between the affected expense accounts, for example debit the correct account and credit the wrong account.
 - For a wrong-amount correction on an already posted expense voucher, correct only the difference between the wrong amount and the intended amount. Do not reverse and repost the full amount unless the prompt explicitly tells you to do that.
+- For ledger-review correction tasks, inspect the original voucher/postings first to recover the real counterpart account. For duplicate vouchers, identify the duplicate voucher ID and use reverse_voucher. For wrong-amount corrections, use the original counterpart account for the delta.
 - For wrong-account or wrong-amount corrections, do not touch bank `1920` unless the original bank side itself was wrong.
+- Do not guess balancing accounts such as `1920`, `2400`, `2050`, or `2990` for duplicate-voucher or wrong-amount corrections when the original counterpart is not yet known.
 - For a missing input-VAT line on an already booked expense voucher, add the VAT by debiting the input VAT account such as `2710` and crediting the original expense account such as `6500`. Do not credit bank `1920` just because the original expense was paid.
 - If the prompt gives an amount excluding VAT for the missing-VAT case, calculate VAT from that net amount and post only the missing VAT amount.
 
