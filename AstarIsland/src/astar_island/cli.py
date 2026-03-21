@@ -141,6 +141,7 @@ def command_autoquery(args: argparse.Namespace) -> int:
         )
 
     model_params = load_model_parameters(cache)
+    historical_prior = cache.load_historical_signal_prior()
 
     if args.dry_run:
         stage = determine_stage(existing_queries=len(observations), requested_queries=count)
@@ -152,6 +153,7 @@ def command_autoquery(args: argparse.Namespace) -> int:
             viewport_h=args.h,
             seed_indices=seed_indices,
             params=model_params,
+            historical_prior=historical_prior,
             stage=stage,
         )
         if not plan:
@@ -171,6 +173,7 @@ def command_autoquery(args: argparse.Namespace) -> int:
         replan_every=args.replan_every,
         pause_seconds=args.pause_seconds,
         params=model_params,
+        historical_prior=historical_prior,
     )
     if run.executed_queries == 0:
         raise AstarIslandApiError("Planner did not produce any useful queries.")

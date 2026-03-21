@@ -7,6 +7,7 @@ import numpy as np
 from .api import AstarIslandClient
 from .baseline import MIN_PROBABILITY_FLOOR, ModelParameters, build_all_predictions
 from .cache import CacheStore
+from .historical import build_historical_signal_prior
 from .types import RoundAnalysis, RoundDetail, SimulationResult
 
 
@@ -25,6 +26,8 @@ class SeedEvaluation:
     observation_count: int
     weighted_kl: float
     model_score: float
+    submitted_weighted_kl: float | None
+    submitted_score: float | None
     official_score: float | None
 
 
@@ -34,6 +37,7 @@ class RoundEvaluation:
     round_number: int
     seed_evaluations: list[SeedEvaluation]
     average_model_score: float
+    average_submitted_score: float | None
     average_official_score: float | None
 
 
@@ -75,6 +79,10 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
         predicted = np.array(predictions[seed_index].prediction, dtype=float)
         ground_truth = np.array(analysis.ground_truth, dtype=float)
         weighted_kl, model_score = prediction_score(ground_truth, predicted)
+        submitted_weighted_kl, submitted_score = prediction_score(
+            ground_truth,
+            np.array(analysis.prediction, dtype=float),
+        )
         observation_count = sum(1 for observation in case.observations if observation.seed_index == seed_index)
         seed_evaluations.append(
             SeedEvaluation(
@@ -82,11 +90,15 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
                 observation_count=observation_count,
                 weighted_kl=weighted_kl,
                 model_score=model_score,
+                submitted_weighted_kl=submitted_weighted_kl,
+                submitted_score=submitted_score,
                 official_score=analysis.score,
             )
         )
 
     average_model_score = float(np.mean([item.model_score for item in seed_evaluations])) if seed_evaluations else 0.0
+    submitted_scores = [item.submitted_score for item in seed_evaluations if item.submitted_score is not None]
+    average_submitted_score = float(np.mean(submitted_scores)) if submitted_scores else None
     official_scores = [item.official_score for item in seed_evaluations if item.official_score is not None]
     average_official_score = float(np.mean(official_scores)) if official_scores else None
     return RoundEvaluation(
@@ -94,6 +106,7 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
         round_number=case.round_number,
         seed_evaluations=seed_evaluations,
         average_model_score=average_model_score,
+        average_submitted_score=average_submitted_score,
         average_official_score=average_official_score,
     )
 
@@ -176,6 +189,7 @@ def evaluation_report(evaluations: list[RoundEvaluation], params: ModelParameter
                 "round_id": evaluation.round_id,
                 "round_number": evaluation.round_number,
                 "average_model_score": evaluation.average_model_score,
+                "average_submitted_score": evaluation.average_submitted_score,
                 "average_official_score": evaluation.average_official_score,
                 "seeds": [asdict(seed_eval) for seed_eval in evaluation.seed_evaluations],
             }
@@ -309,6 +323,10 @@ def run_training_preflight(
         saved_params = True
 
     evaluations = evaluate_cases(cases, best_params if improved else current_params)
+    historical_prior = build_historical_signal_prior(
+        [(case.detail, case.analyses) for case in cases]
+    )
+    cache.save_historical_signal_prior(historical_prior)
     report = evaluation_report(evaluations, best_params if improved else current_params)
     report["preflight"] = {
         "before_score": before_score,

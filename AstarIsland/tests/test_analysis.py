@@ -75,7 +75,25 @@ class AnalysisTests(unittest.TestCase):
         case = make_case()
         evaluation = evaluate_case(case, ModelParameters())
         self.assertAlmostEqual(evaluation.average_model_score, 100.0, places=6)
+        self.assertAlmostEqual(evaluation.average_submitted_score or 0.0, 100.0, places=6)
         self.assertAlmostEqual(evaluation.average_official_score or 0.0, 100.0, places=6)
+
+    def test_evaluate_case_distinguishes_current_model_from_submitted_prediction(self) -> None:
+        case = make_case()
+        bad_prediction = np.full((4, 4, 6), 1.0 / 6.0, dtype=float).tolist()
+        case.analyses[0] = RoundAnalysis(
+            prediction=bad_prediction,
+            ground_truth=case.analyses[0].ground_truth,
+            score=12.34,
+            width=4,
+            height=4,
+            initial_grid=case.detail.initial_states[0].grid,
+        )
+
+        evaluation = evaluate_case(case, ModelParameters())
+        self.assertAlmostEqual(evaluation.average_model_score, 100.0, places=6)
+        self.assertLess(evaluation.average_submitted_score or 100.0, evaluation.average_model_score)
+        self.assertAlmostEqual(evaluation.average_official_score or 0.0, 12.34, places=6)
 
     def test_coordinate_search_runs_and_returns_parameters(self) -> None:
         case = make_case()
@@ -128,6 +146,7 @@ class AnalysisTests(unittest.TestCase):
             self.assertEqual(result.case_count, 1)
             self.assertTrue(result.saved_params)
             self.assertIsNotNone(cache.load_model_parameters())
+            self.assertIsNotNone(cache.load_historical_signal_prior())
 
 
 if __name__ == "__main__":

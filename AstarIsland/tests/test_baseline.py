@@ -14,8 +14,9 @@ from astar_island.baseline import (
     normalize_probabilities,
 )
 from astar_island.cache import CacheStore
+from astar_island.historical import build_historical_signal_prior
 from astar_island.planner import determine_stage, plan_query_batch, run_iterative_autopilot
-from astar_island.types import InitialState, RoundDetail, Settlement, SimulationResult, Viewport
+from astar_island.types import InitialState, RoundAnalysis, RoundDetail, Settlement, SimulationResult, Viewport
 
 
 def make_round_detail() -> RoundDetail:
@@ -140,6 +141,40 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue(all(item.adjusted_score >= 0.0 for item in plan))
         self.assertTrue(all(0 <= item.x <= 2 for item in plan))
         self.assertTrue(all(0 <= item.y <= 2 for item in plan))
+
+    def test_planner_can_use_historical_entropy_prior(self) -> None:
+        detail = make_round_detail()
+        ground_truth = np.full((4, 4, 6), [0.95, 0.01, 0.01, 0.01, 0.01, 0.01], dtype=float)
+        ground_truth[2, 2] = np.array([0.20, 0.20, 0.20, 0.20, 0.10, 0.10], dtype=float)
+        prior = build_historical_signal_prior(
+            [
+                (
+                    detail,
+                    {
+                        0: RoundAnalysis(
+                            prediction=ground_truth.tolist(),
+                            ground_truth=ground_truth.tolist(),
+                            score=100.0,
+                            width=4,
+                            height=4,
+                            initial_grid=detail.initial_states[0].grid,
+                        )
+                    },
+                )
+            ]
+        )
+
+        plan = plan_query_batch(
+            detail,
+            [],
+            count=1,
+            viewport_w=1,
+            viewport_h=1,
+            seed_indices=[0],
+            historical_prior=prior,
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertEqual((plan[0].x, plan[0].y), (2, 2))
 
     def test_staged_planner_balances_early_exploration_across_seeds(self) -> None:
         detail = make_round_detail()

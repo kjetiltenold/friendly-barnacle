@@ -1,0 +1,408 @@
+{
+  "model_parameters": {
+    "prior_weight": 1.5,
+    "exact_weight": 4.5,
+    "spatial_weight": 0.5,
+    "global_scale": 1.0,
+    "code_scale": 1.3,
+    "frontier_scale": 1.5,
+    "context_scale": 1.6,
+    "region_scale": 1.3
+  },
+  "rounds": [
+    {
+      "round_id": "75e625c3-60cb-4392-af3e-c86a98bde8c2",
+      "round_number": 10,
+      "average_model_score": 75.19115999978922,
+      "average_official_score": 75.19116,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 9,
+          "weighted_kl": 0.09354295906463429,
+          "model_score": 75.53085957170202,
+          "official_score": 75.5309
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 12,
+          "weighted_kl": 0.0941811800764972,
+          "model_score": 75.3863817841107,
+          "official_score": 75.3864
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 8,
+          "weighted_kl": 0.09424356013573637,
+          "model_score": 75.37227528321385,
+          "official_score": 75.3723
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 11,
+          "weighted_kl": 0.0913318404280903,
+          "model_score": 76.03354805797325,
+          "official_score": 76.0335
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 10,
+          "weighted_kl": 0.10202682867041274,
+          "model_score": 73.63273530194624,
+          "official_score": 73.6327
+        }
+      ]
+    },
+    {
+      "round_id": "2a341ace-0f57-4309-9b89-e59fe0f09179",
+      "round_number": 9,
+      "average_model_score": 77.77415364864956,
+      "average_official_score": 77.59813999999999,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 8,
+          "weighted_kl": 0.07398579495692874,
+          "model_score": 80.09494961736608,
+          "official_score": 79.3915
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 10,
+          "weighted_kl": 0.08558040625309293,
+          "model_score": 77.35683728489326,
+          "official_score": 77.3757
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 12,
+          "weighted_kl": 0.08975483764380507,
+          "model_score": 76.39411566057098,
+          "official_score": 76.7118
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 10,
+          "weighted_kl": 0.08187885878186126,
+          "model_score": 78.2206445601059,
+          "official_score": 77.8817
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 10,
+          "weighted_kl": 0.0879701949469306,
+          "model_score": 76.80422112031151,
+          "official_score": 76.63
+        }
+      ]
+    },
+    {
+      "round_id": "c5cdf100-a876-4fb7-b5d8-757162c97989",
+      "round_number": 8,
+      "average_model_score": 81.4637758934328,
+      "average_official_score": 79.17878,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 12,
+          "weighted_kl": 0.07313024458087222,
+          "model_score": 80.3007894566892,
+          "official_score": 79.0092
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 9,
+          "weighted_kl": 0.07086351820142585,
+          "model_score": 80.84871007770258,
+          "official_score": 77.5757
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 11,
+          "weighted_kl": 0.06444667912756416,
+          "model_score": 82.42016671066806,
+          "official_score": 80.9745
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 9,
+          "weighted_kl": 0.061846684301472124,
+          "model_score": 83.06555647466925,
+          "official_score": 80.201
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 9,
+          "weighted_kl": 0.07154471661366643,
+          "model_score": 80.68365674743488,
+          "official_score": 78.1335
+        }
+      ]
+    },
+    {
+      "round_id": "36e581f1-73f8-453f-ab98-cbe3052b701b",
+      "round_number": 7,
+      "average_model_score": 63.643593527105665,
+      "average_official_score": 58.81278,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 8,
+          "weighted_kl": 0.16939452241345332,
+          "model_score": 60.15873298996803,
+          "official_score": 55.5939
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 11,
+          "weighted_kl": 0.14864327996377197,
+          "model_score": 64.0228689000343,
+          "official_score": 59.381
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 11,
+          "weighted_kl": 0.14727117890492414,
+          "model_score": 64.28694958385702,
+          "official_score": 59.0199
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 9,
+          "weighted_kl": 0.15003764595393249,
+          "model_score": 63.755614332801514,
+          "official_score": 58.8606
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 11,
+          "weighted_kl": 0.13853645335182344,
+          "model_score": 65.99380182886748,
+          "official_score": 61.2085
+        }
+      ]
+    },
+    {
+      "round_id": "ae78003a-4efe-425a-881a-d16a39bca0ad",
+      "round_number": 6,
+      "average_model_score": 72.11508226202837,
+      "average_official_score": 64.6562,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 10,
+          "weighted_kl": 0.10983867790582791,
+          "model_score": 71.92717524865591,
+          "official_score": 65.0001
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 9,
+          "weighted_kl": 0.10929165747077314,
+          "model_score": 72.04530905864645,
+          "official_score": 64.3322
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 10,
+          "weighted_kl": 0.11228328158177411,
+          "model_score": 71.40160451149039,
+          "official_score": 64.0745
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 10,
+          "weighted_kl": 0.11000160852328242,
+          "model_score": 71.89202642236062,
+          "official_score": 64.0751
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 10,
+          "weighted_kl": 0.1034942543043879,
+          "model_score": 73.30929606898843,
+          "official_score": 65.7991
+        }
+      ]
+    }
+  ],
+  "tuning": {
+    "best_mean_seed_score": 74.03755306620111,
+    "history": [
+      {
+        "pass": 0,
+        "parameter": "prior_weight",
+        "value": 1.5,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "prior_weight",
+        "value": 2.0,
+        "score": 73.7571199269571
+      },
+      {
+        "pass": 0,
+        "parameter": "prior_weight",
+        "value": 2.5,
+        "score": 73.44331623006232
+      },
+      {
+        "pass": 0,
+        "parameter": "prior_weight",
+        "value": 3.0,
+        "score": 73.10562409830094
+      },
+      {
+        "pass": 0,
+        "parameter": "prior_weight",
+        "value": 3.5,
+        "score": 72.75094220141396
+      },
+      {
+        "pass": 0,
+        "parameter": "exact_weight",
+        "value": 4.5,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "exact_weight",
+        "value": 6.0,
+        "score": 71.75438431438617
+      },
+      {
+        "pass": 0,
+        "parameter": "exact_weight",
+        "value": 7.5,
+        "score": 69.50590753581704
+      },
+      {
+        "pass": 0,
+        "parameter": "exact_weight",
+        "value": 9.0,
+        "score": 67.35202340062663
+      },
+      {
+        "pass": 0,
+        "parameter": "spatial_weight",
+        "value": 0.5,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "spatial_weight",
+        "value": 0.75,
+        "score": 73.93668257336644
+      },
+      {
+        "pass": 0,
+        "parameter": "spatial_weight",
+        "value": 1.0,
+        "score": 73.81826955931434
+      },
+      {
+        "pass": 0,
+        "parameter": "spatial_weight",
+        "value": 1.25,
+        "score": 73.68588797782351
+      },
+      {
+        "pass": 0,
+        "parameter": "spatial_weight",
+        "value": 1.5,
+        "score": 73.54236549730493
+      },
+      {
+        "pass": 0,
+        "parameter": "global_scale",
+        "value": 0.5,
+        "score": 73.83897864494031
+      },
+      {
+        "pass": 0,
+        "parameter": "global_scale",
+        "value": 1.0,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "global_scale",
+        "value": 1.5,
+        "score": 73.97664930294191
+      },
+      {
+        "pass": 0,
+        "parameter": "code_scale",
+        "value": 0.5,
+        "score": 73.3219374239242
+      },
+      {
+        "pass": 0,
+        "parameter": "code_scale",
+        "value": 0.9,
+        "score": 73.6976368822105
+      },
+      {
+        "pass": 0,
+        "parameter": "code_scale",
+        "value": 1.3,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "frontier_scale",
+        "value": 0.7,
+        "score": 72.42425277843496
+      },
+      {
+        "pass": 0,
+        "parameter": "frontier_scale",
+        "value": 1.1,
+        "score": 73.28638091487063
+      },
+      {
+        "pass": 0,
+        "parameter": "frontier_scale",
+        "value": 1.5,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "context_scale",
+        "value": 0.8,
+        "score": 72.54976208862401
+      },
+      {
+        "pass": 0,
+        "parameter": "context_scale",
+        "value": 1.2,
+        "score": 73.36141660746586
+      },
+      {
+        "pass": 0,
+        "parameter": "context_scale",
+        "value": 1.6,
+        "score": 74.03755306620111
+      },
+      {
+        "pass": 0,
+        "parameter": "region_scale",
+        "value": 0.5,
+        "score": 72.98760566364241
+      },
+      {
+        "pass": 0,
+        "parameter": "region_scale",
+        "value": 0.9,
+        "score": 73.54647087667112
+      },
+      {
+        "pass": 0,
+        "parameter": "region_scale",
+        "value": 1.3,
+        "score": 74.03755306620111
+      }
+    ]
+  }
+}

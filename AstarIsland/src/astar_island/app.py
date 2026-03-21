@@ -130,6 +130,7 @@ def main() -> None:
     remaining_budget = None if budget is None else max(0, budget.queries_max - budget.queries_used)
     can_query = bool(client.config.access_token) and (remaining_budget is None or remaining_budget > 0)
     model_params = active_model_parameters(cache)
+    historical_prior = cache.load_historical_signal_prior()
     observations = cache.load_observations(detail.id)
     latent_profile = infer_round_latent_profile(detail, observations)
     st.sidebar.caption(
@@ -141,6 +142,7 @@ def main() -> None:
         f"exp={latent_profile.expansion_bias:+.2f}, port={latent_profile.port_bias:+.2f}, "
         f"ruin={latent_profile.collapse_bias:+.2f}, forest={latent_profile.forest_bias:+.2f}"
     )
+    st.sidebar.caption(f"Historical entropy prior: {'loaded' if historical_prior is not None else 'not available yet'}")
     seed_index = st.selectbox("Seed", list(range(detail.seeds_count)), index=0)
     current_stage = determine_stage(
         existing_queries=len(observations),
@@ -211,6 +213,7 @@ def main() -> None:
             viewport_h=int(h),
             seed_indices=[seed_index],
             params=model_params,
+            historical_prior=historical_prior,
         )
         if suggested_plan:
             suggestion = suggested_plan[0]
@@ -263,6 +266,7 @@ def main() -> None:
                 viewport_h=int(batch_h),
                 seed_indices=selected_seeds or None,
                 params=model_params,
+                historical_prior=historical_prior,
                 stage=stage,
             )
             st.session_state[plan_state_key] = serialize_plan(plan)
@@ -270,6 +274,7 @@ def main() -> None:
         if button_col2.button("Plan and run now", type="primary", key="plan-run-batch", disabled=not can_query):
             try:
                 current_params = model_params
+                current_prior = historical_prior
                 if run_preflight_first:
                     preflight = run_training_preflight(client, cache, passes=1)
                     st.info(
@@ -278,6 +283,7 @@ def main() -> None:
                         f"improved={preflight.improved}"
                     )
                     current_params = active_model_parameters(cache)
+                    current_prior = cache.load_historical_signal_prior()
                 run = run_iterative_autopilot(
                     client,
                     cache,
@@ -289,6 +295,7 @@ def main() -> None:
                     seed_indices=selected_seeds or None,
                     replan_every=int(batch_size),
                     params=current_params,
+                    historical_prior=current_prior,
                 )
                 st.session_state[plan_state_key] = serialize_plan(run.batches[-1] if run.batches else [])
                 if run.executed_queries == 0:
@@ -313,6 +320,7 @@ def main() -> None:
         if button_col3.button("Use remaining budget", key="run-remaining-budget", disabled=not can_query or remaining_budget == 0):
             try:
                 current_params = model_params
+                current_prior = historical_prior
                 if run_preflight_first:
                     preflight = run_training_preflight(client, cache, passes=1)
                     st.info(
@@ -321,6 +329,7 @@ def main() -> None:
                         f"improved={preflight.improved}"
                     )
                     current_params = active_model_parameters(cache)
+                    current_prior = cache.load_historical_signal_prior()
                 run = run_iterative_autopilot(
                     client,
                     cache,
@@ -332,6 +341,7 @@ def main() -> None:
                     seed_indices=selected_seeds or None,
                     replan_every=int(batch_size),
                     params=current_params,
+                    historical_prior=current_prior,
                 )
                 st.session_state[plan_state_key] = serialize_plan(run.batches[-1] if run.batches else [])
                 if run.executed_queries == 0:

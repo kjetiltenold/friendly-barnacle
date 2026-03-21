@@ -1,0 +1,10 @@
+{
+  "prior_weight": 1.5,
+  "exact_weight": 4.5,
+  "spatial_weight": 0.5,
+  "global_scale": 1.0,
+  "code_scale": 1.3,
+  "frontier_scale": 1.5,
+  "context_scale": 1.6,
+  "region_scale": 1.3
+}
