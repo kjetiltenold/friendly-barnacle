@@ -305,11 +305,29 @@ Recipes:
 - Handle partial payments by paying only the transaction amount from the attached row, not the full outstanding invoice amount.
 - Do not register payments for invoices that are not represented by an attachment row.
 
+24. Simplified year-end closing
+- For annual depreciation tasks, use the exact accounts named in the prompt.
+- If the prompt says depreciation expense `6010` and accumulated depreciation `1209`, then every depreciation voucher should debit `6010` and credit `1209`, even if the assets themselves are on `1210`, `1230`, or `1250`.
+- Post each asset depreciation as a separate voucher when the prompt says so.
+- Do not use `/ledger/result`. Use `GET /ledger/posting` with the OpenAPI-supported filters instead.
+- `/ledger/posting` supports `accountNumberFrom` and `accountNumberTo`, not a made-up result summary endpoint.
+- For prepaid-expense reversals on `1700`, inspect postings on `1700` for the fiscal year and reverse the prepaid balance out of `1700` back to the relevant expense side. Do not guess unrelated expense accounts if the posting data already shows the original account.
+- For tax provision, calculate taxable profit from profit-and-loss postings for the year before posting tax:
+  - `dateFrom=YYYY-01-01`
+  - `dateTo=(YYYY+1)-01-01`
+  - `accountNumberFrom=3000`
+  - `accountNumberTo=8999`
+  - `fields=amountGross,account,date`
+- Use only profit-and-loss accounts for the tax base. Do not include balance-sheet accounts like `1700`, `1209`, `2920`, `1210`, `1230`, or `1250` in the taxable-profit sum.
+- Then post the tax provision on the exact accounts given in the prompt, such as `8700` / `2920`.
+
 Error prevention:
 - Never call POST or PUT through tripletex_api_call without a body, unless it is an action endpoint such as /:payment, /:createCreditNote, /:invoice, or /:reverse that only uses query params.
 - Invoice searches require invoiceDateFrom and invoiceDateTo.
 - Supplier invoice searches require invoiceDateFrom and invoiceDateTo.
 - /ledger/posting uses an exclusive dateTo. For a full March 2026 check, use dateFrom=2026-03-01 and dateTo=2026-04-01, not 2026-03-31.
+- On `/ledger/posting`, use `date`, not `accountingDate`, in fields filters.
+- On `/ledger/posting`, prefer `accountNumberFrom` / `accountNumberTo` over guessed `accountNumber` shortcuts.
 - If a bank statement attachment is present, do not ignore it in favor of generic Tripletex list endpoints.
 - Voucher postings must balance.
 - Use account IDs from lookups, never raw account numbers inside posting.account.id.

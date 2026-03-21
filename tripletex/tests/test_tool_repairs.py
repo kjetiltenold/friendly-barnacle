@@ -1085,6 +1085,58 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             [("GET", "/ledger/posting", {"dateFrom": "2026-03-01", "dateTo": "2026-04-01", "fields": "amount"})],
         )
 
+    async def test_tripletex_api_call_normalizes_ledger_posting_fields_and_account_number(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/posting",
+                    (
+                        ("accountNumberFrom", "1700"),
+                        ("accountNumberTo", "1700"),
+                        ("dateFrom", "2025-01-01"),
+                        ("dateTo", "2026-01-01"),
+                        ("fields", "amountGross,account,date"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"amountGross": 61300, "date": "2025-12-31"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/ledger/posting?dateFrom=2025-01-01&dateTo=2026-01-01&accountNumber=1700&fields=amountGross,account,accountingDate"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["amountGross"], 61300)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/ledger/posting", {
+                "dateFrom": "2025-01-01",
+                "dateTo": "2026-01-01",
+                "accountNumberFrom": "1700",
+                "accountNumberTo": "1700",
+                "fields": "amountGross,account,date",
+            })],
+        )
+
+    async def test_tripletex_api_call_blocks_ledger_result(self):
+        client = FakeTripletexClient()
+
+        with self.assertRaises(ValueError):
+            await _execute(
+                client,
+                "tripletex_api_call",
+                {"method": "GET", "path": "/ledger/result?dateFrom=2025-01-01&dateTo=2026-01-01"},
+                endpoint_search=None,
+                ctx=EntityContext(),
+            )
+        self.assertEqual(client.calls, [])
+
     async def test_tripletex_api_call_does_not_inject_invoice_dates_on_payment_type(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1312,6 +1364,34 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[-1][2]["postings"][0]["amountGross"], 81812)
         self.assertEqual(client.calls[-1][2]["postings"][0]["amountGrossCurrency"], 81812)
         self.assertEqual(client.calls[-1][2]["postings"][0]["vatType"], {"id": 50})
+
+    async def test_create_voucher_normalizes_year_end_depreciation_to_requested_accounts(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext()
+        ctx.account_cache = {
+            1: {"id": 1, "number": 6010, "name": "Avskrivning"},
+            2: {"id": 2, "number": 1209, "name": "Akkumulert avskrivning"},
+            3: {"id": 3, "number": 1259, "name": "Akkumulert avskrivning programvare"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2025-12-31",
+                "description": "Årsavskrivning 2025 - Programvare",
+                "postings": [
+                    {"account": {"id": 1}, "amountGross": 123983.33, "amountGrossCurrency": 123983.33},
+                    {"account": {"id": 3}, "amountGross": -123983.33, "amountGrossCurrency": -123983.33},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["account"], {"id": 1})
+        self.assertEqual(client.calls[-1][2]["postings"][1]["account"], {"id": 2})
 
     async def test_create_voucher_keeps_supported_locked_vattype(self):
         client = FakeTripletexClient()

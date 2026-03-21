@@ -801,6 +801,43 @@ def _normalize_exclusive_date_range(path: str, params: dict) -> None:
         )
 
 
+def _find_cached_account_by_number(ctx: EntityContext | None, number: str) -> dict | None:
+    if ctx is None or not ctx.account_cache:
+        return None
+    target = str(number)
+    for account in ctx.account_cache.values():
+        if str(account.get("number")) == target:
+            return account
+    return None
+
+
+def _normalize_year_end_depreciation_postings(postings: list[dict] | None, description: str | None, ctx: EntityContext | None) -> None:
+    if ctx is None or not isinstance(postings, list):
+        return
+    normalized_description = str(description or "").lower()
+    if not any(token in normalized_description for token in ("avskriv", "depreciat")):
+        return
+    if len(postings) != 2:
+        return
+    debit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    credit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(debit_postings) != 1 or len(credit_postings) != 1:
+        return
+    preferred_expense = _find_cached_account_by_number(ctx, "6010")
+    preferred_accumulated = _find_cached_account_by_number(ctx, "1209")
+    debit_posting = debit_postings[0]
+    credit_posting = credit_postings[0]
+    debit_account = _get_cached_account(ctx, debit_posting) or {}
+    credit_account = _get_cached_account(ctx, credit_posting) or {}
+    if preferred_expense and str(debit_account.get("number")) != "6010":
+        debit_posting["account"] = {"id": preferred_expense["id"]}
+        logger.info("Normalized depreciation expense posting to account 6010 from cached lookup")
+    credit_number = str(credit_account.get("number") or "")
+    if preferred_accumulated and credit_number != "1209" and credit_number.startswith("12"):
+        credit_posting["account"] = {"id": preferred_accumulated["id"]}
+        logger.info("Normalized accumulated depreciation posting to account 1209 from cached lookup")
+
+
 def _has_meaningful_search_filters(params: dict) -> bool:
     """Treat unfiltered list requests as unsafe to avoid random matches."""
     for key, value in params.items():
@@ -2003,6 +2040,7 @@ async def _execute(
 
     if name == "create_voucher":
         if "postings" in args and isinstance(args["postings"], list):
+            _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
             is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
             for i, posting in enumerate(args["postings"]):
                 if isinstance(posting, dict):
@@ -2291,6 +2329,8 @@ async def _execute(
             raise ValueError("Do not use session or logged-in preference endpoints here. Project manager selection is handled automatically by create_project.")
         if path == "/ledger" and method == "GET":
             raise ValueError("Do not use GET /ledger for posting analysis. Use find_top_expense_account_increases or GET /ledger/postingByDate instead.")
+        if path == "/ledger/result" and method == "GET":
+            raise ValueError("Do not use GET /ledger/result. Use GET /ledger/posting with accountNumberFrom/accountNumberTo over profit-and-loss accounts instead.")
         if parsed.query:
             embedded = parse_qs(parsed.query, keep_blank_values=True)
             for k, v in embedded.items():
@@ -2318,6 +2358,22 @@ async def _execute(
             if enriched_fields != params["fields"]:
                 params["fields"] = enriched_fields
                 logger.info(f"Enriched ledger account fields filter to {enriched_fields}")
+        if path == "/ledger/posting":
+            if "accountNumber" in params and "accountNumberFrom" not in params and "accountNumberTo" not in params:
+                params["accountNumberFrom"] = params["accountNumber"]
+                params["accountNumberTo"] = params["accountNumber"]
+                params.pop("accountNumber", None)
+                logger.info("Normalized ledger/posting accountNumber filter to accountNumberFrom/accountNumberTo")
+            if isinstance(params.get("fields"), str):
+                rewritten_fields = _rewrite_fields_filter(
+                    params["fields"],
+                    {
+                        "accountingDate": "date",
+                    },
+                )
+                if rewritten_fields != params["fields"]:
+                    params["fields"] = rewritten_fields
+                    logger.info(f"Normalized ledger/posting fields filter to {rewritten_fields}")
         if path == "/invoice" and isinstance(params.get("fields"), str):
             rewritten_fields = _rewrite_fields_filter(
                 params["fields"],
