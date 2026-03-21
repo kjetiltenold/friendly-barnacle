@@ -354,6 +354,7 @@ Recipes:
 - Do not use `/ledger/result`. Use `GET /ledger/posting` with the OpenAPI-supported filters instead.
 - `/ledger/posting` supports `accountNumberFrom` and `accountNumberTo`, not a made-up result summary endpoint.
 - For prepaid-expense reversals on `1700`, inspect postings on `1700` for the fiscal year and reverse the prepaid balance out of `1700` back to the relevant expense side. Do not guess unrelated expense accounts if the posting data already shows the original account.
+- If the prompt states a total prepaid-expense balance on `1700`, reverse that full stated balance, not a monthly slice or one-twelfth estimate.
 - For tax provision, calculate taxable profit from profit-and-loss postings for the year before posting tax:
   - `dateFrom=YYYY-01-01`
   - `dateTo=(YYYY+1)-01-01`

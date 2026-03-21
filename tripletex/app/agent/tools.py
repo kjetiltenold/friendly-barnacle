@@ -910,6 +910,85 @@ def _classify_month_end_closing_pair(postings: list[dict] | None, description: s
     return None
 
 
+def _extract_prompt_year_end_prepaid_amount(ctx: EntityContext | None, account_number: str = "1700") -> float | None:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    def _parse_prompt_amount(value: str) -> float | None:
+        text = str(value or "").strip().replace("\u00a0", " ")
+        if not text:
+            return None
+        text = re.sub(r"\s+", "", text)
+        if "," in text and "." in text:
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "," in text:
+            if text.count(",") == 1 and len(text.split(",")[-1]) in (1, 2):
+                text = text.replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "." in text and text.count(".") > 1:
+            text = text.replace(".", "")
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    amount_pattern = r"(\d[\d\s.,]*)"
+    account_pattern = re.escape(str(account_number))
+    patterns = (
+        rf"total\s+{amount_pattern}\s*(?:nok|kr)?\s+(?:na|no|on|i|in)\s+(?:conta|konto|account)\s+{account_pattern}\b",
+        rf"{account_pattern}\b.*?\btotal\s+{amount_pattern}\s*(?:nok|kr)?",
+        rf"{account_pattern}\b.*?{amount_pattern}\s*(?:nok|kr)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw_text, re.IGNORECASE)
+        if not match:
+            continue
+        amount = _parse_prompt_amount(match.group(1))
+        if amount is not None:
+            return round(amount, 2)
+    return None
+
+
+def _normalize_year_end_prepaid_reversal_postings(
+    postings: list[dict] | None,
+    description: str | None,
+    ctx: EntityContext | None,
+) -> None:
+    if ctx is None or not isinstance(postings, list) or len(postings) != 2:
+        return
+    normalized_description = str(description or "").lower()
+    if not any(token in normalized_description for token in ("prepaid", "forskudds", "tilbakeforing", "reversal")):
+        return
+    target_amount = _extract_prompt_year_end_prepaid_amount(ctx, "1700")
+    if target_amount in (None, 0):
+        return
+    debit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    credit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(debit_postings) != 1 or len(credit_postings) != 1:
+        return
+    debit_posting = debit_postings[0]
+    credit_posting = credit_postings[0]
+    debit_account = _get_cached_account(ctx, debit_posting) or {}
+    credit_account = _get_cached_account(ctx, credit_posting) or {}
+    if str(debit_account.get("number") or "") != "1700" and str(credit_account.get("number") or "") != "1700":
+        return
+    current_amount = abs(_coerce_number(debit_posting.get("amountGross")))
+    if abs(current_amount - target_amount) <= 0.01:
+        return
+    debit_posting["amountGross"] = target_amount
+    debit_posting["amountGrossCurrency"] = target_amount
+    credit_posting["amountGross"] = -target_amount
+    credit_posting["amountGrossCurrency"] = -target_amount
+    logger.info(
+        "Normalized year-end prepaid reversal on 1700 to prompt total %.2f from current %.2f",
+        target_amount,
+        current_amount,
+    )
+
+
 def _normalize_month_end_closing_pair_postings(
     postings: list[dict] | None,
     description: str | None,
@@ -994,6 +1073,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
     if "postings" not in args or not isinstance(args["postings"], list):
         return None
     _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
+    _normalize_year_end_prepaid_reversal_postings(args["postings"], args.get("description"), ctx)
     _normalize_month_end_closing_pair_postings(args["postings"], args.get("description"), ctx)
     is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
     for i, posting in enumerate(args["postings"]):

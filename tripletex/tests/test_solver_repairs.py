@@ -287,6 +287,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Month-end closing", prompt)
         self.assertIn("Do not mistake an amount like 8300 NOK for account `8300`", prompt)
         self.assertIn("Post accrual reversal, depreciation, and salary accrual as separate vouchers", prompt)
+        self.assertIn("reverse that full stated balance, not a monthly slice", prompt)
 
     def test_system_prompt_includes_project_budget_and_timesheet_guidance(self):
         prompt = get_system_prompt("2026-03-21")
