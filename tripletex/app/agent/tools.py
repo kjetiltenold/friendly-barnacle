@@ -80,6 +80,7 @@ class EntityContext:
     last_top_expense_analysis_key: str | None = None
     last_top_expense_analysis: dict | None = None
     next_project_activity_pair_index: int = 0
+    prompt_text: str | None = None
 
     def __post_init__(self):
         if self.product_ids is None:
@@ -1090,6 +1091,88 @@ async def _post_voucher_with_retry(client: TripletexClient, args: dict, ctx: Ent
         raise
 
 
+def _record_timesheet_hours_in_context(
+    ctx: EntityContext | None,
+    employee_id: int | None,
+    project_id: int | None,
+    activity_id: int | None,
+    entry_date: str | None,
+    hours,
+) -> None:
+    if (
+        ctx is None
+        or employee_id is None
+        or project_id is None
+        or activity_id is None
+        or not isinstance(entry_date, str)
+    ):
+        return
+    booked_hours = _coerce_number(hours)
+    key = (employee_id, project_id, activity_id, entry_date)
+    ctx.timesheet_hours_by_day[key] = round(ctx.timesheet_hours_by_day.get(key, 0.0) + booked_hours, 2)
+
+
+async def _create_timesheet_entries(
+    client: TripletexClient,
+    args: dict,
+    ctx: EntityContext | None,
+) -> dict:
+    employee_id = _extract_reference_id(args.get("employee"))
+    project_id = _extract_reference_id(args.get("project"))
+    activity_id = _extract_reference_id(args.get("activity"))
+    normalized_date = _normalize_timesheet_date(
+        ctx,
+        employee_id,
+        project_id,
+        activity_id,
+        args.get("date"),
+        args.get("hours"),
+    )
+    if normalized_date and normalized_date != args.get("date"):
+        args["date"] = normalized_date
+        logger.info(f"Normalized timesheet entry date to {normalized_date}")
+    requested_hours = _coerce_number(args.get("hours"))
+    if requested_hours <= 12:
+        return await client.post("/timesheet/entry", json=args)
+    try:
+        candidate = datetime.date.fromisoformat(args["date"])
+    except (KeyError, ValueError, TypeError):
+        return await client.post("/timesheet/entry", json=args)
+    candidate = _next_working_day(candidate)
+    remaining_hours = requested_hours
+    results: list[dict] = []
+    while remaining_hours > 0.01:
+        chunk_hours = round(min(8.0, remaining_hours), 2)
+        entry_args = json.loads(json.dumps(args))
+        entry_args["hours"] = chunk_hours
+        entry_args["date"] = _normalize_timesheet_date(
+            ctx,
+            employee_id,
+            project_id,
+            activity_id,
+            candidate.isoformat(),
+            chunk_hours,
+            daily_limit=8.0,
+        )
+        result = await client.post("/timesheet/entry", json=entry_args)
+        results.append(result)
+        _record_timesheet_hours_in_context(
+            ctx,
+            employee_id,
+            project_id,
+            activity_id,
+            entry_args.get("date"),
+            chunk_hours,
+        )
+        remaining_hours = round(remaining_hours - chunk_hours, 2)
+        candidate = _next_working_day(datetime.date.fromisoformat(entry_args["date"]) + datetime.timedelta(days=1))
+    return {
+        "value": (results[-1] or {}).get("value", {}),
+        "values": [result.get("value", {}) for result in results],
+        "_skip_track": True,
+    }
+
+
 def _has_meaningful_search_filters(params: dict) -> bool:
     """Treat unfiltered list requests as unsafe to avoid random matches."""
     for key, value in params.items():
@@ -1128,6 +1211,8 @@ def _normalize_timesheet_date(
     activity_id: int | None,
     requested_date: str | None,
     hours,
+    *,
+    daily_limit: float = 24.0,
 ) -> str | None:
     if (
         ctx is None
@@ -1153,15 +1238,41 @@ def _normalize_timesheet_date(
                 candidate = project_start
         except ValueError:
             pass
-    if requested_hours <= 0 or requested_hours > 24:
+    if requested_hours <= 0 or requested_hours > daily_limit:
         return candidate.isoformat()
     for _ in range(366):
         key = (employee_id, project_id, activity_id, candidate.isoformat())
         used_hours = ctx.timesheet_hours_by_day.get(key, 0.0)
-        if used_hours + requested_hours <= 24.0:
+        if used_hours + requested_hours <= daily_limit:
             return candidate.isoformat()
         candidate += datetime.timedelta(days=1)
     return requested_date
+
+
+def _next_working_day(candidate: datetime.date) -> datetime.date:
+    while candidate.weekday() >= 5:
+        candidate += datetime.timedelta(days=1)
+    return candidate
+
+
+def _normalize_prompt_text(value: str | None) -> str:
+    if value in (None, ""):
+        return ""
+    text = str(value).strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _prompt_describes_budget_not_fixed_price(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    budget_tokens = ("budget", "budsjett", "orcamento", "presupuesto")
+    fixed_price_tokens = ("fixedprice", "fastpris", "prixfixe", "precofixo", "forfait")
+    return any(token in normalized for token in budget_tokens) and not any(
+        token in normalized for token in fixed_price_tokens
+    )
 
 
 def _generate_project_number() -> str:
@@ -1507,8 +1618,12 @@ async def dispatch_tool(
         args = json.loads(args_json)
         logger.info(f"Tool {name} args: {json.dumps(args, default=str, ensure_ascii=False)}")
         result = await _execute(client, name, args, endpoint_search=endpoint_search, ctx=ctx)
+        skip_track = False
+        if isinstance(result, dict):
+            skip_track = bool(result.pop("_skip_track", False))
         if ctx is not None:
-            ctx.track(name, result, args)
+            if not skip_track:
+                ctx.track(name, result, args)
         # Log creation responses for scoring diagnostics
         if name.startswith("create_"):
             result_str = json.dumps(result, default=str, ensure_ascii=False)
@@ -2232,6 +2347,13 @@ async def _execute(
         if "fixedprice" not in args and args.get("fixedPrice") not in (None, ""):
             args["fixedprice"] = _coerce_number(args.pop("fixedPrice"))
             logger.info(f"Normalized create_project fixedPrice -> fixedprice ({args['fixedprice']})")
+        if _prompt_describes_budget_not_fixed_price(ctx) and (
+            args.get("isFixedPrice") is True or args.get("fixedprice") not in (None, "")
+        ):
+            args.pop("isFixedPrice", None)
+            args.pop("fixedprice", None)
+            args.pop("fixedPrice", None)
+            logger.info("Removed fixed-price project fields because the prompt described a budget, not a fixed-price project")
         # Auto-inject projectManager if missing
         preferred_manager_id = _preferred_project_manager_id(ctx)
         if "projectManager" not in args and preferred_manager_id:
@@ -2476,21 +2598,7 @@ async def _execute(
         if "activity" not in args and ctx and ctx.last_activity_id:
             args["activity"] = {"id": ctx.last_activity_id}
             logger.info(f"Auto-injected activity id={ctx.last_activity_id} into timesheet entry")
-        employee_id = _extract_reference_id(args.get("employee"))
-        project_id = _extract_reference_id(args.get("project"))
-        activity_id = _extract_reference_id(args.get("activity"))
-        normalized_date = _normalize_timesheet_date(
-            ctx,
-            employee_id,
-            project_id,
-            activity_id,
-            args.get("date"),
-            args.get("hours"),
-        )
-        if normalized_date and normalized_date != args.get("date"):
-            args["date"] = normalized_date
-            logger.info(f"Normalized timesheet entry date to {normalized_date}")
-        return await client.post("/timesheet/entry", json=args)
+        return await _create_timesheet_entries(client, args, ctx)
 
     if name == "update_project_hourly_rate":
         hourly_rate_id = args.pop("hourly_rate_id", None)

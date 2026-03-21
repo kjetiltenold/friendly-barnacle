@@ -617,6 +617,36 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["fixedprice"], 362300)
         self.assertNotIn("fixedPrice", body)
 
+    async def test_create_project_does_not_force_fixed_price_when_prompt_only_says_budget(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_project",
+            {
+                "name": "Portail Numerique Etoile",
+                "number": "PNE-2026-001",
+                "startDate": "2026-03-21",
+                "isFixedPrice": True,
+                "fixedprice": 383650,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_customer_id=108349514,
+                last_sales_customer_id=108349514,
+                last_employee_id=18626106,
+                employee_ids=[18626106],
+                prompt_text="Le projet a un budget de 383650 NOK et doit etre facture apres enregistrement du temps.",
+            ),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/project"))
+        self.assertEqual(body["customer"], {"id": 108349514})
+        self.assertEqual(body["projectManager"], {"id": 18626106})
+        self.assertNotIn("isFixedPrice", body)
+        self.assertNotIn("fixedprice", body)
+
     async def test_create_department_reuses_existing_by_name(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1078,7 +1108,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         await _execute(
             client,
             "create_timesheet_entry",
-            {"date": "2026-03-21", "hours": 24},
+            {"date": "2026-03-21", "hours": 8},
             endpoint_search=None,
             ctx=ctx,
         )
@@ -1087,7 +1117,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             client.calls[-1],
             ("POST", "/timesheet/entry", {
                 "date": "2026-03-21",
-                "hours": 24,
+                "hours": 8,
                 "employee": {"id": 18609430},
                 "project": {"id": 402000662},
                 "activity": {"id": 5877567},
@@ -1104,7 +1134,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             timesheet_hours_by_day={(18596063, 402000777, 5136255, "2026-03-21"): 24.0},
         )
 
-        await _execute(
+        result = await _execute(
             client,
             "create_timesheet_entry",
             {"date": "2026-03-20", "hours": 24},
@@ -1113,15 +1143,76 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            client.calls[-1],
-            ("POST", "/timesheet/entry", {
-                "date": "2026-03-22",
-                "hours": 24,
-                "employee": {"id": 18596063},
-                "project": {"id": 402000777},
-                "activity": {"id": 5136255},
-            }),
+            client.calls,
+            [
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-23",
+                    "hours": 8.0,
+                    "employee": {"id": 18596063},
+                    "project": {"id": 402000777},
+                    "activity": {"id": 5136255},
+                }),
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-24",
+                    "hours": 8.0,
+                    "employee": {"id": 18596063},
+                    "project": {"id": 402000777},
+                    "activity": {"id": 5136255},
+                }),
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-25",
+                    "hours": 8.0,
+                    "employee": {"id": 18596063},
+                    "project": {"id": 402000777},
+                    "activity": {"id": 5136255},
+                }),
+            ],
         )
+        self.assertEqual(len(result["values"]), 3)
+
+    async def test_create_timesheet_entry_splits_large_hours_into_working_days(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_employee_id=18626106,
+            last_project_id=402006456,
+            last_activity_id=5889922,
+        )
+
+        result = await _execute(
+            client,
+            "create_timesheet_entry",
+            {"date": "2026-03-21", "hours": 24},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-23",
+                    "hours": 8.0,
+                    "employee": {"id": 18626106},
+                    "project": {"id": 402006456},
+                    "activity": {"id": 5889922},
+                }),
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-24",
+                    "hours": 8.0,
+                    "employee": {"id": 18626106},
+                    "project": {"id": 402006456},
+                    "activity": {"id": 5889922},
+                }),
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-25",
+                    "hours": 8.0,
+                    "employee": {"id": 18626106},
+                    "project": {"id": 402006456},
+                    "activity": {"id": 5889922},
+                }),
+            ],
+        )
+        self.assertEqual(len(result["values"]), 3)
 
     async def test_create_order_sets_ex_vat_mode_flag_and_project(self):
         client = FakeTripletexClient()

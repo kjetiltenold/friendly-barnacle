@@ -221,6 +221,12 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not mistake an amount like 8300 NOK for account `8300`", prompt)
         self.assertIn("Post accrual reversal, depreciation, and salary accrual as separate vouchers", prompt)
 
+    def test_system_prompt_includes_project_budget_and_timesheet_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("A project budget is not the same as a fixed-price project", prompt)
+        self.assertIn("typically 7.5 or 8 hours per day, not 24-hour days", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -189,9 +189,12 @@ Recipes:
   7. GET /project/hourlyRates then update_project_hourly_rate with fixedRate
   8. Create product, create order with the project reference, and invoice the order
 - timesheet/entry requires activity. Never send activity as null.
-- If hours exceed 24 for one date, split them across multiple entries.
+- If the prompt gives only total project hours and no explicit work dates, distribute them across reasonable working days, typically 7.5 or 8 hours per day, not 24-hour days.
+- If hours exceed a normal workday for one date, split them across multiple entries on subsequent working days.
 - When a project has a known startDate, never place time entries before that date. Continue forward from the project start.
 - If the task creates both a customer and a supplier, still send the real customer explicitly on create_project and create_order.
+- A project budget is not the same as a fixed-price project. Only set isFixedPrice/fixedprice when the prompt explicitly says fixed price, fastpris, prix fixe, or equivalent wording.
+- If the prompt gives a project budget and asks you to invoice after recording hours, use the budget to derive the project hourly rate when needed. Do not silently convert the project into fixed price just because a budget amount is present.
 - There is no valid /project/{{id}}/:invoice endpoint here. Use the normal order->invoice flow.
 
 12. Reverse or cancel payment

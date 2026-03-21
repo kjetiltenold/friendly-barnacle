@@ -89,6 +89,7 @@ async def solve_task(request: SolveRequest) -> None:
         today = datetime.date.today().isoformat()
         system_prompt = get_system_prompt(today)
         ctx = EntityContext()
+        ctx.prompt_text = request.prompt
         completion_reminder_count = 0
 
         await _prime_context(tx, ctx)
