@@ -1,7 +1,10 @@
 """Tool definitions for OpenAI tool-use and dispatch to Tripletex API."""
 
+import datetime
 import json
 import logging
+import re
+import uuid
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
@@ -10,6 +13,27 @@ from app.endpoint_search import EndpointSearchClient
 from app.tripletex.client import TripletexClient
 
 logger = logging.getLogger(__name__)
+
+PASSIVE_SEARCH_PARAMS = {
+    "fields",
+    "from",
+    "count",
+    "sorting",
+    "invoiceDateFrom",
+    "invoiceDateTo",
+    "dateFrom",
+    "dateTo",
+    "startDateFrom",
+    "startDateTo",
+    "endDateFrom",
+    "endDateTo",
+    "returnDateFrom",
+    "returnDateTo",
+    "departureDateFrom",
+    "departureDateTo",
+    "periodStart",
+    "periodEnd",
+}
 
 
 @dataclass
@@ -28,6 +52,14 @@ class EntityContext:
     last_employee_id: int | None = None
     last_project_id: int | None = None
     last_invoice_id: int | None = None
+    last_travel_expense_id: int | None = None
+    last_activity_id: int | None = None
+    last_rate_category_id: int | None = None
+    last_cost_category_id: int | None = None
+    last_payment_type_id: int | None = None
+    last_hourly_rate_id: int | None = None
+    last_dimension_index: int | None = None
+    last_dimension_value_id: int | None = None
 
     def __post_init__(self):
         if self.product_ids is None:
@@ -46,6 +78,7 @@ class EntityContext:
             "create_employee": "last_employee_id",
             "create_project": "last_project_id",
             "create_invoice": "last_invoice_id",
+            "create_travel_expense": "last_travel_expense_id",
         }
         attr = mapping.get(name)
         if attr:
@@ -54,6 +87,36 @@ class EntityContext:
         # Track all product IDs for multi-product orders
         if name == "create_product" and entity_id not in self.product_ids:
             self.product_ids.append(entity_id)
+        if name == "create_accounting_dimension_name":
+            dimension_index = value.get("dimensionIndex")
+            if dimension_index is not None:
+                self.last_dimension_index = dimension_index
+        if name == "create_accounting_dimension_value":
+            self.last_dimension_value_id = entity_id
+
+
+def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) -> None:
+    """Capture useful IDs from raw GET lookups for later tool auto-fill."""
+    if ctx is None:
+        return
+    values = result.get("values", [])
+    if not values:
+        return
+    first = values[0]
+    first_id = first.get("id")
+    if first_id is None:
+        return
+
+    if path.startswith("/activity"):
+        ctx.last_activity_id = first_id
+    elif path.startswith("/travelExpense/rateCategory"):
+        ctx.last_rate_category_id = first_id
+    elif path.startswith("/travelExpense/costCategory"):
+        ctx.last_cost_category_id = first_id
+    elif path.startswith("/travelExpense/paymentType") or path.startswith("/invoice/paymentType"):
+        ctx.last_payment_type_id = first_id
+    elif path.startswith("/project/hourlyRates"):
+        ctx.last_hourly_rate_id = first_id
 
 
 def _tool(name: str, description: str, parameters: dict) -> dict:
@@ -203,6 +266,111 @@ BASE_TOOL_DEFINITIONS = [
         },
         "required": ["employee", "title"],
     }),
+    _tool("create_per_diem_compensation", "Create a travel expense per diem compensation. MUST include travelExpense, rateCategory, location, overnightAccommodation, count, and rate.", {
+        "type": "object",
+        "properties": {
+            "travelExpense": {"type": "object", "description": "{\"id\": travel_expense_id}"},
+            "rateCategory": {"type": "object", "description": "{\"id\": rate_category_id}"},
+            "location": {"type": "string"},
+            "overnightAccommodation": {
+                "type": "string",
+                "enum": ["NONE", "HOTEL", "BOARDING_HOUSE_WITHOUT_COOKING", "BOARDING_HOUSE_WITH_COOKING"],
+            },
+            "count": {"type": "integer"},
+            "rate": {"type": "number"},
+            "countryCode": {"type": "string"},
+            "address": {"type": "string"},
+        },
+        "required": ["travelExpense", "rateCategory", "location", "overnightAccommodation", "count", "rate"],
+    }),
+    _tool("create_travel_cost", "Create a travel expense cost line. MUST include travelExpense, costCategory, comments, amountCurrencyIncVat, and date.", {
+        "type": "object",
+        "properties": {
+            "travelExpense": {"type": "object", "description": "{\"id\": travel_expense_id}"},
+            "costCategory": {"type": "object", "description": "{\"id\": cost_category_id}"},
+            "paymentType": {"type": "object", "description": "{\"id\": payment_type_id}"},
+            "comments": {"type": "string"},
+            "amountCurrencyIncVat": {"type": "number"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+            "vatType": {"type": "object"},
+            "currency": {"type": "object"},
+            "rate": {"type": "number"},
+        },
+        "required": ["travelExpense", "costCategory", "comments", "amountCurrencyIncVat", "date"],
+    }),
+    _tool("create_project_activity", "Link an activity to a project. MUST include both project and activity references.", {
+        "type": "object",
+        "properties": {
+            "project": {"type": "object", "description": "{\"id\": project_id}"},
+            "activity": {"type": "object", "description": "{\"id\": activity_id}"},
+        },
+        "required": ["project", "activity"],
+    }),
+    _tool("create_timesheet_entry", "Create a timesheet entry. MUST include employee, project, activity, date, and hours.", {
+        "type": "object",
+        "properties": {
+            "employee": {"type": "object", "description": "{\"id\": employee_id}"},
+            "project": {"type": "object", "description": "{\"id\": project_id}"},
+            "activity": {"type": "object", "description": "{\"id\": activity_id}"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+            "hours": {"type": "number"},
+        },
+        "required": ["employee", "project", "activity", "date", "hours"],
+    }),
+    _tool("update_project_hourly_rate", "Update a project hourly rate. MUST include hourly_rate_id and fixedRate. Include project, startDate, and showInProjectOrder when known.", {
+        "type": "object",
+        "properties": {
+            "hourly_rate_id": {"type": "integer"},
+            "project": {"type": "object", "description": "{\"id\": project_id}"},
+            "startDate": {"type": "string", "description": "YYYY-MM-DD"},
+            "hourlyRateModel": {"type": "string"},
+            "fixedRate": {"type": "number"},
+            "showInProjectOrder": {"type": "boolean"},
+        },
+        "required": ["hourly_rate_id", "fixedRate"],
+    }),
+    _tool("create_accounting_dimension_name", "Create a free accounting dimension name. MUST include dimensionName.", {
+        "type": "object",
+        "properties": {
+            "dimensionName": {"type": "string"},
+            "description": {"type": "string"},
+            "active": {"type": "boolean"},
+        },
+        "required": ["dimensionName"],
+    }),
+    _tool("create_accounting_dimension_value", "Create a free accounting dimension value. MUST include displayName and dimensionIndex.", {
+        "type": "object",
+        "properties": {
+            "displayName": {"type": "string"},
+            "dimensionIndex": {"type": "integer"},
+            "active": {"type": "boolean"},
+            "number": {"type": "string"},
+            "showInVoucherRegistration": {"type": "boolean"},
+        },
+        "required": ["displayName", "dimensionIndex"],
+    }),
+    _tool("create_voucher", "Create a voucher with postings. MUST include date, description, and a postings array. Each posting must include account and amountGross.", {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+            "description": {"type": "string"},
+            "postings": {"type": "array", "items": {"type": "object"}},
+            "year": {"type": "integer"},
+        },
+        "required": ["date", "description", "postings"],
+    }),
+    _tool("create_salary_transaction", "Create a salary transaction. MUST include date, year, month, and payslips. Each payslip must include employee and specifications. Each specification must include salaryType, rate, and count.", {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+            "year": {"type": "integer"},
+            "month": {"type": "integer"},
+            "payslips": {"type": "array", "items": {"type": "object"}},
+            "isHistorical": {"type": "boolean"},
+            "paySlipsAvailableDate": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["date", "year", "month", "payslips"],
+    }),
     _tool("search_entity", "Search for entities in Tripletex. Use sparingly — the account starts empty so searches on a fresh account return nothing.", {
         "type": "object",
         "properties": {
@@ -275,6 +443,38 @@ def get_tool_definitions() -> list[dict]:
     if get_settings().azure_search_configured:
         definitions.append(ENDPOINT_SEARCH_TOOL)
     return definitions
+
+
+def _compact_dict(payload: dict) -> dict:
+    """Drop empty values before sending payloads to Tripletex."""
+    return {
+        key: value
+        for key, value in payload.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _has_meaningful_search_filters(params: dict) -> bool:
+    """Treat unfiltered list requests as unsafe to avoid random matches."""
+    for key, value in params.items():
+        if key in PASSIVE_SEARCH_PARAMS:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        return True
+    return False
+
+
+def _generate_project_number() -> str:
+    """Generate a unique-enough project number for generic prompts."""
+    return f"P-{datetime.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+
+
+def _is_placeholder_project_number(value: str | None) -> bool:
+    if value is None:
+        return True
+    normalized = value.strip().upper()
+    return normalized in {"", "1", "P1", "P01", "P001", "PROJECT", "PRJ", "DEFAULT"}
 
 
 async def dispatch_tool(
@@ -386,17 +586,6 @@ async def _execute(
     ctx: EntityContext | None = None,
 ) -> dict:
     if name == "create_employee":
-        email = args.get("email")
-        # Search first if email given — avoids 422 error on conflict
-        if email:
-            try:
-                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
-                values = result.get("values", [])
-                if values:
-                    logger.info(f"Found existing employee id={values[0]['id']} for email {email}")
-                    return {"value": values[0]}
-            except Exception:
-                pass
         if "userType" not in args:
             args["userType"] = "STANDARD"
         # Move startDate into an employments array if provided
@@ -408,6 +597,23 @@ async def _execute(
             val = args.get(ref_field)
             if isinstance(val, dict) and not val.get("id"):
                 del args[ref_field]
+        email = args.get("email")
+        # Search first if email given — avoids 422 error on conflict
+        if email:
+            try:
+                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                values = result.get("values", [])
+                if values:
+                    employee = values[0]
+                    employee_id = employee["id"]
+                    update_fields = _compact_dict(args)
+                    if update_fields:
+                        logger.info(f"Updating existing employee id={employee_id} for email {email}")
+                        return await client.put(f"/employee/{employee_id}", json={"id": employee_id, **update_fields})
+                    logger.info(f"Found existing employee id={employee_id} for email {email}")
+                    return {"value": employee}
+            except Exception:
+                pass
         try:
             return await client.post("/employee", json=args)
         except Exception as e:
@@ -426,23 +632,6 @@ async def _execute(
         return await client.put(f"/employee/{eid}", json={"id": eid, **fields})
 
     if name == "create_customer":
-        # Search first by org number — sandbox may have pre-existing customer
-        org_number = args.get("organizationNumber")
-        if org_number:
-            try:
-                result = await client.get("/customer", params={
-                    "organizationNumber": org_number, "fields": "id,name,organizationNumber,isCustomer,isSupplier"
-                })
-                values = result.get("values", [])
-                if values:
-                    logger.info(f"Found existing customer id={values[0]['id']} for org {org_number}")
-                    return {"value": values[0]}
-            except Exception:
-                pass
-        # Ensure isCustomer is set unless this is a supplier-only entity
-        if "isCustomer" not in args and not args.get("isSupplier"):
-            args["isCustomer"] = True
-        # Map address fields into Tripletex format
         # Handle flat address fields the model might send
         addr = args.pop("address", None)
         postal_code = args.pop("postalCode", None)
@@ -456,6 +645,30 @@ async def _execute(
                 args["postalAddress"]["postalCode"] = postal_code
             if city:
                 args["postalAddress"]["city"] = city
+        # Search first by org number — sandbox may have pre-existing customer
+        org_number = args.get("organizationNumber")
+        if org_number:
+            try:
+                result = await client.get("/customer", params={
+                    "organizationNumber": org_number, "fields": "id,name,organizationNumber,isCustomer,isSupplier"
+                })
+                values = result.get("values", [])
+                if values:
+                    customer = values[0]
+                    customer_id = customer["id"]
+                    update_fields = _compact_dict(args)
+                    if customer.get("isCustomer") and "isCustomer" not in args:
+                        update_fields.pop("isCustomer", None)
+                    if update_fields:
+                        logger.info(f"Updating existing customer id={customer_id} for org {org_number}")
+                        return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
+                    logger.info(f"Found existing customer id={customer_id} for org {org_number}")
+                    return {"value": customer}
+            except Exception:
+                pass
+        # Ensure isCustomer is set unless this is a supplier-only entity
+        if "isCustomer" not in args and not args.get("isSupplier"):
+            args["isCustomer"] = True
         return await client.post("/customer", json=args)
 
     if name == "update_customer":
@@ -471,8 +684,14 @@ async def _execute(
                 result = await client.get("/product", params={"number": product_number, "fields": "id,name,number"})
                 values = result.get("values", [])
                 if values:
-                    logger.info(f"Found existing product id={values[0]['id']} for number {product_number}")
-                    return {"value": values[0]}
+                    product = values[0]
+                    product_id = product["id"]
+                    update_fields = _compact_dict(args)
+                    if update_fields:
+                        logger.info(f"Updating existing product id={product_id} for number {product_number}")
+                        return await client.put(f"/product/{product_id}", json={"id": product_id, **update_fields})
+                    logger.info(f"Found existing product id={product_id} for number {product_number}")
+                    return {"value": product}
             except Exception:
                 pass
         return await client.post("/product", json=args)
@@ -525,6 +744,11 @@ async def _execute(
         if "customer" not in args and ctx and ctx.last_customer_id:
             args["customer"] = {"id": ctx.last_customer_id}
             logger.info(f"Auto-injected customer id={ctx.last_customer_id} into project")
+        if _is_placeholder_project_number(args.get("number")):
+            args["number"] = _generate_project_number()
+            logger.info(f"Auto-generated project number {args['number']}")
+        if "startDate" not in args:
+            args["startDate"] = datetime.date.today().isoformat()
         return await client.post("/project", json=args)
 
     if name == "create_department":
@@ -547,6 +771,86 @@ async def _execute(
             args["travelDetails"] = travel_details
         return await client.post("/travelExpense", json=args)
 
+    if name == "create_per_diem_compensation":
+        if "travelExpense" not in args and ctx and ctx.last_travel_expense_id:
+            args["travelExpense"] = {"id": ctx.last_travel_expense_id}
+            logger.info(f"Auto-injected travel expense id={ctx.last_travel_expense_id} into per diem compensation")
+        if "rateCategory" not in args and ctx and ctx.last_rate_category_id:
+            args["rateCategory"] = {"id": ctx.last_rate_category_id}
+            logger.info(f"Auto-injected rate category id={ctx.last_rate_category_id} into per diem compensation")
+        return await client.post("/travelExpense/perDiemCompensation", json=args)
+
+    if name == "create_travel_cost":
+        if "travelExpense" not in args and ctx and ctx.last_travel_expense_id:
+            args["travelExpense"] = {"id": ctx.last_travel_expense_id}
+            logger.info(f"Auto-injected travel expense id={ctx.last_travel_expense_id} into travel cost")
+        if "costCategory" not in args and ctx and ctx.last_cost_category_id:
+            args["costCategory"] = {"id": ctx.last_cost_category_id}
+            logger.info(f"Auto-injected cost category id={ctx.last_cost_category_id} into travel cost")
+        if "paymentType" not in args and ctx and ctx.last_payment_type_id:
+            args["paymentType"] = {"id": ctx.last_payment_type_id}
+            logger.info(f"Auto-injected payment type id={ctx.last_payment_type_id} into travel cost")
+        return await client.post("/travelExpense/cost", json=args)
+
+    if name == "create_project_activity":
+        if "project" not in args and ctx and ctx.last_project_id:
+            args["project"] = {"id": ctx.last_project_id}
+            logger.info(f"Auto-injected project id={ctx.last_project_id} into project activity")
+        if "activity" not in args and ctx and ctx.last_activity_id:
+            args["activity"] = {"id": ctx.last_activity_id}
+            logger.info(f"Auto-injected activity id={ctx.last_activity_id} into project activity")
+        return await client.post("/project/projectActivity", json=args)
+
+    if name == "create_timesheet_entry":
+        if "employee" not in args and ctx and ctx.last_employee_id:
+            args["employee"] = {"id": ctx.last_employee_id}
+            logger.info(f"Auto-injected employee id={ctx.last_employee_id} into timesheet entry")
+        if "project" not in args and ctx and ctx.last_project_id:
+            args["project"] = {"id": ctx.last_project_id}
+            logger.info(f"Auto-injected project id={ctx.last_project_id} into timesheet entry")
+        if "activity" not in args and ctx and ctx.last_activity_id:
+            args["activity"] = {"id": ctx.last_activity_id}
+            logger.info(f"Auto-injected activity id={ctx.last_activity_id} into timesheet entry")
+        return await client.post("/timesheet/entry", json=args)
+
+    if name == "update_project_hourly_rate":
+        hourly_rate_id = args.pop("hourly_rate_id", None)
+        if hourly_rate_id is None and ctx and ctx.last_hourly_rate_id:
+            hourly_rate_id = ctx.last_hourly_rate_id
+            logger.info(f"Auto-injected hourly rate id={ctx.last_hourly_rate_id} into project hourly rate update")
+        if hourly_rate_id is None:
+            raise ValueError("update_project_hourly_rate requires hourly_rate_id")
+        if "project" not in args and ctx and ctx.last_project_id:
+            args["project"] = {"id": ctx.last_project_id}
+            logger.info(f"Auto-injected project id={ctx.last_project_id} into project hourly rate")
+        if "startDate" not in args:
+            args["startDate"] = datetime.date.today().isoformat()
+        if "hourlyRateModel" not in args:
+            args["hourlyRateModel"] = "TYPE_FIXED_HOURLY_RATE"
+        if "showInProjectOrder" not in args:
+            args["showInProjectOrder"] = True
+        return await client.put(f"/project/hourlyRates/{hourly_rate_id}", json={"id": hourly_rate_id, **args})
+
+    if name == "create_accounting_dimension_name":
+        return await client.post("/ledger/accountingDimensionName", json=args)
+
+    if name == "create_accounting_dimension_value":
+        if "dimensionIndex" not in args and ctx and ctx.last_dimension_index:
+            args["dimensionIndex"] = ctx.last_dimension_index
+            logger.info(f"Auto-injected dimension index {ctx.last_dimension_index} into accounting dimension value")
+        return await client.post("/ledger/accountingDimensionValue", json=args)
+
+    if name == "create_voucher":
+        if "postings" in args and isinstance(args["postings"], list):
+            for i, posting in enumerate(args["postings"]):
+                if isinstance(posting, dict):
+                    posting.pop("guiRow", None)
+                    posting["row"] = i + 1
+        return await client.post("/ledger/voucher", json=args)
+
+    if name == "create_salary_transaction":
+        return await client.post("/salary/transaction", json=args)
+
     if name == "search_entity":
         entity_type = args["entity_type"]
         params = args.get("params", {})
@@ -558,6 +862,9 @@ async def _execute(
             if "invoiceDateTo" not in params:
                 params["invoiceDateTo"] = "2100-01-01"
                 logger.info("Auto-injected invoiceDateTo=2100-01-01 for invoice search")
+        if not _has_meaningful_search_filters(params):
+            logger.warning(f"Blocked unfiltered search_entity call for {entity_type}")
+            return {"fullResultSize": 0, "values": []}
         result = await client.get(f"/{entity_type}", params=params)
         # Track first result ID in context for auto-injection
         if ctx:
@@ -600,7 +907,6 @@ async def _execute(
                     params[k] = v[0]  # parse_qs returns lists; take first value
             logger.info(f"Extracted query params from path: {list(embedded.keys())}")
         # Auto-inject required date range for invoice LIST searches only (not by-ID lookups)
-        import re
         is_invoice_list = method == "GET" and "/invoice" in path and "/:payment" not in path
         # Skip if path has a numeric ID (e.g. /invoice/2147493584)
         if is_invoice_list and re.search(r'/invoice/\d+', path):
@@ -638,7 +944,9 @@ async def _execute(
                 raise
 
         if method == "GET":
-            return await client.get(path, params=params)
+            result = await client.get(path, params=params)
+            _track_lookup_context(ctx, path, result)
+            return result
         if method == "POST":
             if "/invoice" in path or "/:invoice" in path:
                 return await _run_with_bank_retry(lambda: client.post(path, json=body))
