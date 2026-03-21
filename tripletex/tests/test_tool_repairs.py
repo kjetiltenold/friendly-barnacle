@@ -127,6 +127,32 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(body["number"], r"^P-\d{8}-[0-9A-F]{6}$")
         self.assertRegex(body["startDate"], r"^\d{4}-\d{2}-\d{2}$")
 
+    async def test_create_order_sets_ex_vat_mode_flag(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_order",
+            {
+                "orderLines": [
+                    {
+                        "description": "Consulting",
+                        "count": 1,
+                        "unitPriceExcludingVatCurrency": 1500,
+                    }
+                ]
+            },
+            endpoint_search=None,
+            ctx=EntityContext(last_customer_id=321, product_ids=[654]),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/order"))
+        self.assertEqual(body["customer"], {"id": 321})
+        self.assertEqual(body["orderLines"][0]["product"], {"id": 654})
+        self.assertEqual(body["orderLines"][0]["vatType"], {"id": 3})
+        self.assertFalse(body["isPrioritizeAmountsIncludingVat"])
+
     async def test_create_per_diem_uses_last_travel_expense_context(self):
         client = FakeTripletexClient()
 

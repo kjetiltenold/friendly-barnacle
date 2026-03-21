@@ -72,8 +72,10 @@ Recipes:
   - count
   - unitPriceExcludingVatCurrency
   - vatType: {{"id": vat_type_id}}
+- If you use unitPriceExcludingVatCurrency on the order lines, the order should use isPrioritizeAmountsIncludingVat=false.
+- If you use unitPriceIncludingVatCurrency on the order lines, the order should use isPrioritizeAmountsIncludingVat=true.
 - If the task does not specify a VAT rate, 25 percent is the normal default.
-- For 15 percent, 12 percent, 0 percent, or special VAT cases, call GET /ledger/vatType first and pick the matching type.
+- For 15 percent, 12 percent, 0 percent, or special VAT cases, call GET /ledger/vatType first and pick the matching type. For customer invoices and orders, prefer outgoing VAT types. For supplier vouchers and purchase-side postings, prefer incoming VAT types.
 - Do not create an invoice by description-only order lines when a product should exist.
 
 5. Register payment on an invoice
@@ -182,6 +184,7 @@ Recipes:
 - Expense posting should include account, amountGross, amountGrossCurrency, and vatType.
 - Accounts payable posting should include account, amountGross, amountGrossCurrency, and supplier.
 - For NOK transactions, amountGrossCurrency must match amountGross.
+- Use a VAT type that is valid for the chosen ledger account and for incoming VAT.
 - When only a VAT-inclusive amount is given, compute amount excluding VAT from the stated VAT rate.
 
 14. Salary or payroll

@@ -716,10 +716,24 @@ async def _execute(
                     logger.info(f"Auto-injected single product id={ctx.product_ids[0]} into order line")
         # Auto-inject default vatType (25% = id 3) on order lines missing it
         if "orderLines" in args:
+            has_ex_vat = False
+            has_inc_vat = False
             for line in args["orderLines"]:
                 if "vatType" not in line:
                     line["vatType"] = {"id": 3}
                     logger.info("Auto-injected default vatType id=3 (25%) into order line")
+                if "unitPriceExcludingVatCurrency" in line:
+                    has_ex_vat = True
+                if "unitPriceIncludingVatCurrency" in line:
+                    has_inc_vat = True
+            # Tripletex validates unit price mode against the order-level flag.
+            if "isPrioritizeAmountsIncludingVat" not in args:
+                if has_inc_vat and not has_ex_vat:
+                    args["isPrioritizeAmountsIncludingVat"] = True
+                    logger.info("Auto-set isPrioritizeAmountsIncludingVat=true from inclusive order line pricing")
+                elif has_ex_vat and not has_inc_vat:
+                    args["isPrioritizeAmountsIncludingVat"] = False
+                    logger.info("Auto-set isPrioritizeAmountsIncludingVat=false from exclusive order line pricing")
         return await client.post("/order", json=args)
 
     if name == "create_invoice":
