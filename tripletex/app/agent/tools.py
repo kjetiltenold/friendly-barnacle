@@ -1043,6 +1043,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
             ):
                 posting["department"] = {"id": ctx.last_department_id}
                 logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+    await _normalize_supplier_invoice_software_account(client, args["postings"], ctx, args.get("description"))
     _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
     await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
     total = sum(
@@ -1401,6 +1402,23 @@ def _looks_like_fee_text(*parts) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _looks_like_software_service_text(*parts) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    keywords = (
+        "cloud storage",
+        "skylagring",
+        "saas",
+        "software subscription",
+        "programvareabonnement",
+        "hosting",
+        "web hosting",
+        "server hosting",
+        "software",
+        "programvare",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
 async def _resolve_vat_type(
     client: TripletexClient,
     ctx: EntityContext | None,
@@ -1559,6 +1577,54 @@ def _find_cached_vat_percentage(ctx: EntityContext | None, vat_type_id: int | No
         if cached_id == vat_type_id:
             return float(percentage)
     return None
+
+
+async def _normalize_supplier_invoice_software_account(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    ctx: EntityContext | None,
+    voucher_description: str | None = None,
+) -> bool:
+    if not isinstance(postings, list):
+        return False
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return False
+    expense_posting = positive_postings[0]
+    payable_posting = negative_postings[0]
+    payable_account = _get_cached_account(ctx, payable_posting) or {}
+    is_supplier_liability = "supplier" in payable_posting or str(payable_account.get("number")) == "2400"
+    if not is_supplier_liability:
+        return False
+    expense_account = _get_cached_account(ctx, expense_posting) or {}
+    if str(expense_account.get("number")) != "6340":
+        return False
+    if not _looks_like_software_service_text(
+        voucher_description,
+        expense_posting.get("description"),
+        payable_posting.get("description"),
+    ):
+        return False
+    software_account = _find_cached_account_by_number(ctx, "6420")
+    if software_account is None:
+        result = await client.get(
+            "/ledger/account",
+            params={
+                "number": "6420",
+                "fields": "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount",
+            },
+        )
+        values = result.get("values", [])
+        if values:
+            software_account = values[0]
+            if ctx is not None:
+                ctx.account_cache[software_account["id"]] = software_account
+    if software_account is None:
+        return False
+    expense_posting["account"] = {"id": software_account["id"]}
+    logger.info("Normalized supplier invoice software/cloud expense account from 6340 to 6420")
+    return True
 
 
 async def _expand_simple_supplier_invoice_vat_split(
@@ -2762,6 +2828,7 @@ async def _execute(
                     ):
                         posting["department"] = {"id": ctx.last_department_id}
                         logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+            await _normalize_supplier_invoice_software_account(client, args["postings"], ctx, args.get("description"))
             _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
             await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
             # Pre-validate that postings balance before sending

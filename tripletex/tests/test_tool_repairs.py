@@ -2216,6 +2216,86 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voucher_postings[1]["department"], {"id": 730036})
         self.assertEqual(voucher_postings[2]["amountGross"], -70400)
 
+    async def test_create_voucher_normalizes_cloud_supplier_invoice_account_from_6340_to_6420(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "6420"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 40, "number": 6420, "name": "Programvare"}],
+                },
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "2710"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 30, "number": 2710, "name": "Inngaaende mva"}],
+                },
+            }
+        )
+        ctx = EntityContext(last_department_id=708468)
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6340,
+                "name": "Lys og varme",
+                "vatType": {"id": 1},
+                "legalVatTypes": [{"id": 1}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+        ctx.vat_type_cache = {(25.0, "incoming"): 1}
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-05",
+                "description": "Supplier invoice INV-2026-4660 Greenfield Ltd - Cloud storage",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 52437,
+                        "amountGrossCurrency": 52437,
+                        "vatType": {"id": 1},
+                        "description": "Cloud storage",
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -52437,
+                        "amountGrossCurrency": -52437,
+                        "supplier": {"id": 108350020},
+                        "description": "Supplier invoice INV-2026-4660",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[0][0:2], ("GET", "/ledger/account"))
+        self.assertEqual(client.calls[1][0:2], ("GET", "/ledger/account"))
+        voucher_postings = client.calls[-1][2]["postings"]
+        self.assertEqual(voucher_postings[0]["account"], {"id": 40})
+        self.assertEqual(voucher_postings[0]["amountGross"], 41949.6)
+        self.assertEqual(voucher_postings[1]["account"], {"id": 30})
+        self.assertEqual(voucher_postings[1]["amountGross"], 10487.4)
+        self.assertEqual(voucher_postings[2]["amountGross"], -52437)
+
     async def test_create_voucher_normalizes_year_end_depreciation_to_requested_accounts(self):
         client = FakeTripletexClient()
         ctx = EntityContext()

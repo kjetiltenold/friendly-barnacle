@@ -229,9 +229,11 @@ Recipes:
 - Accounts payable posting should include account, amountGross, amountGrossCurrency, and supplier.
 - For NOK transactions, amountGrossCurrency must match amountGross.
 - Use a VAT type that is valid for the chosen ledger account and for incoming VAT.
+- If a supplier invoice is attached as PDF or image, preserve the literal supplier name, organization number, invoice number, invoice date, and line description from the attachment. Do not translate the invoice text into another language before posting.
 - When only a VAT-inclusive amount is given, compute amount excluding VAT from the stated VAT rate.
 - For supplier-invoice vouchers with input VAT, prefer a balanced visible voucher. If the expense line carries vatType and the payable line is gross, then the expense posting amountGross should normally also be the gross invoice amount unless you provide the VAT split explicitly.
 - Do not post a net expense debit against a gross 2400 credit and assume Tripletex will repair the imbalance for you.
+- Cloud storage, SaaS, hosting, and software subscription costs are software costs. Prefer account `6420` rather than unrelated facilities-type accounts such as `6340`.
 
 15. Receipt or expense voucher
 - If a file is attached, extract: merchant name, date, total amount (incl. VAT), VAT rate or amount, payment method, and any department or category hints.
