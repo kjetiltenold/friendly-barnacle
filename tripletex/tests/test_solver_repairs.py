@@ -330,6 +330,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("copy department, occupation code, salary, FTE, standard working hours, start date, birth date, and national identity number literally from the attachment", prompt)
         self.assertIn("use those literal hours for create_standard_time instead of deriving hoursPerDay from FTE", prompt)
+        self.assertIn("do not infer or synthesize an email address from the employee name", prompt)
 
     def test_system_prompt_includes_ledger_error_counterpart_guidance(self):
         prompt = get_system_prompt("2026-03-21")

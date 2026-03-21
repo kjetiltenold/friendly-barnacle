@@ -1526,6 +1526,43 @@ def _normalize_prompt_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def _prompt_contains_any_email(ctx: EntityContext | None) -> bool:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return False
+    return re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", raw_text, re.IGNORECASE) is not None
+
+
+def _looks_like_placeholder_email(email: str | None) -> bool:
+    text = str(email or "").strip().lower()
+    if "@" not in text:
+        return False
+    domain = text.split("@", 1)[1]
+    return domain in {"example.org", "example.com", "example.net", "example.invalid", "test.invalid"}
+
+
+def _prompt_is_contract_or_onboarding_task(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "arbeidskontrakt",
+            "employmentcontract",
+            "joboffer",
+            "offerletter",
+            "tilbudsbrev",
+            "onboarding",
+            "contratodetrabajo",
+            "cartadeoferta",
+            "completelaincorporacion",
+            "createemployeewithallthedat",
+            "creaelempleado",
+        )
+    )
+
+
 def _prompt_describes_budget_not_fixed_price(ctx: EntityContext | None) -> bool:
     normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
     if not normalized:
@@ -2870,6 +2907,21 @@ async def _execute(
     ctx: EntityContext | None = None,
 ) -> dict:
     if name == "create_employee":
+        email = str(args.get("email") or "").strip()
+        if (
+            email
+            and _looks_like_placeholder_email(email)
+            and _prompt_is_contract_or_onboarding_task(ctx)
+            and not _prompt_contains_any_email(ctx)
+        ):
+            args.pop("email", None)
+            logger.info(
+                "Removed placeholder employee email %s for contract/onboarding task without literal email in prompt",
+                email,
+            )
+            if args.get("userType") in (None, "", "STANDARD"):
+                args["userType"] = "NO_ACCESS"
+                logger.info("Normalized employee userType to NO_ACCESS after removing placeholder email")
         if "userType" not in args:
             args["userType"] = "STANDARD" if args.get("email") else "NO_ACCESS"
         national_identity_number = _normalize_identifier(args.get("nationalIdentityNumber"))

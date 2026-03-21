@@ -127,6 +127,42 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "userType": "NO_ACCESS",
         })])
 
+    async def test_create_employee_strips_placeholder_email_for_contract_task_without_prompt_email(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_employee",
+            {
+                "firstName": "Andres",
+                "lastName": "Perez",
+                "email": "andres.perez@example.org",
+                "userType": "STANDARD",
+                "dateOfBirth": "1980-05-20",
+                "nationalIdentityNumber": "20058004635",
+                "startDate": "2026-07-11",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_department_id=943935,
+                prompt_text=(
+                    "Has recibido un contrato de trabajo para un nuevo empleado. "
+                    "Crea el empleado con numero de identidad, fecha de nacimiento, departamento, "
+                    "codigo de ocupacion, salario, porcentaje de empleo y fecha de inicio."
+                ),
+            ),
+        )
+
+        self.assertEqual(client.calls, [("POST", "/employee", {
+            "firstName": "Andres",
+            "lastName": "Perez",
+            "userType": "NO_ACCESS",
+            "dateOfBirth": "1980-05-20",
+            "nationalIdentityNumber": "20058004635",
+            "department": {"id": 943935},
+            "employments": [{"startDate": "2026-07-11"}],
+        })])
+
     async def test_create_employee_updates_existing_department_when_requested(self):
         client = FakeTripletexClient(
             get_responses={

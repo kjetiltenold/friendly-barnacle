@@ -68,6 +68,7 @@ Recipes:
 - Annual salary and FTE belong on employee/employment/details.
 - Standard working hours belong on employee/standardTime, not employee/employment/details.
 - If the contract explicitly shows daily or weekly standard working hours, use those literal hours for create_standard_time instead of deriving hoursPerDay from FTE. Only convert weekly hours to hoursPerDay by dividing by 5.
+- For contract or offer-letter tasks, do not infer or synthesize an email address from the employee name. If the prompt and attachment do not explicitly show an email, omit email and use userType NO_ACCESS.
 - workingHoursScheme is the enum value such as NOT_SHIFT, not a numeric ID.
 - For ordinary employee contracts, use employmentType ORDINARY unless the document clearly says something else.
 - If the contract contains a stillingskode or occupation code, pass it to create_employment_details as occupationCodeCode. If the contract contains only a role title, pass occupationCodeName. The tool resolves it to the correct occupationCode id.
