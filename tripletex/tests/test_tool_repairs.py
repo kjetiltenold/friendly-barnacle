@@ -660,6 +660,62 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_create_employment_details_auto_creates_missing_employment_from_employee(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment",
+                    (("count", 20), ("employeeId", 18610084), ("fields", "id,startDate,endDate")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/18610084",
+                    (("fields", "id,firstName,lastName,email,dateOfBirth,department"),),
+                ): {"value": {"id": 18610084, "dateOfBirth": "1990-05-01"}},
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2814181"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+            },
+            post_responses={
+                "/employee/employment": {"value": {"id": 2814181, "employee": {"id": 18610084}, "startDate": "2026-03-21"}},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employeeId": 18610084,
+                "date": "2026-03-21",
+                "annualSalary": 516600,
+                "percentageOfFullTimeEquivalent": 100,
+                "employmentType": "ORDINARY",
+                "workingHoursScheme": "NOT_SHIFT",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["employment"], {"id": 2814181})
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/employee/employment", {"employeeId": 18610084, "fields": "id,startDate,endDate", "count": 20}),
+                ("GET", "/employee/18610084", {"fields": "id,firstName,lastName,email,dateOfBirth,department"}),
+                ("POST", "/employee/employment", {"employee": {"id": 18610084, "dateOfBirth": "1990-05-01"}, "startDate": "2026-03-21"}),
+                ("GET", "/employee/employment/details", {"employmentId": "2814181", "fields": "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme", "count": 100}),
+                ("POST", "/employee/employment/details", {
+                    "employment": {"id": 2814181},
+                    "date": "2026-03-21",
+                    "employmentType": "ORDINARY",
+                    "remunerationType": "MONTHLY_WAGE",
+                    "workingHoursScheme": "NOT_SHIFT",
+                    "percentageOfFullTimeEquivalent": 100.0,
+                    "annualSalary": 516600.0,
+                }),
+            ],
+        )
+
     async def test_create_employment_details_defaults_to_ordinary_and_resolves_occupation_code(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1291,6 +1347,84 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((method, path), ("POST", "/ledger/voucher"))
         self.assertEqual(body["postings"][0]["department"], {"id": 44})
         self.assertNotIn("department", body["postings"][1])
+
+    async def test_create_salary_transaction_retries_after_auto_creating_missing_employment(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment",
+                    (("count", 20), ("employeeId", 18610084), ("fields", "id,startDate,endDate")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/18610084",
+                    (("fields", "id,firstName,lastName,email,dateOfBirth,department"),),
+                ): {"value": {"id": 18610084, "dateOfBirth": "1990-05-01"}},
+            },
+            post_errors={
+                "/salary/transaction": [
+                    Exception("422 unknown: employee is not registered with an employment in the period"),
+                    None,
+                ],
+            },
+            post_responses={
+                "/employee/employment": {"value": {"id": 2814181, "employee": {"id": 18610084}, "startDate": "2026-03-21"}},
+            },
+        )
+
+        await _execute(
+            client,
+            "create_salary_transaction",
+            {
+                "date": "2026-03-21",
+                "year": 2026,
+                "month": 3,
+                "payslips": [
+                    {
+                        "employee": {"id": 18610084},
+                        "specifications": [
+                            {"salaryType": {"id": 53154812}, "rate": 43050, "count": 1},
+                        ],
+                    }
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18610084},
+                            "specifications": [
+                                {"salaryType": {"id": 53154812}, "rate": 43050, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+                ("GET", "/employee/employment", {"employeeId": 18610084, "fields": "id,startDate,endDate", "count": 20}),
+                ("GET", "/employee/18610084", {"fields": "id,firstName,lastName,email,dateOfBirth,department"}),
+                ("POST", "/employee/employment", {"employee": {"id": 18610084, "dateOfBirth": "1990-05-01"}, "startDate": "2026-03-21"}),
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18610084},
+                            "specifications": [
+                                {"salaryType": {"id": 53154812}, "rate": 43050, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+            ],
+        )
 
     async def test_find_top_expense_account_increases_blocks_identical_repeat(self):
         client = FakeTripletexClient()

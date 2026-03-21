@@ -297,6 +297,9 @@ Recipes:
 - To delete: search for the entity, then use delete_entity with entity_type and entity_id.
 - To reverse a voucher: use reverse_voucher with voucher_id and date.
 - To correct: reverse the incorrect voucher, then create a new correct voucher with create_voucher.
+- If a voucher is duplicated, reverse the duplicate voucher directly. Do not add an extra manual correction voucher on top of the reversal unless the prompt explicitly requires it.
+- For wrong-account or wrong-amount corrections on an already posted expense voucher, move the amount between the affected ledger accounts. Do not touch bank `1920` unless the original bank side itself was wrong.
+- For a missing input-VAT line on an already booked expense voucher, add the VAT by debiting the input VAT account such as `2710` and crediting the original expense account such as `6500`. Do not credit bank `1920` just because the original expense was paid.
 
 23. Bank statement reconciliation
 - If a CSV or text bank statement is attached, read the attachment first and treat it as the source of truth.

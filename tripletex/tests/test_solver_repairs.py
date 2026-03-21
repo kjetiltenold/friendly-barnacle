@@ -10,6 +10,7 @@ from app.agent.solver import (
     _prime_context,
     _should_retry_text_only_response,
 )
+from app.agent.prompts import get_system_prompt
 from app.agent.tools import EntityContext
 from app.models import FileAttachment, SolveRequest, TripletexCredentials
 
@@ -199,6 +200,12 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
                 2,
             )
         )
+
+    def test_system_prompt_includes_vat_correction_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("debiting the input VAT account such as `2710` and crediting the original expense account", prompt)
+        self.assertIn("Do not credit bank `1920`", prompt)
 
 
 if __name__ == "__main__":

@@ -1219,7 +1219,7 @@ async def _resolve_employment_id(client: TripletexClient, args: dict, ctx: Entit
     try:
         result = await client.get("/employee/employment", params={
             "employeeId": employee_id,
-            "fields": "id,startDate",
+            "fields": "id,startDate,endDate",
             "count": 20,
         })
         values = result.get("values", [])
@@ -1227,13 +1227,89 @@ async def _resolve_employment_id(client: TripletexClient, args: dict, ctx: Entit
             return None
         target_date = args.get("date") or args.get("fromDate") or args.get("startDate")
         if target_date:
-            for employment in values:
-                if employment.get("startDate") == target_date and employment.get("id") is not None:
-                    return employment["id"]
+            try:
+                target = datetime.date.fromisoformat(target_date)
+                matching = []
+                for employment in values:
+                    start_date_raw = employment.get("startDate")
+                    if not isinstance(start_date_raw, str):
+                        continue
+                    try:
+                        start_date = datetime.date.fromisoformat(start_date_raw)
+                    except ValueError:
+                        continue
+                    end_date_raw = employment.get("endDate")
+                    end_date = None
+                    if isinstance(end_date_raw, str) and end_date_raw:
+                        try:
+                            end_date = datetime.date.fromisoformat(end_date_raw)
+                        except ValueError:
+                            end_date = None
+                    if start_date <= target and (end_date is None or target <= end_date):
+                        matching.append((start_date, employment))
+                if matching:
+                    matching.sort(key=lambda item: item[0], reverse=True)
+                    employment_id = matching[0][1].get("id")
+                    if employment_id is not None:
+                        return employment_id
+            except ValueError:
+                for employment in values:
+                    if employment.get("startDate") == target_date and employment.get("id") is not None:
+                        return employment["id"]
         return values[0].get("id")
     except Exception as e:
         logger.warning(f"Failed to resolve employment ID from employee: {e}")
         return None
+
+
+async def _get_employee_snapshot(client: TripletexClient, employee_id: int) -> dict:
+    result = await client.get(
+        f"/employee/{employee_id}",
+        params={"fields": "id,firstName,lastName,email,dateOfBirth,department"},
+    )
+    return result.get("value") or {}
+
+
+async def _ensure_employment_for_employee(
+    client: TripletexClient,
+    employee_id: int,
+    effective_date: str,
+    ctx: EntityContext | None,
+    *,
+    skip_existing_lookup: bool = False,
+) -> int | None:
+    if not skip_existing_lookup:
+        employment_id = await _resolve_employment_id(
+            client,
+            {"employeeId": employee_id, "date": effective_date},
+            ctx,
+        )
+        if employment_id is not None:
+            if ctx is not None:
+                ctx.last_employment_id = employment_id
+                ctx.last_employee_id = employee_id
+            return employment_id
+
+    employee = await _get_employee_snapshot(client, employee_id)
+    date_of_birth = employee.get("dateOfBirth")
+    if not date_of_birth:
+        raise ValueError(
+            f"Cannot auto-create employment for employee {employee_id} because employee.dateOfBirth is missing"
+        )
+
+    result = await client.post(
+        "/employee/employment",
+        json={
+            "employee": {"id": employee_id, "dateOfBirth": date_of_birth},
+            "startDate": effective_date,
+        },
+    )
+    value = result.get("value") or {}
+    employment_id = value.get("id")
+    if employment_id is not None and ctx is not None:
+        ctx.last_employment_id = employment_id
+        ctx.last_employee_id = employee_id
+    return employment_id
 
 
 async def _resolve_employee_id(
@@ -1841,6 +1917,17 @@ async def _execute(
     if name == "create_employment_details":
         employment_id = await _resolve_employment_id(client, args, ctx)
         if employment_id is None:
+            employee_id = await _resolve_employee_id(client, args, ctx)
+            effective_date = args.get("date") or args.get("fromDate") or args.get("startDate") or datetime.date.today().isoformat()
+            if employee_id is not None:
+                employment_id = await _ensure_employment_for_employee(
+                    client,
+                    employee_id,
+                    effective_date,
+                    ctx,
+                    skip_existing_lookup=True,
+                )
+        if employment_id is None:
             raise ValueError("create_employment_details requires employment/employmentId, or a prior employee/employment in context")
         employee_id = await _resolve_employee_id(client, args, ctx, employment_id=employment_id)
         department_id = _extract_reference_id(args.get("department"))
@@ -2165,7 +2252,34 @@ async def _execute(
             raise
 
     if name == "create_salary_transaction":
-        return await client.post("/salary/transaction", json=args)
+        try:
+            return await client.post("/salary/transaction", json=args)
+        except Exception as e:
+            error_text = str(e).lower()
+            if "arbeidsforhold i perioden" not in error_text and "employment in the period" not in error_text:
+                raise
+            effective_date = args.get("date")
+            if not effective_date:
+                year = args.get("year")
+                month = args.get("month")
+                if year and month:
+                    effective_date = f"{int(year):04d}-{int(month):02d}-01"
+                else:
+                    effective_date = datetime.date.today().isoformat()
+            ensured_any = False
+            for payslip in args.get("payslips", []):
+                if not isinstance(payslip, dict):
+                    continue
+                employee_id = _extract_reference_id(payslip.get("employee"))
+                if employee_id is None:
+                    continue
+                employment_id = await _ensure_employment_for_employee(client, employee_id, effective_date, ctx)
+                if employment_id is not None:
+                    ensured_any = True
+            if ensured_any:
+                logger.info("Created or reused missing employment(s) for salary transaction retry")
+                return await client.post("/salary/transaction", json=args)
+            raise
 
     if name == "find_top_expense_account_increases":
         analysis_key = json.dumps(
