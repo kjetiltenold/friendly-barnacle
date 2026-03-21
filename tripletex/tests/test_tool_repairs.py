@@ -2038,6 +2038,50 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[-1][2]["postings"][0]["account"], {"id": 1})
         self.assertEqual(client.calls[-1][2]["postings"][1]["account"], {"id": 2})
 
+    async def test_create_voucher_splits_month_end_closing_and_normalizes_requested_accounts(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(last_department_id=931987)
+        ctx.account_cache = {
+            10: {"id": 10, "number": 8300, "name": "Wrongly guessed expense"},
+            11: {"id": 11, "number": 1720, "name": "Forskuddsbetalte kostnader"},
+            12: {"id": 12, "number": 6010, "name": "Avskrivning"},
+            13: {"id": 13, "number": 1239, "name": "Akkumulert avskrivning"},
+            14: {"id": 14, "number": 6030, "name": "Avskrivning transportmidler"},
+            15: {"id": 15, "number": 5020, "name": "Wrong salary expense"},
+            16: {"id": 16, "number": 2990, "name": "Wrong accrued salary"},
+            17: {"id": 17, "number": 5000, "name": "Lonn til ansatte"},
+            18: {"id": 18, "number": 2900, "name": "Skyldig lonn"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-31",
+                "description": "Month-end closing March 2026 - accrual reversal, depreciation, and salary accrual",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 10}, "amountGross": 8300, "amountGrossCurrency": 8300, "description": "Accrual reversal to expense for March from 1720"},
+                    {"account": {"id": 11}, "amountGross": -8300, "amountGrossCurrency": -8300, "description": "Reverse monthly accrual from 1720"},
+                    {"account": {"id": 12}, "amountGross": 1699.58, "amountGrossCurrency": 1699.58, "description": "Monthly depreciation March 2026"},
+                    {"account": {"id": 13}, "amountGross": -1699.58, "amountGrossCurrency": -1699.58, "description": "Accumulated depreciation March 2026"},
+                    {"account": {"id": 15}, "amountGross": 45000, "amountGrossCurrency": 45000, "description": "Salary accrual March 2026"},
+                    {"account": {"id": 16}, "amountGross": -45000, "amountGrossCurrency": -45000, "description": "Accrued salary March 2026"},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual([call[0:2] for call in client.calls], [("POST", "/ledger/voucher")] * 3)
+        self.assertEqual(client.calls[0][2]["description"], "Month-end closing March 2026 - accrual reversal")
+        self.assertEqual(client.calls[1][2]["description"], "Month-end closing March 2026 - depreciation")
+        self.assertEqual(client.calls[2][2]["description"], "Month-end closing March 2026 - salary accrual")
+        self.assertEqual(client.calls[1][2]["postings"][0]["account"], {"id": 14})
+        self.assertEqual(client.calls[2][2]["postings"][0]["account"], {"id": 17})
+        self.assertEqual(client.calls[2][2]["postings"][1]["account"], {"id": 18})
+        self.assertEqual(len(result["values"]), 3)
+
     async def test_create_voucher_keeps_supported_locked_vattype(self):
         client = FakeTripletexClient()
         ctx = EntityContext()

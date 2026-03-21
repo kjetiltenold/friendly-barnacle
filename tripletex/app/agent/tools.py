@@ -851,6 +851,245 @@ def _normalize_year_end_depreciation_postings(postings: list[dict] | None, descr
         logger.info("Normalized accumulated depreciation posting to account 1209 from cached lookup")
 
 
+def _classify_month_end_closing_pair(postings: list[dict] | None, description: str | None) -> str | None:
+    pair_text = " ".join(
+        str(posting.get("description") or "")
+        for posting in (postings or [])
+        if isinstance(posting, dict)
+    ).lower()
+    fallback_text = str(description or "").lower()
+    for text in (pair_text, fallback_text):
+        if "salary accrual" in text or "accrued salary" in text:
+            return "salary accrual"
+        if "depreciat" in text or "avskriv" in text:
+            return "depreciation"
+        if "accrual reversal" in text or "prepaid" in text or "forskudds" in text:
+            return "accrual reversal"
+    return None
+
+
+def _normalize_month_end_closing_pair_postings(
+    postings: list[dict] | None,
+    description: str | None,
+    ctx: EntityContext | None,
+) -> None:
+    if ctx is None or not isinstance(postings, list) or len(postings) != 2:
+        return
+    topic = _classify_month_end_closing_pair(postings, description)
+    if topic is None:
+        return
+    debit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    credit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(debit_postings) != 1 or len(credit_postings) != 1:
+        return
+    debit_posting = debit_postings[0]
+    credit_posting = credit_postings[0]
+    debit_account = _get_cached_account(ctx, debit_posting) or {}
+    credit_account = _get_cached_account(ctx, credit_posting) or {}
+    if topic == "depreciation":
+        preferred_expense = _find_cached_account_by_number(ctx, "6030") or _find_cached_account_by_number(ctx, "6010")
+        if preferred_expense and str(debit_account.get("number")) != str(preferred_expense.get("number")):
+            debit_posting["account"] = {"id": preferred_expense["id"]}
+            logger.info(
+                f"Normalized month-end depreciation expense posting to account {preferred_expense['number']} from cached lookup"
+            )
+        return
+    if topic == "salary accrual":
+        preferred_expense = _find_cached_account_by_number(ctx, "5000")
+        preferred_accrued = _find_cached_account_by_number(ctx, "2900")
+        if preferred_expense and str(debit_account.get("number")) != "5000":
+            debit_posting["account"] = {"id": preferred_expense["id"]}
+            logger.info("Normalized salary accrual debit posting to account 5000 from cached lookup")
+        if preferred_accrued and str(credit_account.get("number")) != "2900":
+            credit_posting["account"] = {"id": preferred_accrued["id"]}
+            logger.info("Normalized salary accrual credit posting to account 2900 from cached lookup")
+        return
+    preferred_prepaid = _find_cached_account_by_number(ctx, "1720")
+    text = " ".join(
+        [str(description or "")]
+        + [
+            str(posting.get("description") or "")
+            for posting in postings
+            if isinstance(posting, dict)
+        ]
+    ).lower()
+    if preferred_prepaid and "1720" in text and str(credit_account.get("number")) != "1720":
+        credit_posting["account"] = {"id": preferred_prepaid["id"]}
+        logger.info("Normalized accrual-reversal credit posting to account 1720 from cached lookup")
+
+
+def _split_month_end_closing_vouchers(args: dict) -> list[dict] | None:
+    postings = args.get("postings")
+    description = str(args.get("description") or "")
+    normalized_description = description.lower()
+    if not isinstance(postings, list) or len(postings) < 4 or len(postings) % 2 != 0:
+        return None
+    if "month-end" not in normalized_description or "closing" not in normalized_description:
+        return None
+    base_description = description.split(" - ", 1)[0].strip() if " - " in description else description
+    vouchers: list[dict] = []
+    for index in range(0, len(postings), 2):
+        pair = postings[index:index + 2]
+        if len(pair) != 2 or not all(isinstance(posting, dict) for posting in pair):
+            return None
+        if abs(sum(_coerce_number(posting.get("amountGross")) for posting in pair)) > 0.01:
+            return None
+        topic = _classify_month_end_closing_pair(pair, description)
+        if topic is None:
+            return None
+        voucher_args = {
+            key: json.loads(json.dumps(value))
+            for key, value in args.items()
+            if key != "postings"
+        }
+        voucher_args["description"] = f"{base_description} - {topic}"
+        voucher_args["postings"] = json.loads(json.dumps(pair))
+        vouchers.append(voucher_args)
+    return vouchers if len(vouchers) > 1 else None
+
+
+async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: EntityContext | None) -> dict | None:
+    if "postings" not in args or not isinstance(args["postings"], list):
+        return None
+    _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
+    _normalize_month_end_closing_pair_postings(args["postings"], args.get("description"), ctx)
+    is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
+    for i, posting in enumerate(args["postings"]):
+        if isinstance(posting, dict):
+            posting.pop("guiRow", None)
+            posting["row"] = i + 1
+            account = _get_cached_account(ctx, posting) or {}
+            account_vat_id = _extract_reference_id(account.get("vatType"))
+            legal_vat_ids = {
+                vat_id
+                for vat_id in (
+                    _extract_reference_id(vat)
+                    for vat in (account.get("legalVatTypes") or [])
+                )
+                if vat_id is not None
+            }
+            current_vat_id = _extract_reference_id(posting.get("vatType"))
+            preferred_vat_id = _preferred_account_vat_id(
+                account,
+                current_vat_id,
+                ctx,
+                prefer_account_default=is_paid_receipt and posting.get("amountGross", 0) > 0,
+            )
+            no_vat_only = account_vat_id == 0 and not any(vat_id != 0 for vat_id in legal_vat_ids)
+            if no_vat_only:
+                if posting.pop("vatType", None) is not None:
+                    logger.info("Removed vatType from voucher posting because the account is VAT-locked")
+            elif (
+                is_paid_receipt
+                and posting.get("amountGross", 0) > 0
+                and preferred_vat_id is not None
+                and current_vat_id != preferred_vat_id
+            ):
+                posting["vatType"] = {"id": preferred_vat_id}
+                logger.info(
+                    f"Normalized receipt voucher vatType to account-supported id={preferred_vat_id}"
+                )
+            elif (
+                account.get("vatLocked")
+                and posting.get("amountGross", 0) > 0
+                and preferred_vat_id is not None
+                and current_vat_id != preferred_vat_id
+            ):
+                posting["vatType"] = {"id": preferred_vat_id}
+                logger.info(
+                    f"Normalized locked voucher vatType to account-supported id={preferred_vat_id}"
+                )
+            elif current_vat_id is not None and legal_vat_ids and current_vat_id not in legal_vat_ids:
+                if preferred_vat_id is not None:
+                    posting["vatType"] = {"id": preferred_vat_id}
+                    logger.info(
+                        f"Replaced invalid voucher vatType id={current_vat_id} with account-supported id={preferred_vat_id}"
+                    )
+                else:
+                    posting.pop("vatType", None)
+                    logger.info(
+                        f"Removed invalid voucher vatType id={current_vat_id} because the account has no default VAT type"
+                    )
+            if (
+                ctx
+                and ctx.last_department_id
+                and "department" not in posting
+                and posting.get("amountGross", 0) > 0
+            ):
+                posting["department"] = {"id": ctx.last_department_id}
+                logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+    _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
+    await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
+    total = sum(
+        p.get("amountGross", 0) for p in args["postings"] if isinstance(p, dict)
+    )
+    if abs(total) > 0.01:
+        return {
+            "error": (
+                f"Voucher postings do not balance. Net total: {total}. Debit (positive) and credit (negative) "
+                "amounts must sum to zero. Adjust the posting amounts and retry."
+            )
+        }
+    return None
+
+
+async def _post_voucher_with_retry(client: TripletexClient, args: dict, ctx: EntityContext | None) -> dict:
+    try:
+        return await client.post("/ledger/voucher", json=args)
+    except Exception as e:
+        retry_args = json.loads(json.dumps(args))
+        retried = False
+        error_text = str(e).lower()
+        if "mva-kode 0" in error_text or "ingen avgiftsbehandling" in error_text:
+            for posting in retry_args.get("postings", []):
+                if isinstance(posting, dict) and "vatType" in posting:
+                    posting.pop("vatType", None)
+                    retried = True
+            if retried:
+                logger.info("Voucher account is locked to no VAT; retrying without vatType on postings")
+        if "leverandÃ¸r mangler" in error_text and ctx and ctx.last_customer_id:
+            for posting in retry_args.get("postings", []):
+                if (
+                    isinstance(posting, dict)
+                    and posting.get("amountGross", 0) < 0
+                    and "supplier" not in posting
+                ):
+                    posting["supplier"] = {"id": ctx.last_customer_id}
+                    retried = True
+                    logger.info(f"Auto-injected supplier id={ctx.last_customer_id} into voucher posting retry")
+        if "kunde mangler" in error_text and ctx and ctx.last_customer_id:
+            injected_customer = False
+            for posting in retry_args.get("postings", []):
+                account = _get_cached_account(ctx, posting) if isinstance(posting, dict) else {}
+                if (
+                    isinstance(posting, dict)
+                    and str((account or {}).get("number")) == "1500"
+                    and "customer" not in posting
+                ):
+                    posting["customer"] = {"id": ctx.last_customer_id}
+                    retried = True
+                    injected_customer = True
+                    logger.info(
+                        f"Auto-injected customer id={ctx.last_customer_id} into receivables voucher posting retry"
+                    )
+            for posting in retry_args.get("postings", []):
+                if (
+                    isinstance(posting, dict)
+                    and posting.get("amountGross", 0) > 0
+                    and "customer" not in posting
+                    and not injected_customer
+                ):
+                    posting["customer"] = {"id": ctx.last_customer_id}
+                    retried = True
+                    logger.info(f"Auto-injected customer id={ctx.last_customer_id} into voucher posting retry")
+        if retried:
+            for i, posting in enumerate(retry_args.get("postings", [])):
+                if isinstance(posting, dict):
+                    posting["row"] = i + 1
+            return await client.post("/ledger/voucher", json=retry_args)
+        raise
+
+
 def _has_meaningful_search_filters(params: dict) -> bool:
     """Treat unfiltered list requests as unsafe to avoid random matches."""
     for key, value in params.items():
@@ -2281,6 +2520,22 @@ async def _execute(
         return await client.post("/ledger/accountingDimensionValue", json=args)
 
     if name == "create_voucher":
+        split_vouchers = _split_month_end_closing_vouchers(args)
+        if split_vouchers:
+            results = []
+            for voucher_args in split_vouchers:
+                validation_error = await _prepare_voucher_postings(client, voucher_args, ctx)
+                if validation_error is not None:
+                    return validation_error
+                results.append(await _post_voucher_with_retry(client, voucher_args, ctx))
+            return {
+                "value": (results[-1] or {}).get("value", {}),
+                "values": [result.get("value", {}) for result in results],
+            }
+        validation_error = await _prepare_voucher_postings(client, args, ctx)
+        if validation_error is not None:
+            return validation_error
+        return await _post_voucher_with_retry(client, args, ctx)
         if "postings" in args and isinstance(args["postings"], list):
             _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
             is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])

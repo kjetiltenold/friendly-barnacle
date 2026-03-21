@@ -214,6 +214,13 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("do not invent 25 percent VAT", prompt)
         self.assertIn("debit the exchange-loss account such as `8160` and credit accounts receivable `1500`", prompt)
 
+    def test_system_prompt_includes_month_end_closing_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("Month-end closing", prompt)
+        self.assertIn("Do not mistake an amount like 8300 NOK for account `8300`", prompt)
+        self.assertIn("Post accrual reversal, depreciation, and salary accrual as separate vouchers", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

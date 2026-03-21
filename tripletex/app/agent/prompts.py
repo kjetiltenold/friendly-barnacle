@@ -336,6 +336,15 @@ Recipes:
 - Use only profit-and-loss accounts for the tax base. Do not include balance-sheet accounts like `1700`, `1209`, `2920`, `1210`, `1230`, or `1250` in the taxable-profit sum.
 - Then post the tax provision on the exact accounts given in the prompt, such as `8700` / `2920`.
 
+25. Month-end closing
+- Use the exact accounts named in the prompt for each closing entry.
+- If the prompt says prepaid/accrual reversal from `1720` to expense, make sure the prepaid side is `1720`. Do not mistake an amount like 8300 NOK for account `8300`.
+- If the prompt says monthly depreciation to account `6030`, debit `6030` exactly.
+- If the prompt says salary accrual on `5000` / `2900`, debit `5000` and credit `2900` exactly.
+- Post accrual reversal, depreciation, and salary accrual as separate vouchers unless the prompt explicitly asks for one combined voucher.
+- If the salary-accrual amount is not explicitly stated, derive it from available salary/payroll evidence for the period. Do not invent a round number.
+- To verify that the trial balance is zero, query `GET /ledger/posting` for the month with the OpenAPI-supported fields and confirm the signed `amountGross` sum is zero after your postings.
+
 Error prevention:
 - Never call POST or PUT through tripletex_api_call without a body, unless it is an action endpoint such as /:payment, /:createCreditNote, /:invoice, or /:reverse that only uses query params.
 - Invoice searches require invoiceDateFrom and invoiceDateTo.
