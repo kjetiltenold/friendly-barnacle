@@ -9,6 +9,7 @@ It gives you:
 - A baseline heuristic predictor that blends map priors with observed viewport outcomes
 - A lightweight cross-seed feature model so observations on one seed can still inform the others
 - A staged query planner that starts with balanced cross-seed exploration, then infers, then concentrates late queries
+- Round-adaptive latent profile inference that adjusts the model during the live round
 - Offline analysis tools to fetch completed-round ground truth, evaluate the model, and tune saved weights
 - A Streamlit app for exploring seeds, querying the simulator, previewing predictions, and submitting them
 - A small CLI for scripting the same workflow
@@ -68,6 +69,12 @@ Spend the rest of the live round budget, rebuild, and resubmit:
 astar-island autoquery --use-remaining --replan-every 5 --build --submit
 ```
 
+Skip the automatic preflight sync/evaluate/tune step if you want a faster start:
+
+```bash
+astar-island autoquery --use-remaining --skip-preflight --build --submit
+```
+
 Backfill completed-round analysis data for offline evaluation:
 
 ```bash
@@ -107,6 +114,7 @@ astar-island submit --all-seeds
 - The baseline is intentionally conservative and always applies a probability floor before normalization.
 - Cached data is written to `.data/` by default.
 - Tuned model weights, when present, are loaded automatically from `.data/model_params.json`.
+- `autoquery` runs a completed-round sync/evaluate/tune preflight by default before live querying.
 - The app assumes a Bearer token, but you can adapt the client to cookie auth if you prefer.
 
 ## Tests

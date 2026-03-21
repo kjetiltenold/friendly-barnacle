@@ -6,7 +6,14 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from .analysis import EvaluationCase, coordinate_search, evaluate_cases, evaluation_report
+from .analysis import (
+    coordinate_search,
+    evaluate_cases,
+    evaluation_report,
+    load_cached_evaluation_cases,
+    run_training_preflight,
+    sync_completed_analyses,
+)
 from .api import AstarIslandClient, AstarIslandApiError
 from .baseline import ModelParameters, build_all_predictions
 from .cache import CacheStore
@@ -104,41 +111,6 @@ def parse_id_list(raw: str | None) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def load_evaluation_cases(
-    client: AstarIslandClient,
-    cache: CacheStore,
-    *,
-    round_ids: list[str] | None = None,
-    completed_only: bool = True,
-) -> list[EvaluationCase]:
-    candidate_ids = round_ids
-    if candidate_ids is None:
-        rounds = client.get_my_rounds()
-        candidate_ids = [
-            round_item.id
-            for round_item in rounds
-            if (round_item.status == "completed" if completed_only else True)
-        ]
-
-    cases: list[EvaluationCase] = []
-    for round_id in candidate_ids:
-        detail = cache.load_round_detail(round_id)
-        analyses = cache.load_all_round_analyses(round_id)
-        observations = cache.load_observations(round_id)
-        if detail is None or not analyses or not observations:
-            continue
-        cases.append(
-            EvaluationCase(
-                round_id=round_id,
-                round_number=detail.round_number,
-                detail=detail,
-                observations=observations,
-                analyses=analyses,
-            )
-        )
-    return cases
-
-
 def command_autoquery(args: argparse.Namespace) -> int:
     client, cache = build_runtime(args)
     round_id = resolve_round_id(client, args.round_id)
@@ -146,9 +118,29 @@ def command_autoquery(args: argparse.Namespace) -> int:
     cache.save_round_detail(detail)
     observations = cache.load_observations(round_id)
     seed_indices = parse_seed_list(args.seeds)
-    model_params = load_model_parameters(cache)
     budget = client.get_budget() if (client.config.access_token and args.use_remaining) else None
     count = max(0, (budget.queries_max - budget.queries_used) if budget else args.count)
+
+    if not args.dry_run and not args.skip_preflight:
+        preflight = run_training_preflight(client, cache, passes=args.preflight_passes)
+        print(
+            json.dumps(
+                {
+                    "preflight": {
+                        "case_count": preflight.case_count,
+                        "before_score": preflight.before_score,
+                        "after_score": preflight.after_score,
+                        "improved": preflight.improved,
+                        "saved_params": preflight.saved_params,
+                        "synced_rounds": preflight.synced_rounds,
+                        "report_path": preflight.report_path,
+                    }
+                },
+                indent=2,
+            )
+        )
+
+    model_params = load_model_parameters(cache)
 
     if args.dry_run:
         stage = determine_stage(existing_queries=len(observations), requested_queries=count)
@@ -220,33 +212,13 @@ def command_autoquery(args: argparse.Namespace) -> int:
 def command_sync_analysis(args: argparse.Namespace) -> int:
     client, cache = build_runtime(args)
     requested_ids = parse_id_list(args.round_ids)
-
-    if requested_ids is None:
-        rounds = client.get_my_rounds()
-        selected_rounds = [
-            round_item
-            for round_item in rounds
-            if (round_item.status == "completed" if not args.include_non_completed else True)
-        ]
-        round_ids = [round_item.id for round_item in selected_rounds]
-    else:
-        round_ids = requested_ids
-
-    synced: list[dict[str, int | str]] = []
-    for round_id in round_ids:
-        detail = cache.load_round_detail(round_id) or client.get_round_detail(round_id)
-        cache.save_round_detail(detail)
-        for seed_index in range(detail.seeds_count):
-            analysis = client.get_round_analysis(round_id=round_id, seed_index=seed_index)
-            cache.save_round_analysis(round_id, seed_index, analysis)
-        synced.append(
-            {
-                "round_id": round_id,
-                "round_number": detail.round_number,
-                "seeds_count": detail.seeds_count,
-            }
-        )
-
+    synced = sync_completed_analyses(
+        client,
+        cache,
+        round_ids=requested_ids,
+        include_non_completed=args.include_non_completed,
+        refresh=args.refresh,
+    )
     print(json.dumps({"synced_rounds": synced}, indent=2))
     return 0
 
@@ -254,7 +226,7 @@ def command_sync_analysis(args: argparse.Namespace) -> int:
 def command_evaluate(args: argparse.Namespace) -> int:
     client, cache = build_runtime(args)
     round_ids = parse_id_list(args.round_ids)
-    cases = load_evaluation_cases(client, cache, round_ids=round_ids, completed_only=not args.include_non_completed)
+    cases = load_cached_evaluation_cases(client, cache, round_ids=round_ids, completed_only=not args.include_non_completed)
     if not cases:
         raise AstarIslandApiError(
             "No evaluation cases found. Fetch analyses first and make sure you have cached observations for those rounds."
@@ -272,7 +244,7 @@ def command_evaluate(args: argparse.Namespace) -> int:
 def command_tune(args: argparse.Namespace) -> int:
     client, cache = build_runtime(args)
     round_ids = parse_id_list(args.round_ids)
-    cases = load_evaluation_cases(client, cache, round_ids=round_ids, completed_only=not args.include_non_completed)
+    cases = load_cached_evaluation_cases(client, cache, round_ids=round_ids, completed_only=not args.include_non_completed)
     if not cases:
         raise AstarIslandApiError(
             "No training cases found. Fetch analyses first and make sure you have cached observations for those rounds."
@@ -338,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser = subparsers.add_parser("sync-analysis", help="Fetch completed-round ground truth analyses into the local cache")
     sync_parser.add_argument("--round-ids", help="Comma-separated round ids. Defaults to all completed team rounds.")
     sync_parser.add_argument("--include-non-completed", action="store_true")
+    sync_parser.add_argument("--refresh", action="store_true")
     sync_parser.set_defaults(func=command_sync_analysis)
 
     simulate_parser = subparsers.add_parser("simulate", help="Run one viewport query")
@@ -375,6 +348,8 @@ def build_parser() -> argparse.ArgumentParser:
     autoquery_parser.add_argument("--seeds", help="Comma-separated seed indices, for example 0,1,3")
     autoquery_parser.add_argument("--replan-every", type=int, default=5)
     autoquery_parser.add_argument("--use-remaining", action="store_true")
+    autoquery_parser.add_argument("--skip-preflight", action="store_true")
+    autoquery_parser.add_argument("--preflight-passes", type=int, default=1)
     autoquery_parser.add_argument("--pause-seconds", type=float, default=0.25)
     autoquery_parser.add_argument("--dry-run", action="store_true")
     autoquery_parser.add_argument("--build", action="store_true")

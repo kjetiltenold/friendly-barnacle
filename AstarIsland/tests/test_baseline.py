@@ -10,6 +10,7 @@ from astar_island.baseline import (
     aggregate_observation_counts,
     build_all_predictions,
     build_prior,
+    infer_round_latent_profile,
     normalize_probabilities,
 )
 from astar_island.cache import CacheStore
@@ -103,6 +104,23 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(preview.support_grid.shape, (4, 4))
         self.assertEqual(preview.sample_count_grid.shape, (4, 4))
         self.assertGreater(float(preview.sample_count_grid[1, 1]), 0.0)
+
+    def test_latent_profile_reflects_observed_ruin_pressure(self) -> None:
+        detail = make_round_detail()
+        observation = SimulationResult(
+            round_id="round",
+            seed_index=0,
+            grid=[[3, 3], [3, 3]],
+            settlements=[],
+            viewport=Viewport(x=1, y=1, w=2, h=2),
+            width=4,
+            height=4,
+            queries_used=1,
+            queries_max=50,
+        )
+        profile = infer_round_latent_profile(detail, [observation])
+        self.assertGreater(profile.collapse_bias, 0.0)
+        self.assertGreater(profile.certainty, 0.0)
 
     def test_planner_returns_ranked_queries(self) -> None:
         detail = make_round_detail()
