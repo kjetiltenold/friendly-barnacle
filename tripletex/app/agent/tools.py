@@ -199,6 +199,7 @@ BASE_TOOL_DEFINITIONS = [
         "type": "object",
         "properties": {
             "customer": {"type": "object", "description": "REQUIRED — customer reference object, e.g. {\"id\": 123} using the id from create_customer response"},
+            "project": {"type": "object", "description": "Optional project reference object, e.g. {\"id\": 456}, for project-linked orders and invoices."},
             "orderDate": {"type": "string", "description": "YYYY-MM-DD"},
             "deliveryDate": {"type": "string", "description": "YYYY-MM-DD"},
             "isPrioritizeAmountsIncludingVat": {"type": "boolean", "description": "False when using unitPriceExcludingVatCurrency, true when using unitPriceIncludingVatCurrency."},
@@ -505,6 +506,22 @@ def _compact_dict(payload: dict) -> dict:
     }
 
 
+def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
+    """Rewrite invalid field aliases while preserving order."""
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for raw_part in fields.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        normalized = replacements.get(part, part)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        rewritten.append(normalized)
+    return ",".join(rewritten)
+
+
 def _has_meaningful_search_filters(params: dict) -> bool:
     """Treat unfiltered list requests as unsafe to avoid random matches."""
     for key, value in params.items():
@@ -526,6 +543,11 @@ def _is_placeholder_project_number(value: str | None) -> bool:
         return True
     normalized = value.strip().upper()
     return normalized in {"", "1", "P1", "P01", "P001", "PROJECT", "PRJ", "DEFAULT"}
+
+
+def _is_duplicate_error(exc: Exception, *needles: str) -> bool:
+    message = str(exc).lower()
+    return any(needle.lower() in message for needle in needles)
 
 
 async def dispatch_tool(
@@ -657,11 +679,7 @@ async def _execute(
                 if values:
                     employee = values[0]
                     employee_id = employee["id"]
-                    update_fields = _compact_dict(args)
-                    if update_fields:
-                        logger.info(f"Updating existing employee id={employee_id} for email {email}")
-                        return await client.put(f"/employee/{employee_id}", json={"id": employee_id, **update_fields})
-                    logger.info(f"Found existing employee id={employee_id} for email {email}")
+                    logger.info(f"Reusing existing employee id={employee_id} for email {email}")
                     return {"value": employee}
             except Exception:
                 pass
@@ -674,7 +692,24 @@ async def _execute(
                 dept_id = await _ensure_department(client)
                 if dept_id:
                     args["department"] = {"id": dept_id}
-                    return await client.post("/employee", json=args)
+                    try:
+                        return await client.post("/employee", json=args)
+                    except Exception as retry_error:
+                        if email and _is_duplicate_error(retry_error, "bruker med denne e-postadressen", "already exists"):
+                            result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                            values = result.get("values", [])
+                            if values:
+                                employee = values[0]
+                                logger.info(f"Employee create hit duplicate email; reusing id={employee['id']}")
+                                return {"value": employee}
+                        raise
+            if email and _is_duplicate_error(e, "bruker med denne e-postadressen", "already exists"):
+                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                values = result.get("values", [])
+                if values:
+                    employee = values[0]
+                    logger.info(f"Employee create hit duplicate email; reusing id={employee['id']}")
+                    return {"value": employee}
             raise
 
     if name == "update_employee":
@@ -707,20 +742,39 @@ async def _execute(
                 if values:
                     customer = values[0]
                     customer_id = customer["id"]
-                    update_fields = _compact_dict(args)
-                    if customer.get("isCustomer") and "isCustomer" not in args:
-                        update_fields.pop("isCustomer", None)
+                    update_fields = {}
+                    requested_is_customer = args.get("isCustomer")
+                    requested_is_supplier = args.get("isSupplier")
+                    if requested_is_customer is not None and requested_is_customer != customer.get("isCustomer"):
+                        update_fields["isCustomer"] = requested_is_customer
+                    if requested_is_supplier is not None and requested_is_supplier != customer.get("isSupplier"):
+                        update_fields["isSupplier"] = requested_is_supplier
                     if update_fields:
-                        logger.info(f"Updating existing customer id={customer_id} for org {org_number}")
-                        return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
-                    logger.info(f"Found existing customer id={customer_id} for org {org_number}")
+                        try:
+                            logger.info(f"Updating existing customer id={customer_id} for org {org_number}")
+                            return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
+                        except Exception as update_error:
+                            logger.warning(f"Customer update failed for existing customer id={customer_id}; reusing existing entity: {update_error}")
+                    logger.info(f"Reusing existing customer id={customer_id} for org {org_number}")
                     return {"value": customer}
             except Exception:
                 pass
         # Ensure isCustomer is set unless this is a supplier-only entity
         if "isCustomer" not in args and not args.get("isSupplier"):
             args["isCustomer"] = True
-        return await client.post("/customer", json=args)
+        try:
+            return await client.post("/customer", json=args)
+        except Exception as e:
+            if org_number and _is_duplicate_error(e, "nummeret er i bruk", "already exists"):
+                result = await client.get("/customer", params={
+                    "organizationNumber": org_number, "fields": "id,name,organizationNumber,isCustomer,isSupplier"
+                })
+                values = result.get("values", [])
+                if values:
+                    customer = values[0]
+                    logger.info(f"Customer create hit duplicate organization number; reusing id={customer['id']}")
+                    return {"value": customer}
+            raise
 
     if name == "update_customer":
         cid = args["customer_id"]
@@ -732,26 +786,35 @@ async def _execute(
         # Search first if product number given — avoids 422 error on conflict
         if product_number:
             try:
-                result = await client.get("/product", params={"number": product_number, "fields": "id,name,number"})
+                result = await client.get("/product", params={"productNumber": product_number, "fields": "id,name,number"})
                 values = result.get("values", [])
                 if values:
                     product = values[0]
                     product_id = product["id"]
-                    update_fields = _compact_dict(args)
-                    if update_fields:
-                        logger.info(f"Updating existing product id={product_id} for number {product_number}")
-                        return await client.put(f"/product/{product_id}", json={"id": product_id, **update_fields})
-                    logger.info(f"Found existing product id={product_id} for number {product_number}")
+                    logger.info(f"Reusing existing product id={product_id} for number {product_number}")
                     return {"value": product}
             except Exception:
                 pass
-        return await client.post("/product", json=args)
+        try:
+            return await client.post("/product", json=args)
+        except Exception as e:
+            if product_number and _is_duplicate_error(e, "nummeret er i bruk", "already exists"):
+                result = await client.get("/product", params={"productNumber": product_number, "fields": "id,name,number"})
+                values = result.get("values", [])
+                if values:
+                    product = values[0]
+                    logger.info(f"Product create hit duplicate number; reusing id={product['id']}")
+                    return {"value": product}
+            raise
 
     if name == "create_order":
         # Auto-inject customer reference if model omitted it
         if "customer" not in args and ctx and ctx.last_customer_id:
             args["customer"] = {"id": ctx.last_customer_id}
             logger.info(f"Auto-injected customer id={ctx.last_customer_id} into order")
+        if "project" not in args and ctx and ctx.last_project_id:
+            args["project"] = {"id": ctx.last_project_id}
+            logger.info(f"Auto-injected project id={ctx.last_project_id} into order")
         # Auto-inject product references into order lines missing them
         if ctx and ctx.product_ids and "orderLines" in args:
             lines_without_product = [l for l in args["orderLines"] if "product" not in l]
@@ -971,6 +1034,17 @@ async def _execute(
                 if k not in params:
                     params[k] = v[0]  # parse_qs returns lists; take first value
             logger.info(f"Extracted query params from path: {list(embedded.keys())}")
+        if path.startswith("/ledger/vatType") and isinstance(params.get("fields"), str):
+            rewritten_fields = _rewrite_fields_filter(params["fields"], {"rate": "percentage"})
+            if rewritten_fields != params["fields"]:
+                params["fields"] = rewritten_fields
+                logger.info(f"Normalized vatType fields filter to {rewritten_fields}")
+        if path == "/product" and "number" in params and "productNumber" not in params:
+            number_value = params.get("number")
+            if isinstance(number_value, str) and not re.fullmatch(r"\s*\d+(?:\s*,\s*\d+)*\s*", number_value):
+                params["productNumber"] = number_value
+                params.pop("number", None)
+                logger.info(f"Normalized product lookup number -> productNumber for value {number_value}")
         # Auto-inject required date range for invoice LIST searches only (not by-ID lookups)
         is_invoice_list = method == "GET" and "/invoice" in path and "/:payment" not in path
         # Skip if path has a numeric ID (e.g. /invoice/2147493584)

@@ -24,7 +24,7 @@ Critical rules:
 4. Prefer dedicated tools: create_employee, create_customer, create_product, create_order, create_invoice, create_project, create_travel_expense, create_per_diem_compensation, create_travel_cost, create_project_activity, create_timesheet_entry, update_project_hourly_rate, create_accounting_dimension_name, create_accounting_dimension_value, create_voucher, create_salary_transaction.
 5. Use tripletex_api_call only for operations that still have no dedicated tool, such as payments, credit notes, VAT lookups, account lookups, and other GET or action endpoints.
 6. Do not call /company. It is unavailable in this environment. Bank-account setup for invoicing is handled automatically by the executor.
-7. Do not run broad list searches. search_entity must include a real identifying filter. If you already know an email, organization number, or product number, call the matching create tool directly because the tool searches first and updates existing records when needed.
+7. Do not run broad list searches. search_entity must include a real identifying filter. If you already know an email, organization number, or product number, call the matching create tool directly because the tool searches first and reuses existing records when possible.
 8. Do not verify successful creates with extra GET calls.
 9. Use object references everywhere: {{"id": 123}}, never bare integers.
 10. Omit null or empty optional fields.
@@ -47,19 +47,19 @@ Recipes:
 
 1. Create employee
 - Use create_employee directly.
-- If you know an email, still use create_employee. The tool searches first by email and updates the existing employee if needed.
+- If you know an email, still use create_employee. The tool searches first by email and reuses the existing employee when it already exists.
 - Common fields: firstName, lastName, email, dateOfBirth, phoneNumberMobileCountryCode, phoneNumberMobile, userType, startDate.
 - For admin-like users, set userType to EXTENDED.
 
 2. Create customer or supplier
 - Use create_customer directly.
-- If you know an organization number, still use create_customer. The tool searches first by organizationNumber and updates the existing entity if needed.
+- If you know an organization number, still use create_customer. The tool searches first by organizationNumber and reuses the existing entity when it already matches.
 - Customer: isCustomer=true.
 - Supplier: isSupplier=true and isCustomer=false.
 
 3. Create product
 - Use create_product directly.
-- If the prompt gives a product number, include it. The tool searches first by number and updates the product if it already exists.
+- If the prompt gives a product number, include it. The tool searches first by product number and reuses the product if it already exists.
 
 4. Create customer invoice or order->invoice flow
 - Standard flow:
@@ -76,6 +76,7 @@ Recipes:
 - If you use unitPriceIncludingVatCurrency on the order lines, the order should use isPrioritizeAmountsIncludingVat=true.
 - If the task does not specify a VAT rate, 25 percent is the normal default.
 - For 15 percent, 12 percent, 0 percent, or special VAT cases, call GET /ledger/vatType first and pick the matching type. For customer invoices and orders, prefer outgoing VAT types. For supplier vouchers and purchase-side postings, prefer incoming VAT types.
+- In GET /ledger/vatType field filters, use percentage, not rate.
 - Do not create an invoice by description-only order lines when a product should exist.
 
 5. Register payment on an invoice
@@ -149,7 +150,7 @@ Recipes:
   5. If needed, create_project_activity with project and activity
   6. create_timesheet_entry with employee, project, activity, date, hours
   7. GET /project/hourlyRates then update_project_hourly_rate with fixedRate
-  8. Create product, create order, and invoice the order
+  8. Create product, create order with the project reference, and invoice the order
 - timesheet/entry requires activity. Never send activity as null.
 - If hours exceed 24 for one date, split them across multiple entries.
 - There is no valid /project/{{id}}/:invoice endpoint here. Use the normal order->invoice flow.
