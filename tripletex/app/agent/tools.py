@@ -48,6 +48,8 @@ class EntityContext:
     last_customer_id: int | None = None
     last_product_id: int | None = None
     product_ids: list[int] | None = None  # All product IDs created/found
+    project_ids: list[int] | None = None
+    activity_ids: list[int] | None = None
     last_order_id: int | None = None
     last_employee_id: int | None = None
     last_project_id: int | None = None
@@ -61,10 +63,15 @@ class EntityContext:
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
     last_department_id: int | None = None
+    next_project_activity_pair_index: int = 0
 
     def __post_init__(self):
         if self.product_ids is None:
             self.product_ids = []
+        if self.project_ids is None:
+            self.project_ids = []
+        if self.activity_ids is None:
+            self.activity_ids = []
 
     def track(self, name: str, result: dict) -> None:
         """Extract and store the entity ID from a creation response."""
@@ -78,6 +85,7 @@ class EntityContext:
             "create_order": "last_order_id",
             "create_employee": "last_employee_id",
             "create_project": "last_project_id",
+            "create_activity": "last_activity_id",
             "create_invoice": "last_invoice_id",
             "create_travel_expense": "last_travel_expense_id",
             "create_department": "last_department_id",
@@ -89,6 +97,10 @@ class EntityContext:
         # Track all product IDs for multi-product orders
         if name == "create_product" and entity_id not in self.product_ids:
             self.product_ids.append(entity_id)
+        if name == "create_project" and entity_id not in self.project_ids:
+            self.project_ids.append(entity_id)
+        if name == "create_activity" and entity_id not in self.activity_ids:
+            self.activity_ids.append(entity_id)
         if name == "create_accounting_dimension_name":
             dimension_index = value.get("dimensionIndex")
             if dimension_index is not None:
@@ -248,9 +260,18 @@ BASE_TOOL_DEFINITIONS = [
             "customer": {"type": "object", "description": "{\"id\": customer_id}"},
             "startDate": {"type": "string"},
             "endDate": {"type": "string"},
+            "isInternal": {"type": "boolean"},
             "isClosed": {"type": "boolean"},
         },
-        "required": ["name", "number", "projectManager"],
+        "required": ["name"],
+    }),
+    _tool("create_activity", "Create an activity in Tripletex. Reuses an existing activity with the same name when found.", {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "isInactive": {"type": "boolean"},
+        },
+        "required": ["name"],
     }),
     _tool("create_department", "Create a department in Tripletex.", {
         "type": "object",
@@ -470,6 +491,20 @@ BASE_TOOL_DEFINITIONS = [
     }),
 ]
 
+BASE_TOOL_DEFINITIONS.extend([
+    _tool("find_top_expense_account_increases", "Analyze ledger postings across two periods and return the expense accounts with the largest increase from period A to period B.", {
+        "type": "object",
+        "properties": {
+            "period_a_from": {"type": "string", "description": "YYYY-MM-DD inclusive"},
+            "period_a_to": {"type": "string", "description": "YYYY-MM-DD exclusive"},
+            "period_b_from": {"type": "string", "description": "YYYY-MM-DD inclusive"},
+            "period_b_to": {"type": "string", "description": "YYYY-MM-DD exclusive"},
+            "top_n": {"type": "integer", "default": 3},
+        },
+        "required": ["period_a_from", "period_a_to", "period_b_from", "period_b_to"],
+    }),
+])
+
 ENDPOINT_SEARCH_TOOL = _tool(
     "find_tripletex_endpoints",
     "Search the indexed Tripletex endpoint catalog for the best-matching raw API endpoints before using tripletex_api_call.",
@@ -609,6 +644,53 @@ async def _ensure_department(client: TripletexClient) -> int | None:
     except Exception as e:
         logger.warning(f"Failed to create department: {e}")
         return None
+
+
+async def _ensure_project_manager(client: TripletexClient) -> int | None:
+    """Find a project manager from an existing project."""
+    try:
+        result = await client.get("/project", params={"fields": "id,projectManager", "count": 50})
+        values = result.get("values", [])
+        for project in values:
+            project_manager = project.get("projectManager") or {}
+            project_manager_id = project_manager.get("id")
+            if project_manager_id:
+                logger.info(f"Reusing existing project manager id={project_manager_id} from project search")
+                return project_manager_id
+    except Exception as e:
+        logger.warning(f"Failed to find reusable project manager: {e}")
+    return None
+
+
+async def _list_postings_by_date(client: TripletexClient, date_from: str, date_to: str) -> list[dict]:
+    """Fetch ledger postings for a date range, following pagination."""
+    values: list[dict] = []
+    offset = 0
+    page_size = 1000
+    while True:
+        result = await client.get("/ledger/postingByDate", params={
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "from": offset,
+            "count": page_size,
+        })
+        batch = result.get("values", [])
+        if not batch:
+            break
+        values.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += len(batch)
+    return values
+
+
+def _coerce_number(value) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 async def _ensure_bank_account(client: TripletexClient) -> None:
@@ -886,15 +968,49 @@ async def _execute(
         if "projectManager" not in args and ctx and ctx.last_employee_id:
             args["projectManager"] = {"id": ctx.last_employee_id}
             logger.info(f"Auto-injected employee id={ctx.last_employee_id} as projectManager")
-        if "customer" not in args and ctx and ctx.last_customer_id:
+        if "projectManager" not in args:
+            project_manager_id = await _ensure_project_manager(client)
+            if project_manager_id:
+                args["projectManager"] = {"id": project_manager_id}
+                logger.info(f"Auto-injected reusable project manager id={project_manager_id} into project")
+        if "customer" not in args and not args.get("isInternal") and ctx and ctx.last_customer_id:
             args["customer"] = {"id": ctx.last_customer_id}
             logger.info(f"Auto-injected customer id={ctx.last_customer_id} into project")
+        if "customer" not in args and "isInternal" not in args:
+            args["isInternal"] = True
+            logger.info("Auto-set isInternal=true for customerless project")
         if _is_placeholder_project_number(args.get("number")):
             args["number"] = _generate_project_number()
             logger.info(f"Auto-generated project number {args['number']}")
         if "startDate" not in args:
             args["startDate"] = datetime.date.today().isoformat()
-        return await client.post("/project", json=args)
+        try:
+            return await client.post("/project", json=args)
+        except Exception as e:
+            if "prosjektleder" in str(e).lower() or "projectmanager.id" in str(e).lower():
+                retry_manager_id = await _ensure_project_manager(client)
+                current_manager_id = (args.get("projectManager") or {}).get("id")
+                if retry_manager_id and retry_manager_id != current_manager_id:
+                    retry_args = dict(args)
+                    retry_args["projectManager"] = {"id": retry_manager_id}
+                    logger.info(f"Retrying project create with reusable project manager id={retry_manager_id}")
+                    return await client.post("/project", json=retry_args)
+            raise
+
+    if name == "create_activity":
+        activity_name = args.get("name")
+        if activity_name:
+            try:
+                result = await client.get("/activity", params={"name": activity_name, "fields": "id,name", "count": 10})
+                values = result.get("values", [])
+                normalized_name = activity_name.strip().lower()
+                for activity in values:
+                    if str(activity.get("name", "")).strip().lower() == normalized_name:
+                        logger.info(f"Reusing existing activity id={activity['id']} for name {activity_name}")
+                        return {"value": activity}
+            except Exception:
+                pass
+        return await client.post("/activity", json=args)
 
     if name == "create_department":
         department_name = args.get("name")
@@ -950,6 +1066,19 @@ async def _execute(
         return await client.post("/travelExpense/cost", json=args)
 
     if name == "create_project_activity":
+        if (
+            "project" not in args
+            and "activity" not in args
+            and ctx
+            and ctx.project_ids
+            and ctx.activity_ids
+            and ctx.next_project_activity_pair_index < min(len(ctx.project_ids), len(ctx.activity_ids))
+        ):
+            pair_index = ctx.next_project_activity_pair_index
+            args["project"] = {"id": ctx.project_ids[pair_index]}
+            args["activity"] = {"id": ctx.activity_ids[pair_index]}
+            ctx.next_project_activity_pair_index += 1
+            logger.info(f"Auto-injected paired project/activity ids {ctx.project_ids[pair_index]}/{ctx.activity_ids[pair_index]} into project activity")
         if "project" not in args and ctx and ctx.last_project_id:
             args["project"] = {"id": ctx.last_project_id}
             logger.info(f"Auto-injected project id={ctx.last_project_id} into project activity")
@@ -1044,6 +1173,63 @@ async def _execute(
     if name == "create_salary_transaction":
         return await client.post("/salary/transaction", json=args)
 
+    if name == "find_top_expense_account_increases":
+        top_n = max(1, int(args.get("top_n", 3)))
+        postings_a = await _list_postings_by_date(client, args["period_a_from"], args["period_a_to"])
+        postings_b = await _list_postings_by_date(client, args["period_b_from"], args["period_b_to"])
+
+        period_a_totals: dict[int, dict] = {}
+        period_b_totals: dict[int, dict] = {}
+
+        def _accumulate(target: dict[int, dict], postings: list[dict]) -> None:
+            for posting in postings:
+                account = posting.get("account") or {}
+                account_id = account.get("id")
+                account_number_raw = account.get("number")
+                if account_id is None or account_number_raw in (None, ""):
+                    continue
+                try:
+                    account_number = int(str(account_number_raw))
+                except ValueError:
+                    continue
+                if account_number < 4000 or account_number >= 9000:
+                    continue
+                amount = _coerce_number(posting.get("amount"))
+                bucket = target.setdefault(account_id, {
+                    "account": {
+                        "id": account_id,
+                        "number": account_number,
+                        "name": account.get("name", ""),
+                    },
+                    "total": 0.0,
+                })
+                bucket["total"] += amount
+
+        _accumulate(period_a_totals, postings_a)
+        _accumulate(period_b_totals, postings_b)
+
+        combined_ids = set(period_a_totals) | set(period_b_totals)
+        accounts: list[dict] = []
+        for account_id in combined_ids:
+            period_a_total = period_a_totals.get(account_id, {}).get("total", 0.0)
+            period_b_total = period_b_totals.get(account_id, {}).get("total", 0.0)
+            increase = period_b_total - period_a_total
+            account_meta = period_b_totals.get(account_id, {}).get("account") or period_a_totals.get(account_id, {}).get("account")
+            accounts.append({
+                "account": account_meta,
+                "periodAAmount": round(period_a_total, 2),
+                "periodBAmount": round(period_b_total, 2),
+                "increase": round(increase, 2),
+            })
+
+        accounts.sort(key=lambda item: item["increase"], reverse=True)
+        top_accounts = [item for item in accounts if item["increase"] > 0][:top_n]
+        return {
+            "periodA": {"from": args["period_a_from"], "to": args["period_a_to"]},
+            "periodB": {"from": args["period_b_from"], "to": args["period_b_to"]},
+            "topAccounts": top_accounts,
+        }
+
     if name == "search_entity":
         entity_type = args["entity_type"]
         params = args.get("params", {})
@@ -1094,6 +1280,10 @@ async def _execute(
         # Extract query params embedded in the path (e.g. /invoice/123/:payment?paymentDate=2026-03-20)
         parsed = urlparse(raw_path)
         path = parsed.path
+        if path.startswith("/token/session") or path.startswith("/employee/preferences"):
+            raise ValueError("Do not use session or logged-in preference endpoints here. Project manager selection is handled automatically by create_project.")
+        if path == "/ledger" and method == "GET":
+            raise ValueError("Do not use GET /ledger for posting analysis. Use find_top_expense_account_increases or GET /ledger/postingByDate instead.")
         if parsed.query:
             embedded = parse_qs(parsed.query, keep_blank_values=True)
             for k, v in embedded.items():

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import ANY
 
 from app.agent.tools import EntityContext, _execute
 
@@ -197,6 +198,65 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(body["number"], r"^P-\d{8}-[0-9A-F]{6}$")
         self.assertRegex(body["startDate"], r"^\d{4}-\d{2}-\d{2}$")
 
+    async def test_create_project_uses_existing_project_manager_when_missing(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/project",
+                    (("count", 50), ("fields", "id,projectManager")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 500, "projectManager": {"id": 901}}],
+                }
+            }
+        )
+
+        await _execute(
+            client,
+            "create_project",
+            {"name": "Internt prosjekt"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/project"))
+        self.assertEqual(body["projectManager"], {"id": 901})
+        self.assertTrue(body["isInternal"])
+
+    async def test_create_project_retries_with_existing_project_manager_on_validation_error(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/project",
+                    (("count", 50), ("fields", "id,projectManager")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 500, "projectManager": {"id": 901}}],
+                }
+            },
+            post_errors={"/project": [Exception("422 Validation failed: projectManager.id invalid"), None]},
+        )
+
+        result = await _execute(
+            client,
+            "create_project",
+            {"name": "Internt prosjekt", "projectManager": {"id": 200}},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[0][0:2], ("POST", "/project"))
+        self.assertEqual(client.calls[0][2]["projectManager"], {"id": 200})
+        self.assertTrue(client.calls[0][2]["isInternal"])
+        self.assertEqual(client.calls[0][2]["name"], "Internt prosjekt")
+        self.assertEqual(client.calls[0][2]["number"], ANY)
+        self.assertEqual(client.calls[0][2]["startDate"], ANY)
+        self.assertEqual(client.calls[1], ("GET", "/project", {"fields": "id,projectManager", "count": 50}))
+        self.assertEqual(client.calls[2][0:2], ("POST", "/project"))
+        self.assertEqual(client.calls[2][2]["projectManager"], {"id": 901})
+
     async def test_create_department_reuses_existing_by_name(self):
         client = FakeTripletexClient(
             get_responses={
@@ -222,6 +282,60 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [("GET", "/department", {"name": "Salg", "fields": "id,name", "count": 10})],
+        )
+
+    async def test_create_activity_reuses_existing_by_name(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/activity",
+                    (("count", 10), ("fields", "id,name"), ("name", "Analyse")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 77, "name": "Analyse"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_activity",
+            {"name": "Analyse"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 77)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/activity", {"name": "Analyse", "fields": "id,name", "count": 10})],
+        )
+
+    async def test_create_project_activity_pairs_multiple_projects_and_activities(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(project_ids=[101, 102], activity_ids=[201, 202])
+
+        await _execute(
+            client,
+            "create_project_activity",
+            {},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+        await _execute(
+            client,
+            "create_project_activity",
+            {},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/project/projectActivity", {"project": {"id": 101}, "activity": {"id": 201}}),
+                ("POST", "/project/projectActivity", {"project": {"id": 102}, "activity": {"id": 202}}),
+            ],
         )
 
     async def test_create_order_sets_ex_vat_mode_flag_and_project(self):
@@ -304,6 +418,64 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
             [("GET", "/ledger/account", {"number": "7350", "fields": "id,number,name,vatType,vatLocked,requiresDepartment,isApplicableForSupplierInvoice"})],
         )
+
+    async def test_tripletex_api_call_blocks_session_endpoints(self):
+        client = FakeTripletexClient()
+
+        with self.assertRaises(ValueError):
+            await _execute(
+                client,
+                "tripletex_api_call",
+                {"method": "GET", "path": "/token/session/whoAmI"},
+                endpoint_search=None,
+                ctx=EntityContext(),
+            )
+        self.assertEqual(client.calls, [])
+
+    async def test_find_top_expense_account_increases_aggregates_postings(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/postingByDate",
+                    (("count", 1000), ("dateFrom", "2026-01-01"), ("dateTo", "2026-02-01"), ("from", 0)),
+                ): {
+                    "fullResultSize": 3,
+                    "values": [
+                        {"account": {"id": 1, "number": 5000, "name": "Lønn"}, "amount": 1000},
+                        {"account": {"id": 2, "number": 7100, "name": "Bilgodtgjørelse"}, "amount": 300},
+                        {"account": {"id": 3, "number": 1500, "name": "Kundefordringer"}, "amount": 999},
+                    ],
+                },
+                (
+                    "/ledger/postingByDate",
+                    (("count", 1000), ("dateFrom", "2026-02-01"), ("dateTo", "2026-03-01"), ("from", 0)),
+                ): {
+                    "fullResultSize": 3,
+                    "values": [
+                        {"account": {"id": 1, "number": 5000, "name": "Lønn"}, "amount": 1800},
+                        {"account": {"id": 2, "number": 7100, "name": "Bilgodtgjørelse"}, "amount": 900},
+                        {"account": {"id": 4, "number": 6500, "name": "Verktøy"}, "amount": 700},
+                    ],
+                },
+            }
+        )
+
+        result = await _execute(
+            client,
+            "find_top_expense_account_increases",
+            {
+                "period_a_from": "2026-01-01",
+                "period_a_to": "2026-02-01",
+                "period_b_from": "2026-02-01",
+                "period_b_to": "2026-03-01",
+                "top_n": 3,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual([item["account"]["number"] for item in result["topAccounts"]], [5000, 6500, 7100])
+        self.assertEqual(result["topAccounts"][0]["increase"], 800.0)
 
     async def test_create_voucher_injects_department_into_positive_posting(self):
         client = FakeTripletexClient()

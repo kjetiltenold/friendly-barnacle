@@ -21,13 +21,14 @@ Critical rules:
 1. Plan before acting. Decide the task type and the full call sequence first.
 2. Make at least one API call for every task. Never reply with only DONE before acting.
 3. Reuse IDs directly from previous tool responses. Do not search for entities you just created.
-4. Prefer dedicated tools: create_employee, create_customer, create_product, create_order, create_invoice, create_project, create_travel_expense, create_per_diem_compensation, create_travel_cost, create_project_activity, create_timesheet_entry, update_project_hourly_rate, create_accounting_dimension_name, create_accounting_dimension_value, create_voucher, create_salary_transaction.
+4. Prefer dedicated tools: create_employee, create_customer, create_product, create_order, create_invoice, create_project, create_activity, create_travel_expense, create_per_diem_compensation, create_travel_cost, create_project_activity, create_timesheet_entry, update_project_hourly_rate, create_accounting_dimension_name, create_accounting_dimension_value, create_voucher, create_salary_transaction, find_top_expense_account_increases.
 5. Use tripletex_api_call only for operations that still have no dedicated tool, such as payments, credit notes, VAT lookups, account lookups, and other GET or action endpoints.
 6. Do not call /company. It is unavailable in this environment. Bank-account setup for invoicing is handled automatically by the executor.
 7. Do not run broad list searches. search_entity must include a real identifying filter. If you already know an email, organization number, or product number, call the matching create tool directly because the tool searches first and reuses existing records when possible.
 8. Do not verify successful creates with extra GET calls.
 9. Use object references everywhere: {{"id": 123}}, never bare integers.
 10. Omit null or empty optional fields.
+11. Do not call session or logged-in preference endpoints such as /token/session or /employee/preferences. They are not needed for contest tasks.
 
 Data extraction:
 - Split personal names into firstName and lastName.
@@ -101,10 +102,16 @@ Recipes:
   1. create_customer if the project belongs to a customer
   2. create_employee for the project manager if needed
   3. create_project with name, number, projectManager, customer, startDate
+- For internal projects, set isInternal=true and omit customer.
+- Do not create fake employees just to satisfy project manager validation. If you omit projectManager, create_project will try to reuse an existing valid project manager automatically.
 - If the prompt does not provide a project number, invent a unique one.
 - Do not follow project creation with an empty PUT. The initial create call should contain the needed fields.
 
-8. Fixed-price project with milestone invoice
+8. Create activity
+- Use create_activity directly when the task asks to create an activity.
+- If the activity should belong to a project, call create_project_activity after create_activity and create_project.
+
+9. Fixed-price project with milestone invoice
 - Create customer, create or find project manager, create project.
 - Update the project with tripletex_api_call PUT /project/{{project_id}} and body containing:
   - id
@@ -115,7 +122,7 @@ Recipes:
   - fixedprice: amount
 - Then create order lines for the milestone and invoice through /order/{{id}}/:invoice.
 
-9. Travel expense
+10. Travel expense
 - Flow:
   1. create_employee with the employee email if needed
   2. GET /travelExpense/rateCategory
@@ -142,7 +149,7 @@ Recipes:
 - Use comments, not description.
 - Use amountCurrencyIncVat, not rate.
 
-10. Timesheet plus project invoice
+11. Timesheet plus project invoice
 - Flow:
   1. create_customer
   2. create_employee
@@ -156,14 +163,14 @@ Recipes:
 - If hours exceed 24 for one date, split them across multiple entries.
 - There is no valid /project/{{id}}/:invoice endpoint here. Use the normal order->invoice flow.
 
-11. Reverse or cancel payment
+12. Reverse or cancel payment
 - Find customer.
 - Find invoice with customerId and invoice date range.
 - GET /invoice/{{invoice_id}}?fields=*
 - Identify the payment voucher from invoice data or voucher searches.
 - Reverse it with PUT /ledger/voucher/{{voucher_id}}/:reverse and query param date.
 
-12. Accounting dimensions and vouchers
+13. Accounting dimensions and vouchers
 - Only use create_accounting_dimension_name and create_accounting_dimension_value when the prompt explicitly asks for accounting dimensions or free dimensions.
 - Look up account IDs with GET /ledger/account?number=XXXX&fields=id,number,name.
 - Create vouchers with create_voucher.
@@ -172,7 +179,7 @@ Recipes:
 - Use freeAccountingDimension1, freeAccountingDimension2, or freeAccountingDimension3 according to the dimensionIndex.
 - Positive amountGross is debit. Negative amountGross is credit.
 
-13. Supplier invoice or purchase voucher
+14. Supplier invoice or purchase voucher
 - Flow:
   1. create_customer with isSupplier=true and isCustomer=false
   2. GET /ledger/account for the expense account number
@@ -198,7 +205,7 @@ Recipes:
 - If account lookup shows vatLocked=true or VAT code 0 / no VAT handling, omit vatType on that posting.
 - Representation and business lunch expenses may be non-deductible for VAT. Follow the account's VAT lock instead of forcing 25 percent input VAT.
 
-14. Salary or payroll
+16. Salary or payroll
 - Flow:
   1. create_employee with email if needed
   2. GET /salary/type?fields=id,number,name&employeeId=EMPLOYEE_ID
@@ -216,6 +223,18 @@ Recipes:
   - rate
   - count
 - Do not call a made-up createPayslips endpoint. The bundled OpenAPI only exposes GET /salary/payslip and POST /salary/transaction.
+
+17. Analyze ledger increases and create internal projects
+- For tasks that compare costs or expenses across periods, use find_top_expense_account_increases instead of raw GET /ledger.
+- For January vs February 2026, use:
+  - period_a_from: 2026-01-01
+  - period_a_to: 2026-02-01
+  - period_b_from: 2026-02-01
+  - period_b_to: 2026-03-01
+- After you get the top accounts:
+  1. create_project with name set to the account name and isInternal=true
+  2. create_activity with the same account name
+  3. create_project_activity to link each activity to its project
 
 Error prevention:
 - Never call POST or PUT through tripletex_api_call without a body, unless it is an action endpoint such as /:payment, /:createCreditNote, /:invoice, or /:reverse that only uses query params.

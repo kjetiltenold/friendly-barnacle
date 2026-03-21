@@ -131,6 +131,10 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
         return {"value": {"id": pid, "name": args.get("name", ""), "number": args.get("number", "1"),
                           "projectManager": args.get("projectManager"), "customer": args.get("customer")}}
 
+    if name == "create_activity":
+        aid = _new_id()
+        return {"value": {"id": aid, "name": args.get("name", "")}}
+
     if name == "create_department":
         did = _new_id()
         return {"value": {"id": did, "name": args.get("name", ""), "departmentNumber": args.get("departmentNumber", "1")}}
@@ -167,6 +171,17 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
 
     if name == "create_salary_transaction":
         return {"value": {"id": _new_id()}}
+
+    if name == "find_top_expense_account_increases":
+        return {
+            "periodA": {"from": args.get("period_a_from"), "to": args.get("period_a_to")},
+            "periodB": {"from": args.get("period_b_from"), "to": args.get("period_b_to")},
+            "topAccounts": [
+                {"account": {"id": 349030553, "number": 5000, "name": "Lønn til ansatte"}, "periodAAmount": 150000, "periodBAmount": 240000, "increase": 90000},
+                {"account": {"id": 349030668, "number": 7100, "name": "Bilgodtgjørelse oppgavepliktig"}, "periodAAmount": 12000, "periodBAmount": 43000, "increase": 31000},
+                {"account": {"id": 349030633, "number": 6500, "name": "Motordrevet verktøy"}, "periodAAmount": 4000, "periodBAmount": 18000, "increase": 14000},
+            ],
+        }
 
     if name == "search_entity":
         etype = args.get("entity_type", "")
