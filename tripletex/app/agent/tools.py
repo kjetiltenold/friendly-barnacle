@@ -3321,10 +3321,11 @@ async def _execute(
                 params["fields"],
                 {
                     "dueDate": "invoiceDueDate",
-                    "amountDue": "amountOutstanding",
+                    "amountDue": "amount",
                     "amountTotal": "amount",
-                    "amountRemainder": "amountOutstanding",
-                    "amountRemaining": "amountOutstanding",
+                    "amountRemainder": "amount",
+                    "amountRemaining": "amount",
+                    "amountOutstanding": "amount",
                     "amountGross": "amount",
                 },
             )

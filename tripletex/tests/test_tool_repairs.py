@@ -1836,7 +1836,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 (
                     "/supplierInvoice",
                     (
-                        ("fields", "id,invoiceNumber,invoiceDate,amountOutstanding,supplier(name)"),
+                        ("fields", "id,invoiceNumber,invoiceDate,amount,supplier(name)"),
                         ("invoiceDateFrom", "2026-01-01"),
                         ("invoiceDateTo", "2026-02-01"),
                     ),
@@ -1865,7 +1865,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "invoiceDateFrom": "2026-01-01",
                         "invoiceDateTo": "2026-02-01",
-                        "fields": "id,invoiceNumber,invoiceDate,amountOutstanding,supplier(name)",
+                        "fields": "id,invoiceNumber,invoiceDate,amount,supplier(name)",
                     },
                 )
             ],
