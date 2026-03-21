@@ -219,7 +219,11 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         ctx.last_rate_category_id = first_id
     elif path.startswith("/travelExpense/costCategory"):
         ctx.last_cost_category_id = first_id
-    elif path.startswith("/travelExpense/paymentType") or path.startswith("/invoice/paymentType"):
+    elif (
+        path.startswith("/travelExpense/paymentType")
+        or path.startswith("/invoice/paymentType")
+        or path.startswith("/ledger/paymentTypeOut")
+    ):
         ctx.last_payment_type_id = first_id
     elif path.startswith("/project/hourlyRates"):
         ctx.last_hourly_rate_id = first_id
@@ -772,6 +776,9 @@ def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
         part = raw_part.strip()
         if not part:
             continue
+        if "." in part and "(" not in part and part.count(".") == 1:
+            parent, child = part.split(".", 1)
+            part = f"{parent}({child})"
         normalized = replacements.get(part, part)
         if not normalized:
             continue
@@ -1302,6 +1309,25 @@ def _prompt_describes_budget_not_fixed_price(ctx: EntityContext | None) -> bool:
     return any(token in normalized for token in budget_tokens) and not any(
         token in normalized for token in fixed_price_tokens
     )
+
+
+def _prompt_mentions_partial_payments(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    partial_tokens = (
+        "partialpayment",
+        "partialpayments",
+        "pagoparcial",
+        "pagosparciales",
+        "delbetaling",
+        "delbetalinger",
+        "teilzahlung",
+        "teilzahlungen",
+        "paiementpartiel",
+        "paiementspartiels",
+    )
+    return any(token in normalized for token in partial_tokens)
 
 
 def _extract_prompt_budget_amount(ctx: EntityContext | None) -> float | None:
@@ -3098,13 +3124,13 @@ async def _execute(
                 continue
             params.setdefault(key, value)
         # GET /invoice requires invoiceDateFrom and invoiceDateTo
-        if entity_type == "invoice":
+        if entity_type in {"invoice", "supplierInvoice"}:
             if "invoiceDateFrom" not in params:
                 params["invoiceDateFrom"] = "2000-01-01"
-                logger.info("Auto-injected invoiceDateFrom=2000-01-01 for invoice search")
+                logger.info(f"Auto-injected invoiceDateFrom=2000-01-01 for {entity_type} search")
             if "invoiceDateTo" not in params:
                 params["invoiceDateTo"] = "2100-01-01"
-                logger.info("Auto-injected invoiceDateTo=2100-01-01 for invoice search")
+                logger.info(f"Auto-injected invoiceDateTo=2100-01-01 for {entity_type} search")
         if not _has_meaningful_search_filters(params):
             logger.warning(f"Blocked unfiltered search_entity call for {entity_type}")
             return {"fullResultSize": 0, "values": []}
@@ -3217,6 +3243,9 @@ async def _execute(
             raise ValueError("Do not use GET /ledger for posting analysis. Use find_top_expense_account_increases or GET /ledger/postingByDate instead.")
         if path == "/ledger/result" and method == "GET":
             raise ValueError("Do not use GET /ledger/result. Use GET /ledger/posting with accountNumberFrom/accountNumberTo over profit-and-loss accounts instead.")
+        if method == "GET" and path == "/supplierInvoice/paymentType":
+            path = "/ledger/paymentTypeOut"
+            logger.info("Normalized unsupported /supplierInvoice/paymentType lookup to /ledger/paymentTypeOut")
         if parsed.query:
             embedded = parse_qs(parsed.query, keep_blank_values=True)
             for k, v in embedded.items():
@@ -3268,6 +3297,7 @@ async def _execute(
                     "amountDue": "amountOutstanding",
                     "amountTotal": "amount",
                     "amountRemainder": "amountOutstanding",
+                    "amountRemaining": "amountOutstanding",
                     "amountGross": "amount",
                     "isPaid": "",
                     "order": "",
@@ -3286,6 +3316,21 @@ async def _execute(
             if rewritten_sorting != params["sorting"]:
                 params["sorting"] = rewritten_sorting
                 logger.info(f"Normalized invoice sorting to {rewritten_sorting}")
+        if path == "/supplierInvoice" and isinstance(params.get("fields"), str):
+            rewritten_fields = _rewrite_fields_filter(
+                params["fields"],
+                {
+                    "dueDate": "invoiceDueDate",
+                    "amountDue": "amountOutstanding",
+                    "amountTotal": "amount",
+                    "amountRemainder": "amountOutstanding",
+                    "amountRemaining": "amountOutstanding",
+                    "amountGross": "amount",
+                },
+            )
+            if rewritten_fields != params["fields"]:
+                params["fields"] = rewritten_fields
+                logger.info(f"Normalized supplierInvoice fields filter to {rewritten_fields}")
         if path == "/product" and "number" in params and "productNumber" not in params:
             number_value = params.get("number")
             if isinstance(number_value, str) and not re.fullmatch(r"\s*\d+(?:\s*,\s*\d+)*\s*", number_value):
@@ -3349,6 +3394,20 @@ async def _execute(
                 logger.info(f"Auto-injected invoiceDate={params['invoiceDate']} for order invoice action")
             await _ensure_bank_account(client)
             logger.info("Preflighted bank account before order invoice action")
+        if method == "PUT" and re.fullmatch(r"/supplierInvoice/\d+/:addPayment", path):
+            if "paymentType" not in params and "paymentTypeId" in params:
+                params["paymentType"] = params.pop("paymentTypeId")
+                logger.info(f"Normalized supplier invoice addPayment paymentTypeId -> paymentType ({params['paymentType']})")
+            if "amount" not in params and "paidAmount" in params:
+                params["amount"] = params.pop("paidAmount")
+                logger.info(f"Normalized supplier invoice addPayment paidAmount -> amount ({params['amount']})")
+            if "paymentType" not in params:
+                params["paymentType"] = 0
+                params.setdefault("useDefaultPaymentType", True)
+                logger.info("Defaulted supplier invoice addPayment to paymentType=0 with useDefaultPaymentType=true")
+            if _prompt_mentions_partial_payments(ctx) and "amount" in params and "partialPayment" not in params:
+                params["partialPayment"] = True
+                logger.info("Auto-set partialPayment=true for supplier invoice addPayment from prompt context")
         # Fix row numbering in voucher postings — row 0 is reserved by Tripletex
         if body and "postings" in body and isinstance(body["postings"], list):
             for i, posting in enumerate(body["postings"]):

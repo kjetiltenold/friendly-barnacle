@@ -235,6 +235,14 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Prefer account `6420`", prompt)
         self.assertIn("supplier reference on the accounts-payable line only", prompt)
 
+    def test_system_prompt_includes_bank_reconciliation_supplier_payment_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("GET /ledger/paymentTypeOut", prompt)
+        self.assertIn("PUT /supplierInvoice/{invoice_id}/:addPayment with paymentDate, paymentType, and amount", prompt)
+        self.assertIn("amountOutstanding, not amountRemaining", prompt)
+        self.assertIn("customer(name) or supplier(name)", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

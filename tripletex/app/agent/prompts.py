@@ -323,7 +323,10 @@ Recipes:
 - Match incoming payments to open customer invoices by amount, customer name/reference, and payment date.
 - Match outgoing payments to supplier invoices by amount, supplier name/reference, and payment date.
 - Customer invoice payments use PUT /invoice/{{invoice_id}}/:payment with paymentDate, paymentTypeId, and paidAmount.
-- Supplier invoice payments use PUT /supplierInvoice/{{invoice_id}}/:addPayment with paymentDate, paymentTypeId, and paidAmount.
+- For customer payment types, use GET /invoice/paymentType.
+- For supplier payment types, use GET /ledger/paymentTypeOut. Do not call a made-up /supplierInvoice/paymentType endpoint.
+- Supplier invoice payments use PUT /supplierInvoice/{{invoice_id}}/:addPayment with paymentDate, paymentType, and amount.
+- For supplier partial payments, set partialPayment=true.
 - Handle partial payments by paying only the transaction amount from the attached row, not the full outstanding invoice amount.
 - Do not register payments for invoices that are not represented by an attachment row.
 
@@ -356,6 +359,8 @@ Error prevention:
 - Never call POST or PUT through tripletex_api_call without a body, unless it is an action endpoint such as /:payment, /:createCreditNote, /:invoice, or /:reverse that only uses query params.
 - Invoice searches require invoiceDateFrom and invoiceDateTo.
 - Supplier invoice searches require invoiceDateFrom and invoiceDateTo.
+- On invoice and supplier-invoice fields filters, use amountOutstanding, not amountRemaining.
+- On invoice and supplier-invoice child fields, use parentheses like customer(name) or supplier(name), not dotted fields like customer.name.
 - /ledger/posting uses an exclusive dateTo. For a full March 2026 check, use dateFrom=2026-03-01 and dateTo=2026-04-01, not 2026-03-31.
 - On `/ledger/posting`, use `date`, not `accountingDate`, in fields filters.
 - On `/ledger/posting`, prefer `accountNumberFrom` / `accountNumberTo` over guessed `accountNumber` shortcuts.

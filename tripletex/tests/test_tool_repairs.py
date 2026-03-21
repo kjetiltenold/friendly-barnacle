@@ -1769,6 +1769,135 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["values"][0]["id"], 1)
         self.assertEqual(client.calls, [("GET", "/invoice/paymentType", {})])
 
+    async def test_tripletex_api_call_normalizes_supplier_invoice_payment_type_lookup(self):
+        client = FakeTripletexClient(
+            get_responses={
+                ("/ledger/paymentTypeOut", ()): {"fullResultSize": 1, "values": [{"id": 7, "description": "Bank ut"}]},
+            }
+        )
+        ctx = EntityContext()
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/supplierInvoice/paymentType"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["values"][0]["id"], 7)
+        self.assertEqual(ctx.last_payment_type_id, 7)
+        self.assertEqual(client.calls, [("GET", "/ledger/paymentTypeOut", {})])
+
+    async def test_tripletex_api_call_normalizes_invoice_child_fields_and_amount_remaining(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice",
+                    (
+                        ("fields", "id,invoiceNumber,invoiceDate,amountOutstanding,customer(name)"),
+                        ("invoiceDateFrom", "2026-01-01"),
+                        ("invoiceDateTo", "2026-02-01"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 2147596454, "invoiceNumber": "2"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/invoice?invoiceDateFrom=2026-01-01&invoiceDateTo=2026-02-01&fields=id,invoiceNumber,invoiceDate,amountRemaining,customer.name"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 2147596454)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "GET",
+                    "/invoice",
+                    {
+                        "invoiceDateFrom": "2026-01-01",
+                        "invoiceDateTo": "2026-02-01",
+                        "fields": "id,invoiceNumber,invoiceDate,amountOutstanding,customer(name)",
+                    },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_normalizes_supplier_invoice_fields_and_add_payment_params(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/supplierInvoice",
+                    (
+                        ("fields", "id,invoiceNumber,invoiceDate,amountOutstanding,supplier(name)"),
+                        ("invoiceDateFrom", "2026-01-01"),
+                        ("invoiceDateTo", "2026-02-01"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 77, "invoiceNumber": "SI-77"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/supplierInvoice?invoiceDateFrom=2026-01-01&invoiceDateTo=2026-02-01&fields=id,invoiceNumber,invoiceDate,amountRemaining,supplier.name"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 77)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "GET",
+                    "/supplierInvoice",
+                    {
+                        "invoiceDateFrom": "2026-01-01",
+                        "invoiceDateTo": "2026-02-01",
+                        "fields": "id,invoiceNumber,invoiceDate,amountOutstanding,supplier(name)",
+                    },
+                )
+            ],
+        )
+
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "PUT", "path": "/supplierInvoice/77/:addPayment?paymentDate=2026-01-18&paymentTypeId=13&paidAmount=3650.00"},
+            endpoint_search=None,
+            ctx=EntityContext(prompt_text="Maneja los pagos parciales correctamente."),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "PUT",
+                    "/supplierInvoice/77/:addPayment",
+                    None,
+                    {
+                        "paymentDate": "2026-01-18",
+                        "paymentType": "13",
+                        "amount": "3650.00",
+                        "partialPayment": True,
+                    },
+                )
+            ],
+        )
+
     async def test_tripletex_api_call_enriches_ledger_account_fields(self):
         client = FakeTripletexClient(
             get_responses={
