@@ -247,6 +247,27 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_prompt_likely_requires_writes_handles_spanish_cree(self):
+        self.assertTrue(
+            _prompt_likely_requires_writes(
+                "Cree un proyecto interno para cada una de las tres cuentas y también cree una actividad."
+            )
+        )
+
+    def test_should_retry_text_only_response_when_done_after_spanish_analysis_but_no_writes(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Analice el libro mayor e identifique las tres cuentas de gastos con el mayor incremento en monto. "
+                    "Cree un proyecto interno para cada una de las tres cuentas con el nombre de la cuenta. "
+                    "También cree una actividad para cada proyecto."
+                ),
+                0,
+                0,
+            )
+        )
+
     def test_should_not_retry_text_only_response_when_done_after_writes(self):
         self.assertFalse(
             _should_retry_text_only_response(
@@ -297,6 +318,8 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("A project budget is not the same as a fixed-price project", prompt)
         self.assertIn("budgetFeeCurrency", prompt)
         self.assertIn("typically 7.5 or 8 hours per day, not 24-hour days", prompt)
+        self.assertIn("Do not collapse all hours onto the last created employee", prompt)
+        self.assertIn("derive the hourly rate as budget divided by total hours before invoicing", prompt)
 
     def test_system_prompt_includes_supplier_invoice_attachment_and_software_account_guidance(self):
         prompt = get_system_prompt("2026-03-21")

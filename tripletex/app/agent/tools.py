@@ -54,6 +54,7 @@ class EntityContext:
     project_ids: list[int] | None = None
     activity_ids: list[int] | None = None
     employee_ids: list[int] | None = None
+    employee_snapshots: dict[int, dict] | None = None
     last_order_id: int | None = None
     last_employee_id: int | None = None
     last_employment_id: int | None = None
@@ -79,6 +80,7 @@ class EntityContext:
     account_cache: dict[int, dict] | None = None
     vat_type_cache: dict | None = None  # Maps (percentage, direction_hint) -> vat_type_id
     project_start_dates: dict[int, str] | None = None
+    linked_project_activity_pairs: set[tuple[int, int]] | None = None
     timesheet_hours_by_day: dict[tuple[int, int, int, str], float] | None = None
     last_top_expense_analysis_key: str | None = None
     last_top_expense_analysis: dict | None = None
@@ -95,12 +97,16 @@ class EntityContext:
             self.activity_ids = []
         if self.employee_ids is None:
             self.employee_ids = []
+        if self.employee_snapshots is None:
+            self.employee_snapshots = {}
         if self.account_cache is None:
             self.account_cache = {}
         if self.last_cost_categories is None:
             self.last_cost_categories = []
         if self.project_start_dates is None:
             self.project_start_dates = {}
+        if self.linked_project_activity_pairs is None:
+            self.linked_project_activity_pairs = set()
         if self.timesheet_hours_by_day is None:
             self.timesheet_hours_by_day = {}
 
@@ -145,6 +151,12 @@ class EntityContext:
         if name == "create_employee":
             if entity_id not in self.employee_ids:
                 self.employee_ids.append(entity_id)
+            self.employee_snapshots[entity_id] = {
+                "id": entity_id,
+                "firstName": value.get("firstName"),
+                "lastName": value.get("lastName"),
+                "email": value.get("email"),
+            }
             employments = value.get("employments") or []
             if employments and isinstance(employments[0], dict):
                 employment_id = employments[0].get("id")
@@ -172,6 +184,8 @@ class EntityContext:
             if project_id is not None:
                 self.last_project_id = project_id
                 logger.info(f"EntityContext: last_project_id = {project_id}")
+            if project_id is not None and activity_id is not None:
+                self.linked_project_activity_pairs.add((project_id, activity_id))
         # Track all product IDs for multi-product orders
         if name == "create_product" and entity_id not in self.product_ids:
             self.product_ids.append(entity_id)
@@ -933,8 +947,8 @@ def _find_cached_account_by_number(ctx: EntityContext | None, number: str) -> di
 def _normalize_year_end_depreciation_postings(postings: list[dict] | None, description: str | None, ctx: EntityContext | None) -> None:
     if ctx is None or not isinstance(postings, list):
         return
-    normalized_description = str(description or "").lower()
-    if not any(token in normalized_description for token in ("avskriv", "depreciat")):
+    normalized_description = _normalize_prompt_text(description)
+    if not any(token in normalized_description for token in ("avskriv", "depreciat", "abschreib", "amortis")):
         return
     if len(postings) != 2:
         return
@@ -1108,6 +1122,8 @@ def _normalize_year_end_prepaid_reversal_postings(
         for token in (
             "prepaid",
             "forskudds",
+            "vorausbezahlt",
+            "auflos",
             "tilbakeforing",
             "reversal",
             "extourne",
@@ -1695,6 +1711,155 @@ def _next_working_day(candidate: datetime.date) -> datetime.date:
     while candidate.weekday() >= 5:
         candidate += datetime.timedelta(days=1)
     return candidate
+
+
+def _employee_snapshot_full_name(snapshot: dict | None) -> str:
+    if not isinstance(snapshot, dict):
+        return ""
+    first = str(snapshot.get("firstName") or "").strip()
+    last = str(snapshot.get("lastName") or "").strip()
+    return " ".join(part for part in (first, last) if part).strip()
+
+
+def _find_employee_id_by_email(ctx: EntityContext | None, email: str | None) -> int | None:
+    if ctx is None or not ctx.employee_snapshots:
+        return None
+    target = str(email or "").strip().lower()
+    if not target:
+        return None
+    for employee_id, snapshot in ctx.employee_snapshots.items():
+        if str(snapshot.get("email") or "").strip().lower() == target:
+            return employee_id
+    return None
+
+
+def _find_employee_id_by_name(ctx: EntityContext | None, name: str | None) -> int | None:
+    if ctx is None or not ctx.employee_snapshots:
+        return None
+    target = str(name or "").strip().lower()
+    if not target:
+        return None
+    for employee_id, snapshot in ctx.employee_snapshots.items():
+        if _employee_snapshot_full_name(snapshot).lower() == target:
+            return employee_id
+    return None
+
+
+def _extract_prompt_timesheet_assignments(ctx: EntityContext | None) -> list[dict]:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return []
+    pattern = re.compile(
+        r"([^\W\d_][\w'’.-]*(?:\s+[^\W\d_][\w'’.-]*)+)\s*\(([^)]*)\)\s*([0-9]+(?:[.,][0-9]+)?)\s*(?:timer|hours?|hrs?)",
+        re.IGNORECASE,
+    )
+    assignments: list[dict] = []
+    for match in pattern.finditer(raw_text):
+        metadata = match.group(2) or ""
+        email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", metadata)
+        hours = _coerce_number(str(match.group(3)).replace(",", "."))
+        if hours <= 0:
+            continue
+        assignments.append(
+            {
+                "name": str(match.group(1) or "").strip(),
+                "email": email_match.group(1) if email_match else None,
+                "hours": round(hours, 2),
+            }
+        )
+    return assignments
+
+
+def _extract_prompt_total_timesheet_hours(ctx: EntityContext | None) -> float | None:
+    assignments = _extract_prompt_timesheet_assignments(ctx)
+    if assignments:
+        return round(sum(_coerce_number(item.get("hours")) for item in assignments), 2)
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    matches = re.findall(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:timer|hours?|hrs?)", raw_text, re.IGNORECASE)
+    if not matches:
+        return None
+    total = round(sum(_coerce_number(match.replace(",", ".")) for match in matches), 2)
+    return total if total > 0 else None
+
+
+def _resolve_timesheet_employee_from_prompt(args: dict, ctx: EntityContext | None) -> int | None:
+    explicit_email = args.get("employeeEmail") or args.get("email")
+    employee_id = _find_employee_id_by_email(ctx, explicit_email)
+    if employee_id is not None:
+        return employee_id
+    explicit_name = args.get("employeeName") or args.get("name")
+    employee_id = _find_employee_id_by_name(ctx, explicit_name)
+    if employee_id is not None:
+        return employee_id
+    if ctx is None or len(ctx.employee_ids or []) <= 1:
+        return None
+    requested_hours = round(_coerce_number(args.get("hours")), 2)
+    if requested_hours <= 0:
+        return None
+    matches = [
+        assignment
+        for assignment in _extract_prompt_timesheet_assignments(ctx)
+        if abs(_coerce_number(assignment.get("hours")) - requested_hours) <= 0.01
+    ]
+    resolved_ids: list[int] = []
+    for assignment in matches:
+        assignment_employee_id = _find_employee_id_by_email(ctx, assignment.get("email"))
+        if assignment_employee_id is None:
+            assignment_employee_id = _find_employee_id_by_name(ctx, assignment.get("name"))
+        if assignment_employee_id is not None and assignment_employee_id not in resolved_ids:
+            resolved_ids.append(assignment_employee_id)
+    if len(resolved_ids) == 1:
+        return resolved_ids[0]
+    return None
+
+
+async def _ensure_project_activity_link(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+    project_id: int | None,
+    activity_id: int | None,
+) -> None:
+    prompt_text = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if (
+        ctx is None
+        or project_id is None
+        or activity_id is None
+        or not any(
+            token in prompt_text
+            for token in (
+                "prosjektsyklus",
+                "projectcycle",
+                "projectinvoice",
+                "kundefaktura",
+                "invoice",
+                "fakturer",
+                "timesheetplusprojectinvoice",
+            )
+        )
+        or (project_id, activity_id) in ctx.linked_project_activity_pairs
+    ):
+        return
+    payload = {"project": {"id": project_id}, "activity": {"id": activity_id}}
+    budget_amount = _extract_prompt_budget_amount(ctx)
+    if budget_amount is not None:
+        payload["budgetFeeCurrency"] = round(budget_amount, 2)
+    try:
+        logger.info(
+            "Auto-linking project id=%s and activity id=%s before timesheet entry",
+            project_id,
+            activity_id,
+        )
+        result = await client.post("/project/projectActivity", json=payload)
+        ctx.track("create_project_activity", result, payload)
+    except Exception as exc:
+        logger.warning(
+            "Project/activity auto-link failed for project id=%s activity id=%s; continuing with timesheet entry: %s",
+            project_id,
+            activity_id,
+            exc,
+        )
 
 
 def _normalize_prompt_text(value: str | None) -> str:
@@ -3848,6 +4013,15 @@ async def _execute(
         return await client.post("/project/projectActivity", json=args)
 
     if name == "create_timesheet_entry":
+        if "employee" not in args and "employeeId" not in args:
+            resolved_employee_id = _resolve_timesheet_employee_from_prompt(args, ctx)
+            if resolved_employee_id is not None:
+                args["employee"] = {"id": resolved_employee_id}
+                logger.info(
+                    "Resolved timesheet employee id=%s from prompt hours=%s",
+                    resolved_employee_id,
+                    args.get("hours"),
+                )
         if "employee" not in args and ctx and ctx.last_employee_id:
             args["employee"] = {"id": ctx.last_employee_id}
             logger.info(f"Auto-injected employee id={ctx.last_employee_id} into timesheet entry")
@@ -3857,6 +4031,12 @@ async def _execute(
         if "activity" not in args and ctx and ctx.last_activity_id:
             args["activity"] = {"id": ctx.last_activity_id}
             logger.info(f"Auto-injected activity id={ctx.last_activity_id} into timesheet entry")
+        await _ensure_project_activity_link(
+            client,
+            ctx,
+            _extract_reference_id(args.get("project")),
+            _extract_reference_id(args.get("activity")),
+        )
         return await _create_timesheet_entries(client, args, ctx)
 
     if name == "update_project_hourly_rate":
@@ -3869,6 +4049,17 @@ async def _execute(
         if "project" not in args and ctx and ctx.last_project_id:
             args["project"] = {"id": ctx.last_project_id}
             logger.info(f"Auto-injected project id={ctx.last_project_id} into project hourly rate")
+        if args.get("fixedRate") in (None, ""):
+            budget_amount = _extract_prompt_budget_amount(ctx)
+            total_hours = _extract_prompt_total_timesheet_hours(ctx)
+            if budget_amount not in (None, 0) and total_hours not in (None, 0):
+                args["fixedRate"] = round(budget_amount / total_hours, 2)
+                logger.info(
+                    "Derived project hourly rate fixedRate=%.2f from budget %.2f / total hours %.2f",
+                    args["fixedRate"],
+                    budget_amount,
+                    total_hours,
+                )
         if "startDate" not in args:
             args["startDate"] = datetime.date.today().isoformat()
         if "hourlyRateModel" not in args:

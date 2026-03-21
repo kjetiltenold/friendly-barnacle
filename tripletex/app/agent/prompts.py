@@ -214,6 +214,10 @@ Recipes:
 - A project budget is not the same as a fixed-price project. Only set isFixedPrice/fixedprice when the prompt explicitly says fixed price, fastpris, prix fixe, or equivalent wording.
 - If the prompt gives a project budget, carry that amount on create_project_activity as budgetFeeCurrency when you link the activity to the project.
 - If the prompt gives a project budget and asks you to invoice after recording hours, use the budget to derive the project hourly rate when needed. Do not silently convert the project into fixed price just because a budget amount is present.
+- For multi-person project-cycle tasks, create all named employees first, then post separate timesheet entries for each named person. Do not collapse all hours onto the last created employee.
+- If the prompt states exact hours per named employee, use those exact hours on separate timesheet entries for the matching employee.
+- If you create a new activity for the project, make sure create_project_activity happens before timesheet entries and before invoicing the project.
+- If both a project budget and the total requested project hours are known, derive the hourly rate as budget divided by total hours before invoicing.
 - There is no valid /project/{{id}}/:invoice endpoint here. Use the normal order->invoice flow.
 
 12. Reverse or cancel payment

@@ -40,6 +40,8 @@ def _prompt_likely_requires_writes(prompt: str) -> bool:
         "buchen",
         "crie",
         "crear",
+        "crea",
+        "cree",
         "créer",
         "criar",
         "creer",

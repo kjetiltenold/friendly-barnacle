@@ -1360,6 +1360,72 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(result["values"]), 3)
 
+    async def test_create_timesheet_entry_resolves_employee_from_prompt_hours(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Gjennomfør hele prosjektsyklusen for 'Dataplattform Tindra'. "
+                "Registrer timer: Astrid Hansen (prosjektleder, astrid.hansen@example.org) 42 timer "
+                "og Silje Berg (konsulent, silje.berg@example.org) 145 timer."
+            ),
+            last_project_id=402000662,
+            last_activity_id=5877567,
+        )
+        ctx.track(
+            "create_employee",
+            {"value": {"id": 101, "firstName": "Astrid", "lastName": "Hansen", "email": "astrid.hansen@example.org"}},
+        )
+        ctx.track(
+            "create_employee",
+            {"value": {"id": 102, "firstName": "Silje", "lastName": "Berg", "email": "silje.berg@example.org"}},
+        )
+        ctx.linked_project_activity_pairs.add((402000662, 5877567))
+
+        result = await _execute(
+            client,
+            "create_timesheet_entry",
+            {"project": {"id": 402000662}, "activity": {"id": 5877567}, "date": "2026-03-21", "hours": 42},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        timesheet_calls = [call for call in client.calls if call[0:2] == ("POST", "/timesheet/entry")]
+        self.assertEqual(len(result["values"]), 6)
+        self.assertTrue(timesheet_calls)
+        self.assertTrue(all(call[2]["employee"] == {"id": 101} for call in timesheet_calls))
+
+    async def test_create_timesheet_entry_auto_links_project_activity_before_post(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text="Prosjektet har budsjett 432000 kr og skal fakturerast etter timar.",
+            last_employee_id=18609430,
+            last_project_id=402000662,
+            last_activity_id=5877567,
+        )
+
+        await _execute(
+            client,
+            "create_timesheet_entry",
+            {"date": "2026-03-24", "hours": 8},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[0],
+            (
+                "POST",
+                "/project/projectActivity",
+                {
+                    "project": {"id": 402000662},
+                    "activity": {"id": 5877567},
+                    "budgetFeeCurrency": 432000.0,
+                },
+            ),
+        )
+        self.assertEqual(client.calls[1][0:2], ("POST", "/timesheet/entry"))
+        self.assertIn((402000662, 5877567), ctx.linked_project_activity_pairs)
+
     async def test_create_timesheet_entry_splits_large_hours_into_working_days(self):
         client = FakeTripletexClient()
         ctx = EntityContext(
@@ -1403,6 +1469,44 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(len(result["values"]), 3)
+
+    async def test_update_project_hourly_rate_derives_fixed_rate_from_budget_and_total_hours(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Gjennomfør hele prosjektsyklusen for 'Dataplattform Tindra'. "
+                "Prosjektet har budsjett 432000 kr. "
+                "Registrer timer: Astrid Hansen (prosjektleder, astrid.hansen@example.org) 42 timer "
+                "og Silje Berg (konsulent, silje.berg@example.org) 145 timer."
+            ),
+            last_project_id=402000662,
+            last_hourly_rate_id=73,
+        )
+
+        await _execute(
+            client,
+            "update_project_hourly_rate",
+            {},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            (
+                "PUT",
+                "/project/hourlyRates/73",
+                {
+                    "id": 73,
+                    "project": {"id": 402000662},
+                    "fixedRate": 2310.16,
+                    "startDate": datetime.date.today().isoformat(),
+                    "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
+                    "showInProjectOrder": True,
+                },
+                None,
+            ),
+        )
 
     async def test_create_order_sets_ex_vat_mode_flag_and_project(self):
         client = FakeTripletexClient()
@@ -2722,6 +2826,34 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[-1][2]["postings"][0]["account"], {"id": 1})
         self.assertEqual(client.calls[-1][2]["postings"][1]["account"], {"id": 2})
 
+    async def test_create_voucher_normalizes_german_year_end_depreciation_to_requested_accounts(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext()
+        ctx.account_cache = {
+            1: {"id": 1, "number": 6010, "name": "Avskrivning"},
+            2: {"id": 2, "number": 1209, "name": "Akkumulert avskrivning"},
+            3: {"id": 3, "number": 1249, "name": "Akkumulert avskrivning inventar"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2025-12-31",
+                "description": "Jaehrliche Abschreibung 2025 - Inventar",
+                "postings": [
+                    {"account": {"id": 1}, "amountGross": 47550, "amountGrossCurrency": 47550},
+                    {"account": {"id": 3}, "amountGross": -47550, "amountGrossCurrency": -47550},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["account"], {"id": 1})
+        self.assertEqual(client.calls[-1][2]["postings"][1]["account"], {"id": 2})
+
     async def test_create_voucher_normalizes_year_end_prepaid_reversal_to_prompt_total(self):
         client = FakeTripletexClient()
         ctx = EntityContext(
@@ -2790,12 +2922,12 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[-1][2]["postings"][1]["amountGross"], -23750)
         self.assertEqual(client.calls[-1][2]["postings"][1]["amountGrossCurrency"], -23750)
 
-    async def test_create_voucher_keeps_german_year_end_prepaid_reversal_on_prompt_total(self):
+    async def test_create_voucher_normalizes_german_year_end_prepaid_reversal_to_prompt_total(self):
         client = FakeTripletexClient()
         ctx = EntityContext(
             prompt_text=(
                 "Fuehren Sie den vereinfachten Jahresabschluss fuer 2025 durch. "
-                "Loesen Sie vorausbezahlte Aufwendungen auf (insgesamt 45700 NOK auf Konto 1700). "
+                "Loesen Sie vorausbezahlte Aufwendungen auf (insgesamt 73050 NOK auf Konto 1700). "
                 "3) Berechnen und buchen Sie die Steuerrueckstellung."
             ),
         )
@@ -2809,10 +2941,10 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "create_voucher",
             {
                 "date": "2025-12-31",
-                "description": "Opplosning forskuddsbetalt kostnad 2025",
+                "description": "Aufloesung vorausbezahlte Aufwendungen 2025",
                 "postings": [
-                    {"account": {"id": 1}, "amountGross": 45700, "amountGrossCurrency": 45700},
-                    {"account": {"id": 2}, "amountGross": -45700, "amountGrossCurrency": -45700},
+                    {"account": {"id": 1}, "amountGross": 6087.5, "amountGrossCurrency": 6087.5},
+                    {"account": {"id": 2}, "amountGross": -6087.5, "amountGrossCurrency": -6087.5},
                 ],
             },
             endpoint_search=None,
@@ -2820,10 +2952,10 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["value"]["id"], 999)
-        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGross"], 45700)
-        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGrossCurrency"], 45700)
-        self.assertEqual(client.calls[-1][2]["postings"][1]["amountGross"], -45700)
-        self.assertEqual(client.calls[-1][2]["postings"][1]["amountGrossCurrency"], -45700)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGross"], 73050)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGrossCurrency"], 73050)
+        self.assertEqual(client.calls[-1][2]["postings"][1]["amountGross"], -73050)
+        self.assertEqual(client.calls[-1][2]["postings"][1]["amountGrossCurrency"], -73050)
 
     async def test_create_voucher_normalizes_year_end_tax_provision_to_prompt_accounts(self):
         client = FakeTripletexClient()
