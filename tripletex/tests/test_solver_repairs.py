@@ -161,6 +161,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Treat attached files as the source of truth", content)
         self.assertIn("109,00 means 109.00", content)
         self.assertIn("inspect the image first", content)
+        self.assertIn("contracts, and offer letters", content)
 
     def test_build_user_content_preserves_multimodal_attachment_order(self):
         request = SolveRequest(
@@ -298,6 +299,11 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("For Norwegian domestic travel locations such as Tromsø", prompt)
         self.assertIn("set `countryCode=NO`", prompt)
         self.assertIn("Do not blindly reuse the first `/travelExpense/rateCategory` result", prompt)
+
+    def test_system_prompt_includes_literal_contract_field_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("copy department, occupation code, salary, FTE, start date, birth date, and national identity number literally from the attachment", prompt)
 
 
 if __name__ == "__main__":

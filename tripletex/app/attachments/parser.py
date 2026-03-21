@@ -55,7 +55,7 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
     doc = fitz.open(stream=raw, filetype="pdf")
     text_parts = []
     page_count = len(doc)
-    prefer_image_first = False
+    prefer_image_first = page_count == 1
 
     for page in doc:
         text = page.get_text()
@@ -84,14 +84,15 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
         if prefer_image_first:
             header += (
                 "\n\n[Extracted text note]\n"
-                "This OCR text may miss separators or layout details on short receipts. "
-                "Verify exact amounts, dates, and merchant details against the attached page image."
+                "This OCR text may miss separators or layout details on single-page documents. "
+                "Verify exact amounts, dates, names, and structured fields against the attached page image."
             )
         text_block = {
             "type": "text",
             "text": header + "\n\n" + "\n---\n".join(text_parts),
         }
         if prefer_image_first and blocks:
+            logger.info(f"Using image-first PDF attachment ordering for {filename}")
             blocks.append(text_block)
         else:
             blocks.insert(0, text_block)

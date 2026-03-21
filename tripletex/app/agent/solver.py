@@ -311,7 +311,7 @@ def _build_user_content(request: SolveRequest) -> str | list[dict]:
             "Treat attached files as the source of truth for exact names, dates, invoice numbers, and amounts. "
             "Preserve European decimal separators when converting amounts: 109,00 means 109.00 and 51 312,50 means 51312.50. "
             "If extracted text conflicts with an attached image, trust the image. "
-            "For short receipt PDFs, inspect the image first because OCR may flatten decimal separators or layout."
+            "For single-page PDFs such as receipts, contracts, and offer letters, inspect the image first because OCR may flatten layout or structured fields."
         )
         text_parts.append(attachment_guidance)
         multimodal_blocks.append({"type": "text", "text": attachment_guidance})

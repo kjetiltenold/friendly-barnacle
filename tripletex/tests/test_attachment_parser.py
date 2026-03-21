@@ -75,8 +75,9 @@ class AttachmentParserTests(unittest.TestCase):
             blocks = _process_pdf(b"%PDF", "contract.pdf")
 
         self.assertEqual(len(blocks), 2)
-        self.assertEqual(blocks[0]["type"], "text")
-        self.assertEqual(blocks[1]["type"], "image")
+        self.assertEqual(blocks[0]["type"], "image")
+        self.assertEqual(blocks[1]["type"], "text")
+        self.assertIn("single-page documents", blocks[1]["text"])
 
     def test_process_pdf_skips_images_for_multi_page_long_text_document(self):
         long_text = "\n".join(
