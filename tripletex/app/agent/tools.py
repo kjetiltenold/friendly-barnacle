@@ -46,10 +46,13 @@ class EntityContext:
     """
 
     last_customer_id: int | None = None
+    last_sales_customer_id: int | None = None
+    last_supplier_id: int | None = None
     last_product_id: int | None = None
     product_ids: list[int] | None = None  # All product IDs created/found
     project_ids: list[int] | None = None
     activity_ids: list[int] | None = None
+    employee_ids: list[int] | None = None
     last_order_id: int | None = None
     last_employee_id: int | None = None
     last_employment_id: int | None = None
@@ -71,6 +74,8 @@ class EntityContext:
     last_account_id: int | None = None
     account_cache: dict[int, dict] | None = None
     vat_type_cache: dict | None = None  # Maps (percentage, direction_hint) -> vat_type_id
+    project_start_dates: dict[int, str] | None = None
+    timesheet_hours_by_day: dict[tuple[int, int, int, str], float] | None = None
     next_project_activity_pair_index: int = 0
 
     def __post_init__(self):
@@ -80,10 +85,16 @@ class EntityContext:
             self.project_ids = []
         if self.activity_ids is None:
             self.activity_ids = []
+        if self.employee_ids is None:
+            self.employee_ids = []
         if self.account_cache is None:
             self.account_cache = {}
+        if self.project_start_dates is None:
+            self.project_start_dates = {}
+        if self.timesheet_hours_by_day is None:
+            self.timesheet_hours_by_day = {}
 
-    def track(self, name: str, result: dict) -> None:
+    def track(self, name: str, result: dict, request_args: dict | None = None) -> None:
         """Extract and store the entity ID from a creation response."""
         value = result.get("value", {})
         entity_id = value.get("id")
@@ -107,7 +118,23 @@ class EntityContext:
         if attr:
             setattr(self, attr, entity_id)
             logger.info(f"EntityContext: {attr} = {entity_id}")
+        if name == "create_customer":
+            requested_is_customer = None
+            requested_is_supplier = None
+            if isinstance(request_args, dict):
+                requested_is_customer = request_args.get("isCustomer")
+                requested_is_supplier = request_args.get("isSupplier")
+            if requested_is_customer is True or (
+                requested_is_customer is None and value.get("isCustomer") is not False
+            ):
+                self.last_sales_customer_id = entity_id
+                logger.info(f"EntityContext: last_sales_customer_id = {entity_id}")
+            if requested_is_supplier is True or value.get("isSupplier") is True:
+                self.last_supplier_id = entity_id
+                logger.info(f"EntityContext: last_supplier_id = {entity_id}")
         if name == "create_employee":
+            if entity_id not in self.employee_ids:
+                self.employee_ids.append(entity_id)
             employments = value.get("employments") or []
             if employments and isinstance(employments[0], dict):
                 employment_id = employments[0].get("id")
@@ -140,8 +167,28 @@ class EntityContext:
             self.product_ids.append(entity_id)
         if name == "create_project" and entity_id not in self.project_ids:
             self.project_ids.append(entity_id)
+            start_date = value.get("startDate")
+            if isinstance(start_date, str):
+                self.project_start_dates[entity_id] = start_date
         if name == "create_activity" and entity_id not in self.activity_ids:
             self.activity_ids.append(entity_id)
+        if name == "create_timesheet_entry":
+            employee_id = _extract_reference_id(value.get("employee"))
+            project_id = _extract_reference_id(value.get("project"))
+            activity_id = _extract_reference_id(value.get("activity"))
+            entry_date = value.get("date")
+            hours = _coerce_number(value.get("hours"))
+            if (
+                employee_id is not None
+                and project_id is not None
+                and activity_id is not None
+                and isinstance(entry_date, str)
+            ):
+                key = (employee_id, project_id, activity_id, entry_date)
+                self.timesheet_hours_by_day[key] = round(
+                    self.timesheet_hours_by_day.get(key, 0.0) + hours,
+                    2,
+                )
         if name == "create_accounting_dimension_name":
             dimension_index = value.get("dimensionIndex")
             if dimension_index is not None:
@@ -194,6 +241,11 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         employee_id = employee.get("id")
         if employee_id is not None:
             ctx.last_employee_id = employee_id
+    elif path == "/project" or re.fullmatch(r"/project/\d+", path):
+        ctx.last_project_id = first_id
+        start_date = first.get("startDate")
+        if isinstance(start_date, str):
+            ctx.project_start_dates[first_id] = start_date
     elif path.startswith("/department"):
         ctx.last_department_id = first_id
     elif path.startswith("/ledger/vatType"):
@@ -704,6 +756,8 @@ def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
         if not part:
             continue
         normalized = replacements.get(part, part)
+        if not normalized:
+            continue
         if normalized in seen:
             continue
         seen.add(normalized)
@@ -723,6 +777,30 @@ def _extend_fields_filter(fields: str, extra_fields: list[str]) -> str:
     return ",".join(current)
 
 
+def _normalize_exclusive_date_range(path: str, params: dict) -> None:
+    """Adjust common inclusive end-date mistakes for exclusive-range Tripletex endpoints."""
+    if path != "/ledger/posting":
+        return
+    date_from_raw = params.get("dateFrom")
+    date_to_raw = params.get("dateTo")
+    if not isinstance(date_from_raw, str) or not isinstance(date_to_raw, str):
+        return
+    try:
+        date_from = datetime.date.fromisoformat(date_from_raw)
+        date_to = datetime.date.fromisoformat(date_to_raw)
+    except ValueError:
+        return
+    if date_from.day != 1:
+        return
+    next_month = (date_from.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    month_end = next_month - datetime.timedelta(days=1)
+    if date_to == month_end:
+        params["dateTo"] = next_month.isoformat()
+        logger.info(
+            f"Normalized {path} dateTo from inclusive month-end {date_to_raw} to exclusive {params['dateTo']}"
+        )
+
+
 def _has_meaningful_search_filters(params: dict) -> bool:
     """Treat unfiltered list requests as unsafe to avoid random matches."""
     for key, value in params.items():
@@ -732,6 +810,69 @@ def _has_meaningful_search_filters(params: dict) -> bool:
             continue
         return True
     return False
+
+
+def _preferred_customer_id(ctx: EntityContext | None) -> int | None:
+    if ctx is None:
+        return None
+    return ctx.last_sales_customer_id or ctx.last_customer_id
+
+
+def _preferred_supplier_id(ctx: EntityContext | None) -> int | None:
+    if ctx is None:
+        return None
+    return ctx.last_supplier_id or ctx.last_customer_id
+
+
+def _preferred_project_manager_id(ctx: EntityContext | None) -> int | None:
+    if ctx is None:
+        return None
+    if len(ctx.employee_ids or []) > 1:
+        return ctx.employee_ids[0]
+    return ctx.last_employee_id
+
+
+def _normalize_timesheet_date(
+    ctx: EntityContext | None,
+    employee_id: int | None,
+    project_id: int | None,
+    activity_id: int | None,
+    requested_date: str | None,
+    hours,
+) -> str | None:
+    if (
+        ctx is None
+        or employee_id is None
+        or project_id is None
+        or activity_id is None
+        or not isinstance(requested_date, str)
+    ):
+        return requested_date
+    try:
+        candidate = datetime.date.fromisoformat(requested_date)
+    except ValueError:
+        return requested_date
+    try:
+        requested_hours = float(hours)
+    except (TypeError, ValueError):
+        return requested_date
+    project_start_raw = ctx.project_start_dates.get(project_id)
+    if project_start_raw:
+        try:
+            project_start = datetime.date.fromisoformat(project_start_raw)
+            if candidate < project_start:
+                candidate = project_start
+        except ValueError:
+            pass
+    if requested_hours <= 0 or requested_hours > 24:
+        return candidate.isoformat()
+    for _ in range(366):
+        key = (employee_id, project_id, activity_id, candidate.isoformat())
+        used_hours = ctx.timesheet_hours_by_day.get(key, 0.0)
+        if used_hours + requested_hours <= 24.0:
+            return candidate.isoformat()
+        candidate += datetime.timedelta(days=1)
+    return requested_date
 
 
 def _generate_project_number() -> str:
@@ -937,7 +1078,7 @@ async def dispatch_tool(
         logger.info(f"Tool {name} args: {json.dumps(args, default=str, ensure_ascii=False)}")
         result = await _execute(client, name, args, endpoint_search=endpoint_search, ctx=ctx)
         if ctx is not None:
-            ctx.track(name, result)
+            ctx.track(name, result, args)
         # Log creation responses for scoring diagnostics
         if name.startswith("create_"):
             result_str = json.dumps(result, default=str, ensure_ascii=False)
@@ -1478,9 +1619,10 @@ async def _execute(
 
     if name == "create_order":
         # Auto-inject customer reference if model omitted it
-        if "customer" not in args and ctx and ctx.last_customer_id:
-            args["customer"] = {"id": ctx.last_customer_id}
-            logger.info(f"Auto-injected customer id={ctx.last_customer_id} into order")
+        preferred_customer_id = _preferred_customer_id(ctx)
+        if "customer" not in args and preferred_customer_id:
+            args["customer"] = {"id": preferred_customer_id}
+            logger.info(f"Auto-injected customer id={preferred_customer_id} into order")
         if "project" not in args and ctx and ctx.last_project_id:
             args["project"] = {"id": ctx.last_project_id}
             logger.info(f"Auto-injected project id={ctx.last_project_id} into order")
@@ -1540,17 +1682,19 @@ async def _execute(
 
     if name == "create_project":
         # Auto-inject projectManager if missing
-        if "projectManager" not in args and ctx and ctx.last_employee_id:
-            args["projectManager"] = {"id": ctx.last_employee_id}
-            logger.info(f"Auto-injected employee id={ctx.last_employee_id} as projectManager")
+        preferred_manager_id = _preferred_project_manager_id(ctx)
+        if "projectManager" not in args and preferred_manager_id:
+            args["projectManager"] = {"id": preferred_manager_id}
+            logger.info(f"Auto-injected employee id={preferred_manager_id} as projectManager")
         if "projectManager" not in args:
             project_manager_id = await _ensure_project_manager(client)
             if project_manager_id:
                 args["projectManager"] = {"id": project_manager_id}
                 logger.info(f"Auto-injected reusable project manager id={project_manager_id} into project")
-        if "customer" not in args and not args.get("isInternal") and ctx and ctx.last_customer_id:
-            args["customer"] = {"id": ctx.last_customer_id}
-            logger.info(f"Auto-injected customer id={ctx.last_customer_id} into project")
+        preferred_customer_id = _preferred_customer_id(ctx)
+        if "customer" not in args and not args.get("isInternal") and preferred_customer_id:
+            args["customer"] = {"id": preferred_customer_id}
+            logger.info(f"Auto-injected customer id={preferred_customer_id} into project")
         if "customer" not in args and "isInternal" not in args:
             args["isInternal"] = True
             logger.info("Auto-set isInternal=true for customerless project")
@@ -1770,6 +1914,20 @@ async def _execute(
         if "activity" not in args and ctx and ctx.last_activity_id:
             args["activity"] = {"id": ctx.last_activity_id}
             logger.info(f"Auto-injected activity id={ctx.last_activity_id} into timesheet entry")
+        employee_id = _extract_reference_id(args.get("employee"))
+        project_id = _extract_reference_id(args.get("project"))
+        activity_id = _extract_reference_id(args.get("activity"))
+        normalized_date = _normalize_timesheet_date(
+            ctx,
+            employee_id,
+            project_id,
+            activity_id,
+            args.get("date"),
+            args.get("hours"),
+        )
+        if normalized_date and normalized_date != args.get("date"):
+            args["date"] = normalized_date
+            logger.info(f"Normalized timesheet entry date to {normalized_date}")
         return await client.post("/timesheet/entry", json=args)
 
     if name == "update_project_hourly_rate":
@@ -1995,7 +2153,8 @@ async def _execute(
         if ctx:
             values = result.get("values", [])
             if values:
-                first_id = values[0].get("id")
+                first = values[0]
+                first_id = first.get("id")
                 attr_map = {
                     "employee": "last_employee_id",
                     "customer": "last_customer_id",
@@ -2007,6 +2166,13 @@ async def _execute(
                 if attr and first_id:
                     setattr(ctx, attr, first_id)
                     logger.info(f"EntityContext from search: {attr} = {first_id}")
+                if entity_type == "customer" and first_id:
+                    if first.get("isCustomer") is not False:
+                        ctx.last_sales_customer_id = first_id
+                        logger.info(f"EntityContext from search: last_sales_customer_id = {first_id}")
+                    if first.get("isSupplier") is True:
+                        ctx.last_supplier_id = first_id
+                        logger.info(f"EntityContext from search: last_supplier_id = {first_id}")
         return result
 
     if name == "get_entity":
@@ -2095,8 +2261,9 @@ async def _execute(
                 if k not in params:
                     params[k] = v[0]  # parse_qs returns lists; take first value
             logger.info(f"Extracted query params from path: {list(embedded.keys())}")
+        _normalize_exclusive_date_range(path, params)
         if path.startswith("/ledger/vatType") and isinstance(params.get("fields"), str):
-            rewritten_fields = _rewrite_fields_filter(params["fields"], {"rate": "percentage"})
+            rewritten_fields = _rewrite_fields_filter(params["fields"], {"rate": "percentage", "direction": ""})
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized vatType fields filter to {rewritten_fields}")

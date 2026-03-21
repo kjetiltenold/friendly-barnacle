@@ -440,6 +440,35 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[2][0:2], ("POST", "/project"))
         self.assertEqual(client.calls[2][2]["projectManager"], {"id": 901})
 
+    async def test_create_project_prefers_sales_customer_and_first_employee(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext()
+        ctx.track(
+            "create_customer",
+            {"value": {"id": 108293203, "name": "Brattli AS", "isCustomer": True, "isSupplier": False}},
+            {"isCustomer": True},
+        )
+        ctx.track(
+            "create_customer",
+            {"value": {"id": 108336989, "name": "Lysgard AS", "isCustomer": True, "isSupplier": True}},
+            {"isCustomer": False, "isSupplier": True},
+        )
+        ctx.track("create_employee", {"value": {"id": 18596035}}, {"email": "hilde.degard@example.org"})
+        ctx.track("create_employee", {"value": {"id": 18596063}}, {"email": "lars.johansen@example.org"})
+
+        await _execute(
+            client,
+            "create_project",
+            {"name": "Dataplattform Brattli", "number": "DPB-2026-001", "startDate": "2026-03-21"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/project"))
+        self.assertEqual(body["customer"], {"id": 108293203})
+        self.assertEqual(body["projectManager"], {"id": 18596035})
+
     async def test_create_department_reuses_existing_by_name(self):
         client = FakeTripletexClient(
             get_responses={
@@ -772,6 +801,35 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             }),
         )
 
+    async def test_create_timesheet_entry_shifts_pre_start_dates_forward(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_employee_id=18596063,
+            last_project_id=402000777,
+            last_activity_id=5136255,
+            project_start_dates={402000777: "2026-03-21"},
+            timesheet_hours_by_day={(18596063, 402000777, 5136255, "2026-03-21"): 24.0},
+        )
+
+        await _execute(
+            client,
+            "create_timesheet_entry",
+            {"date": "2026-03-20", "hours": 24},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            ("POST", "/timesheet/entry", {
+                "date": "2026-03-22",
+                "hours": 24,
+                "employee": {"id": 18596063},
+                "project": {"id": 402000777},
+                "activity": {"id": 5136255},
+            }),
+        )
+
     async def test_create_order_sets_ex_vat_mode_flag_and_project(self):
         client = FakeTripletexClient()
 
@@ -868,7 +926,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         result = await _execute(
             client,
             "tripletex_api_call",
-            {"method": "GET", "path": "/ledger/vatType?fields=id,name,rate"},
+            {"method": "GET", "path": "/ledger/vatType?fields=id,name,rate,direction"},
             endpoint_search=None,
             ctx=EntityContext(),
         )
@@ -941,6 +999,37 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [("GET", "/supplierInvoice", {"fields": "*", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
+        )
+
+    async def test_tripletex_api_call_normalizes_ledger_posting_month_end_date_to_exclusive(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/posting",
+                    (
+                        ("dateFrom", "2026-03-01"),
+                        ("dateTo", "2026-04-01"),
+                        ("fields", "amount"),
+                    ),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [{"amount": 3500}, {"amount": -3500}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/ledger/posting?dateFrom=2026-03-01&dateTo=2026-03-31&fields=amount"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["fullResultSize"], 2)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/ledger/posting", {"dateFrom": "2026-03-01", "dateTo": "2026-04-01", "fields": "amount"})],
         )
 
     async def test_tripletex_api_call_does_not_inject_invoice_dates_on_payment_type(self):

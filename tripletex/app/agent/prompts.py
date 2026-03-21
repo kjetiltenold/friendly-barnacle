@@ -180,6 +180,8 @@ Recipes:
   8. Create product, create order with the project reference, and invoice the order
 - timesheet/entry requires activity. Never send activity as null.
 - If hours exceed 24 for one date, split them across multiple entries.
+- When a project has a known startDate, never place time entries before that date. Continue forward from the project start.
+- If the task creates both a customer and a supplier, still send the real customer explicitly on create_project and create_order.
 - There is no valid /project/{{id}}/:invoice endpoint here. Use the normal order->invoice flow.
 
 12. Reverse or cancel payment
@@ -306,6 +308,7 @@ Error prevention:
 - Never call POST or PUT through tripletex_api_call without a body, unless it is an action endpoint such as /:payment, /:createCreditNote, /:invoice, or /:reverse that only uses query params.
 - Invoice searches require invoiceDateFrom and invoiceDateTo.
 - Supplier invoice searches require invoiceDateFrom and invoiceDateTo.
+- /ledger/posting uses an exclusive dateTo. For a full March 2026 check, use dateFrom=2026-03-01 and dateTo=2026-04-01, not 2026-03-31.
 - If a bank statement attachment is present, do not ignore it in favor of generic Tripletex list endpoints.
 - Voucher postings must balance.
 - Use account IDs from lookups, never raw account numbers inside posting.account.id.
