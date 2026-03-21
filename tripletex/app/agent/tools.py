@@ -937,10 +937,13 @@ def _extract_prompt_year_end_prepaid_amount(ctx: EntityContext | None, account_n
             return None
     amount_pattern = r"(\d[\d\s.,]*)"
     account_pattern = re.escape(str(account_number))
+    total_pattern = r"(?:total|totalt|totale?n?|insgesamt|summe|summa)"
+    location_pattern = r"(?:na|no|on|i|in|au|sur|pa|på|auf)"
+    account_word_pattern = r"(?:conta|konto|account|compte)"
     patterns = (
-        rf"total\s+{amount_pattern}\s*(?:nok|kr)?\s+(?:na|no|on|i|in|au|sur)\s+(?:conta|konto|account|compte)\s+{account_pattern}\b",
-        rf"{account_pattern}\b.*?\btotal\s+{amount_pattern}\s*(?:nok|kr)?",
-        rf"{account_pattern}\b.*?{amount_pattern}\s*(?:nok|kr)?",
+        rf"{total_pattern}\s+{amount_pattern}\s*(?:nok|kr)\b[^.\n)]{{0,80}}?(?:{location_pattern})\s+(?:{account_word_pattern})\s+{account_pattern}\b",
+        rf"{account_pattern}\b[^.\n)]{{0,80}}?\b{total_pattern}\s+{amount_pattern}\s*(?:nok|kr)\b",
+        rf"{account_pattern}\b[^.\n)]{{0,80}}?{amount_pattern}\s*(?:nok|kr)\b",
     )
     for pattern in patterns:
         match = re.search(pattern, raw_text, re.IGNORECASE)
@@ -950,6 +953,25 @@ def _extract_prompt_year_end_prepaid_amount(ctx: EntityContext | None, account_n
         if amount is not None:
             return round(amount, 2)
     return None
+
+
+def _extract_prompt_tax_provision_accounts(ctx: EntityContext | None) -> tuple[str, str] | None:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    text = str(raw_text).lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    match = re.search(
+        r"(?:tax\s+provision|skattekostnad|skatteavsetning|steuerruckstellung|steuerrueckstellung|"
+        r"steuer(?:ruckstellung|rueckstellung)|provision\s+d[' ]impot|provision\s+fiscale|provisao\s+fiscal)"
+        r"[^.\n]{0,200}?(?:konto|conta|compte|account)\s*(\d{4})\s*/\s*(\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1), match.group(2)
 
 
 def _normalize_year_end_prepaid_reversal_postings(
@@ -999,6 +1021,59 @@ def _normalize_year_end_prepaid_reversal_postings(
         target_amount,
         current_amount,
     )
+
+
+def _normalize_year_end_tax_provision_postings(
+    postings: list[dict] | None,
+    description: str | None,
+    ctx: EntityContext | None,
+) -> None:
+    if ctx is None or not isinstance(postings, list) or len(postings) != 2:
+        return
+    prompt_accounts = _extract_prompt_tax_provision_accounts(ctx)
+    if prompt_accounts is None:
+        return
+    normalized_description = _normalize_prompt_text(description)
+    if not any(
+        token in normalized_description
+        for token in (
+            "taxprovision",
+            "skattekostnad",
+            "skatteavsetning",
+            "steuerruckstellung",
+            "steuerrueckstellung",
+            "provisiondimpot",
+            "provisionfiscale",
+            "provisaofiscal",
+        )
+    ):
+        return
+    debit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    credit_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(debit_postings) != 1 or len(credit_postings) != 1:
+        return
+    debit_number, credit_number = prompt_accounts
+    preferred_debit = _find_cached_account_by_number(ctx, debit_number)
+    preferred_credit = _find_cached_account_by_number(ctx, credit_number)
+    if preferred_debit is None or preferred_credit is None:
+        return
+    debit_posting = debit_postings[0]
+    credit_posting = credit_postings[0]
+    current_debit_account = _get_cached_account(ctx, debit_posting) or {}
+    current_credit_account = _get_cached_account(ctx, credit_posting) or {}
+    changed = False
+    if str(current_debit_account.get("number") or "") != debit_number:
+        debit_posting["account"] = {"id": preferred_debit["id"]}
+        changed = True
+    if str(current_credit_account.get("number") or "") != credit_number:
+        credit_posting["account"] = {"id": preferred_credit["id"]}
+        changed = True
+    if changed:
+        logger.info(
+            "Normalized year-end tax provision postings to accounts %s/%s from prompt",
+            debit_number,
+            credit_number,
+        )
 
 
 def _normalize_month_end_closing_pair_postings(
@@ -1086,6 +1161,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
         return None
     _normalize_year_end_depreciation_postings(args["postings"], args.get("description"), ctx)
     _normalize_year_end_prepaid_reversal_postings(args["postings"], args.get("description"), ctx)
+    _normalize_year_end_tax_provision_postings(args["postings"], args.get("description"), ctx)
     _normalize_month_end_closing_pair_postings(args["postings"], args.get("description"), ctx)
     is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
     for i, posting in enumerate(args["postings"]):
