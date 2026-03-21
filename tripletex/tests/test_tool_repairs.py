@@ -478,6 +478,17 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.last_employee_id, 42)
         self.assertEqual(ctx.last_employment_id, 2813136)
 
+    def test_entity_context_tracks_linked_activity_from_project_activity_create(self):
+        ctx = EntityContext(last_activity_id=5173580, last_project_id=402000662)
+
+        ctx.track(
+            "create_project_activity",
+            {"value": {"id": 19801646, "project": {"id": 402000662}, "activity": {"id": 5877567}}},
+        )
+
+        self.assertEqual(ctx.last_project_id, 402000662)
+        self.assertEqual(ctx.last_activity_id, 5877567)
+
     async def test_create_employment_details_upserts_department_and_standard_time(self):
         client = FakeTripletexClient(
             get_responses={
@@ -732,6 +743,33 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 ("POST", "/project/projectActivity", {"project": {"id": 101}, "activity": {"id": 201}}),
                 ("POST", "/project/projectActivity", {"project": {"id": 102}, "activity": {"id": 202}}),
             ],
+        )
+
+    async def test_create_timesheet_entry_uses_linked_project_activity_context(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(last_employee_id=18609430, last_project_id=402000662, last_activity_id=5173580)
+        ctx.track(
+            "create_project_activity",
+            {"value": {"id": 19801646, "project": {"id": 402000662}, "activity": {"id": 5877567}}},
+        )
+
+        await _execute(
+            client,
+            "create_timesheet_entry",
+            {"date": "2026-03-21", "hours": 24},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            ("POST", "/timesheet/entry", {
+                "date": "2026-03-21",
+                "hours": 24,
+                "employee": {"id": 18609430},
+                "project": {"id": 402000662},
+                "activity": {"id": 5877567},
+            }),
         )
 
     async def test_create_order_sets_ex_vat_mode_flag_and_project(self):

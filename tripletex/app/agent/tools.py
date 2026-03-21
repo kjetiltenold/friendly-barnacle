@@ -124,6 +124,17 @@ class EntityContext:
             employee_id = employee.get("id")
             if employee_id is not None:
                 self.last_employee_id = employee_id
+        if name == "create_project_activity":
+            activity = value.get("activity") or {}
+            activity_id = activity.get("id")
+            if activity_id is not None:
+                self.last_activity_id = activity_id
+                logger.info(f"EntityContext: last_activity_id = {activity_id}")
+            project = value.get("project") or {}
+            project_id = project.get("id")
+            if project_id is not None:
+                self.last_project_id = project_id
+                logger.info(f"EntityContext: last_project_id = {project_id}")
         # Track all product IDs for multi-product orders
         if name == "create_product" and entity_id not in self.product_ids:
             self.product_ids.append(entity_id)
