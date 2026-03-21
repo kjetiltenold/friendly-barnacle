@@ -194,6 +194,7 @@ Recipes:
 - When a project has a known startDate, never place time entries before that date. Continue forward from the project start.
 - If the task creates both a customer and a supplier, still send the real customer explicitly on create_project and create_order.
 - A project budget is not the same as a fixed-price project. Only set isFixedPrice/fixedprice when the prompt explicitly says fixed price, fastpris, prix fixe, or equivalent wording.
+- If the prompt gives a project budget, carry that amount on create_project_activity as budgetFeeCurrency when you link the activity to the project.
 - If the prompt gives a project budget and asks you to invoice after recording hours, use the budget to derive the project hourly rate when needed. Do not silently convert the project into fixed price just because a budget amount is present.
 - There is no valid /project/{{id}}/:invoice endpoint here. Use the normal order->invoice flow.
 
@@ -227,6 +228,7 @@ Recipes:
 - When you look up ledger accounts for vouchers, request fields including vatType, vatLocked, and requiresDepartment.
 - Expense posting should include account, amountGross, amountGrossCurrency, and vatType only when the account is not locked to no-VAT handling.
 - Accounts payable posting should include account, amountGross, amountGrossCurrency, and supplier.
+- Keep the supplier reference on the accounts-payable line only, not on the expense or VAT lines.
 - For NOK transactions, amountGrossCurrency must match amountGross.
 - Use a VAT type that is valid for the chosen ledger account and for incoming VAT.
 - If a supplier invoice is attached as PDF or image, preserve the literal supplier name, organization number, invoice number, invoice date, and line description from the attachment. Do not translate the invoice text into another language before posting.

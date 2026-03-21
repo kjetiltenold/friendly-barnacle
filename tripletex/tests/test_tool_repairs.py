@@ -1156,6 +1156,35 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_create_project_activity_injects_budget_fee_from_budget_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_project_id=402008098,
+            last_activity_id=5892874,
+            prompt_text="Prosjektet har budsjett 361050 kr og skal fakturerast etter timar.",
+        )
+
+        await _execute(
+            client,
+            "create_project_activity",
+            {},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            (
+                "POST",
+                "/project/projectActivity",
+                {
+                    "project": {"id": 402008098},
+                    "activity": {"id": 5892874},
+                    "budgetFeeCurrency": 361050.0,
+                },
+            ),
+        )
+
     async def test_create_timesheet_entry_uses_linked_project_activity_context(self):
         client = FakeTripletexClient()
         ctx = EntityContext(last_employee_id=18609430, last_project_id=402000662, last_activity_id=5173580)
@@ -1581,7 +1610,21 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_tripletex_api_call_injects_invoice_date_for_order_invoice_action(self):
-        client = FakeTripletexClient()
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("count", 5),
+                        ("fields", "id,number,name,isBankAccount,bankAccountNumber"),
+                        ("isBankAccount", "true"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 1920, "number": 1920, "name": "Bank", "isBankAccount": True}],
+                }
+            }
+        )
 
         result = await _execute(
             client,
@@ -1595,6 +1638,27 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [
+                (
+                    "GET",
+                    "/ledger/account",
+                    {
+                        "fields": "id,number,name,isBankAccount,bankAccountNumber",
+                        "isBankAccount": "true",
+                        "count": 5,
+                    },
+                ),
+                (
+                    "PUT",
+                    "/ledger/account/1920",
+                    {
+                        "id": 1920,
+                        "number": 1920,
+                        "name": "Bank",
+                        "isBankAccount": True,
+                        "bankAccountNumber": "12345678903",
+                    },
+                    None,
+                ),
                 (
                     "PUT",
                     "/order/402003015/:invoice",
@@ -2215,6 +2279,71 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voucher_postings[1]["amountGross"], 14080.0)
         self.assertEqual(voucher_postings[1]["department"], {"id": 730036})
         self.assertEqual(voucher_postings[2]["amountGross"], -70400)
+
+    async def test_create_voucher_keeps_supplier_reference_only_on_payables_line(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "2710"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 30, "number": 2710, "name": "Inngaaende mva"}],
+                }
+            }
+        )
+        ctx = EntityContext(last_department_id=933349)
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6790,
+                "name": "Annen fremmed tjeneste",
+                "vatType": {"id": 1},
+                "legalVatTypes": [{"id": 1}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+        ctx.vat_type_cache = {(25.0, "incoming"): 1}
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Leverandorkostnad prosjekt",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 23500,
+                        "amountGrossCurrency": 23500,
+                        "vatType": {"id": 1},
+                        "supplier": {"id": 108353437},
+                        "project": {"id": 402008098},
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -23500,
+                        "amountGrossCurrency": -23500,
+                        "supplier": {"id": 108353437},
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        voucher_postings = client.calls[-1][2]["postings"]
+        self.assertNotIn("supplier", voucher_postings[0])
+        self.assertNotIn("supplier", voucher_postings[1])
+        self.assertEqual(voucher_postings[2]["supplier"], {"id": 108353437})
 
     async def test_create_voucher_normalizes_cloud_supplier_invoice_account_from_6340_to_6420(self):
         client = FakeTripletexClient(

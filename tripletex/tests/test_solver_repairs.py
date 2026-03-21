@@ -225,6 +225,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         prompt = get_system_prompt("2026-03-21")
 
         self.assertIn("A project budget is not the same as a fixed-price project", prompt)
+        self.assertIn("budgetFeeCurrency", prompt)
         self.assertIn("typically 7.5 or 8 hours per day, not 24-hour days", prompt)
 
     def test_system_prompt_includes_supplier_invoice_attachment_and_software_account_guidance(self):
@@ -232,6 +233,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("preserve the literal supplier name, organization number, invoice number, invoice date, and line description", prompt)
         self.assertIn("Prefer account `6420`", prompt)
+        self.assertIn("supplier reference on the accounts-payable line only", prompt)
 
 
 if __name__ == "__main__":

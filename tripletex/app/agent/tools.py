@@ -531,6 +531,9 @@ BASE_TOOL_DEFINITIONS = [
         "properties": {
             "project": {"type": "object", "description": "{\"id\": project_id}"},
             "activity": {"type": "object", "description": "{\"id\": activity_id}"},
+            "budgetHours": {"type": "number"},
+            "budgetHourlyRateCurrency": {"type": "number"},
+            "budgetFeeCurrency": {"type": "number"},
         },
         "required": ["project", "activity"],
     }),
@@ -1043,6 +1046,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
             ):
                 posting["department"] = {"id": ctx.last_department_id}
                 logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+    _normalize_supplier_invoice_posting_references(args["postings"], ctx)
     await _normalize_supplier_invoice_software_account(client, args["postings"], ctx, args.get("description"))
     _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
     await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
@@ -1298,6 +1302,45 @@ def _prompt_describes_budget_not_fixed_price(ctx: EntityContext | None) -> bool:
     return any(token in normalized for token in budget_tokens) and not any(
         token in normalized for token in fixed_price_tokens
     )
+
+
+def _extract_prompt_budget_amount(ctx: EntityContext | None) -> float | None:
+    if not _prompt_describes_budget_not_fixed_price(ctx):
+        return None
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    normalized_text = unicodedata.normalize("NFKD", raw_text.lower())
+    normalized_text = "".join(ch for ch in normalized_text if not unicodedata.combining(ch))
+    match = re.search(
+        r"(?:budget|budsjett|orcamento|presupuesto)\D{0,25}([0-9][0-9\s\u00a0.,']*)",
+        normalized_text,
+    )
+    if not match:
+        return None
+    token = match.group(1).strip()
+    if not token:
+        return None
+    token = token.replace("\u00a0", "").replace(" ", "").replace("'", "")
+    if token.count(",") and token.count("."):
+        last_comma = token.rfind(",")
+        last_dot = token.rfind(".")
+        decimal_separator = "," if last_comma > last_dot else "."
+        thousands_separator = "." if decimal_separator == "," else ","
+        token = token.replace(thousands_separator, "")
+        if decimal_separator == ",":
+            token = token.replace(",", ".")
+    elif token.count(",") == 1 and token.count(".") == 0:
+        left, right = token.split(",", 1)
+        token = f"{left}.{right}" if len(right) <= 2 else f"{left}{right}"
+    elif token.count(".") > 1:
+        token = token.replace(".", "")
+    elif token.count(".") == 1:
+        left, right = token.split(".", 1)
+        if len(right) > 2:
+            token = f"{left}{right}"
+    amount = _coerce_number(token)
+    return amount if amount > 0 else None
 
 
 def _generate_project_number() -> str:
@@ -1563,6 +1606,33 @@ def _normalize_simple_supplier_invoice_amounts(postings: list[dict] | None, ctx:
         f"Normalized supplier invoice expense posting from net {expense_amount} to gross {payable_amount} based on accounts payable amount"
     )
     return True
+
+
+def _normalize_supplier_invoice_posting_references(postings: list[dict] | None, ctx: EntityContext | None) -> bool:
+    if not isinstance(postings, list):
+        return False
+    payable_candidates = []
+    for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+        if _coerce_number(posting.get("amountGross")) >= 0:
+            continue
+        account = _get_cached_account(ctx, posting) or {}
+        if "supplier" in posting or str(account.get("number")) == "2400":
+            payable_candidates.append(posting)
+    if len(payable_candidates) != 1:
+        return False
+    payable_posting = payable_candidates[0]
+    removed = 0
+    for posting in postings:
+        if not isinstance(posting, dict) or posting is payable_posting:
+            continue
+        if posting.pop("supplier", None) is not None:
+            removed += 1
+    if removed:
+        logger.info(f"Removed supplier reference from {removed} non-payables supplier-invoice posting(s)")
+        return True
+    return False
 
 
 def _find_cached_vat_percentage(ctx: EntityContext | None, vat_type_id: int | None, direction: str | None = None) -> float | None:
@@ -2703,6 +2773,15 @@ async def _execute(
         if "activity" not in args and ctx and ctx.last_activity_id:
             args["activity"] = {"id": ctx.last_activity_id}
             logger.info(f"Auto-injected activity id={ctx.last_activity_id} into project activity")
+        if (
+            args.get("budgetFeeCurrency") in (None, "")
+            and args.get("budgetHours") in (None, "")
+            and args.get("budgetHourlyRateCurrency") in (None, "")
+        ):
+            budget_amount = _extract_prompt_budget_amount(ctx)
+            if budget_amount is not None:
+                args["budgetFeeCurrency"] = round(budget_amount, 2)
+                logger.info(f"Auto-injected budgetFeeCurrency={args['budgetFeeCurrency']} into project activity from prompt budget")
         return await client.post("/project/projectActivity", json=args)
 
     if name == "create_timesheet_entry":
@@ -3268,6 +3347,8 @@ async def _execute(
             if "invoiceDate" not in params:
                 params["invoiceDate"] = datetime.date.today().isoformat()
                 logger.info(f"Auto-injected invoiceDate={params['invoiceDate']} for order invoice action")
+            await _ensure_bank_account(client)
+            logger.info("Preflighted bank account before order invoice action")
         # Fix row numbering in voucher postings — row 0 is reserved by Tripletex
         if body and "postings" in body and isinstance(body["postings"], list):
             for i, posting in enumerate(body["postings"]):
