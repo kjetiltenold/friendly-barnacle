@@ -139,6 +139,35 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
         tid = _new_id()
         return {"value": {"id": tid, "title": args.get("title", ""), "employee": args.get("employee")}}
 
+    if name == "create_per_diem_compensation":
+        return {"value": {"id": _new_id(), "travelExpense": args.get("travelExpense")}}
+
+    if name == "create_travel_cost":
+        return {"value": {"id": _new_id(), "travelExpense": args.get("travelExpense")}}
+
+    if name == "create_project_activity":
+        return {"value": {"id": _new_id(), "project": args.get("project"), "activity": args.get("activity")}}
+
+    if name == "create_timesheet_entry":
+        return {"value": {"id": _new_id(), "hours": args.get("hours", 0)}}
+
+    if name == "update_project_hourly_rate":
+        return {"value": {"id": args.get("hourly_rate_id", _new_id()), "fixedRate": args.get("fixedRate", 0)}}
+
+    if name == "create_accounting_dimension_name":
+        did = _new_id()
+        return {"value": {"id": did, "dimensionName": args.get("dimensionName", ""), "dimensionIndex": 1}}
+
+    if name == "create_accounting_dimension_value":
+        vid = _new_id()
+        return {"value": {"id": vid, "displayName": args.get("displayName", ""), "dimensionIndex": args.get("dimensionIndex", 1)}}
+
+    if name == "create_voucher":
+        return {"value": {"id": _new_id(), "date": args.get("date", ""), "number": 1}}
+
+    if name == "create_salary_transaction":
+        return {"value": {"id": _new_id()}}
+
     if name == "search_entity":
         etype = args.get("entity_type", "")
         if etype == "employee":
@@ -195,6 +224,14 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
             return FAKE_COST_CATEGORIES
         if "hourlyRates" in path and method == "GET":
             return FAKE_HOURLY_RATES
+        if "accountingDimensionName" in path and method == "POST":
+            did = _new_id()
+            body = args.get("body", {})
+            return {"value": {"id": did, "dimensionName": body.get("dimensionName", ""), "dimensionIndex": 1}}
+        if "accountingDimensionValue" in path and method == "POST":
+            vid = _new_id()
+            body = args.get("body", {})
+            return {"value": {"id": vid, "displayName": body.get("displayName", ""), "dimensionIndex": body.get("dimensionIndex", 1)}}
         if "/ledger/account" in path:
             # Try to match account number from query params
             import re
@@ -205,14 +242,6 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
                     return {"fullResultSize": 1, "values": [FAKE_ACCOUNTS[num]]}
             # Return all accounts
             return {"fullResultSize": len(FAKE_ACCOUNTS), "values": list(FAKE_ACCOUNTS.values())}
-        if "accountingDimensionName" in path and method == "POST":
-            did = _new_id()
-            body = args.get("body", {})
-            return {"value": {"id": did, "dimensionName": body.get("dimensionName", ""), "dimensionIndex": 1}}
-        if "accountingDimensionValue" in path and method == "POST":
-            vid = _new_id()
-            body = args.get("body", {})
-            return {"value": {"id": vid, "displayName": body.get("displayName", ""), "dimensionIndex": body.get("dimensionIndex", 1)}}
         if "/ledger/voucher" in path and method == "POST":
             vid = _new_id()
             return {"value": {"id": vid, "date": args.get("body", {}).get("date", ""), "number": 1}}
