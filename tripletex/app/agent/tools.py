@@ -52,6 +52,8 @@ class EntityContext:
     activity_ids: list[int] | None = None
     last_order_id: int | None = None
     last_employee_id: int | None = None
+    last_employment_id: int | None = None
+    last_employment_details_id: int | None = None
     last_project_id: int | None = None
     last_invoice_id: int | None = None
     last_travel_expense_id: int | None = None
@@ -63,6 +65,7 @@ class EntityContext:
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
     last_department_id: int | None = None
+    last_standard_time_id: int | None = None
     next_project_activity_pair_index: int = 0
 
     def __post_init__(self):
@@ -84,16 +87,35 @@ class EntityContext:
             "create_product": "last_product_id",
             "create_order": "last_order_id",
             "create_employee": "last_employee_id",
+            "create_employment_details": "last_employment_details_id",
             "create_project": "last_project_id",
             "create_activity": "last_activity_id",
             "create_invoice": "last_invoice_id",
             "create_travel_expense": "last_travel_expense_id",
             "create_department": "last_department_id",
+            "create_standard_time": "last_standard_time_id",
         }
         attr = mapping.get(name)
         if attr:
             setattr(self, attr, entity_id)
             logger.info(f"EntityContext: {attr} = {entity_id}")
+        if name == "create_employee":
+            employments = value.get("employments") or []
+            if employments and isinstance(employments[0], dict):
+                employment_id = employments[0].get("id")
+                if employment_id is not None:
+                    self.last_employment_id = employment_id
+                    logger.info(f"EntityContext: last_employment_id = {employment_id}")
+        if name == "create_employment_details":
+            employment = value.get("employment") or {}
+            employment_id = employment.get("id")
+            if employment_id is not None:
+                self.last_employment_id = employment_id
+        if name == "create_standard_time":
+            employee = value.get("employee") or {}
+            employee_id = employee.get("id")
+            if employee_id is not None:
+                self.last_employee_id = employee_id
         # Track all product IDs for multi-product orders
         if name == "create_product" and entity_id not in self.product_ids:
             self.product_ids.append(entity_id)
@@ -114,9 +136,9 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
     if ctx is None:
         return
     values = result.get("values", [])
-    if not values:
+    first = values[0] if values else result.get("value")
+    if not isinstance(first, dict):
         return
-    first = values[0]
     first_id = first.get("id")
     if first_id is None:
         return
@@ -131,6 +153,28 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         ctx.last_payment_type_id = first_id
     elif path.startswith("/project/hourlyRates"):
         ctx.last_hourly_rate_id = first_id
+    elif path.startswith("/employee/employment/details"):
+        ctx.last_employment_details_id = first_id
+        employment = first.get("employment") or {}
+        employment_id = employment.get("id")
+        if employment_id is not None:
+            ctx.last_employment_id = employment_id
+        employee = employment.get("employee") or {}
+        employee_id = employee.get("id")
+        if employee_id is not None:
+            ctx.last_employee_id = employee_id
+    elif path == "/employee/employment" or re.fullmatch(r"/employee/employment/\d+", path):
+        ctx.last_employment_id = first_id
+        employee = first.get("employee") or {}
+        employee_id = employee.get("id")
+        if employee_id is not None:
+            ctx.last_employee_id = employee_id
+    elif path.startswith("/employee/standardTime"):
+        ctx.last_standard_time_id = first_id
+        employee = first.get("employee") or {}
+        employee_id = employee.get("id")
+        if employee_id is not None:
+            ctx.last_employee_id = employee_id
     elif path.startswith("/department"):
         ctx.last_department_id = first_id
 
@@ -155,6 +199,7 @@ BASE_TOOL_DEFINITIONS = [
             "lastName": {"type": "string"},
             "email": {"type": "string"},
             "dateOfBirth": {"type": "string", "description": "YYYY-MM-DD"},
+            "department": {"type": "object", "description": "{\"id\": department_id}"},
             "phoneNumberMobileCountryCode": {"type": "string", "description": "Country code, e.g. +47"},
             "phoneNumberMobile": {"type": "string"},
             "userType": {"type": "string", "enum": ["STANDARD", "EXTENDED", "NO_ACCESS"], "description": "User access level. Defaults to STANDARD. Use EXTENDED for admin roles."},
@@ -280,6 +325,46 @@ BASE_TOOL_DEFINITIONS = [
             "departmentNumber": {"type": "string"},
         },
         "required": ["name"],
+    }),
+    _tool("create_employment_details", "Create or update employment details for an employment. Use this for annual salary, employment percentage, and working-hours scheme. If hoursPerDay is included, the executor will also update employee/standardTime.", {
+        "type": "object",
+        "properties": {
+            "employment": {"type": "object", "description": "{\"id\": employment_id}"},
+            "employmentId": {"type": "integer"},
+            "employee": {"type": "object", "description": "Optional employee reference used for department and standard-time updates."},
+            "employeeId": {"type": "integer"},
+            "date": {"type": "string", "description": "Effective date YYYY-MM-DD"},
+            "fromDate": {"type": "string", "description": "Alias for date"},
+            "annualSalary": {"type": "number"},
+            "salary": {"type": "number", "description": "Alias for annualSalary"},
+            "percentageOfFullTimeEquivalent": {"type": "number"},
+            "employmentPercentage": {"type": "number", "description": "Alias for percentageOfFullTimeEquivalent"},
+            "remunerationType": {"type": "string", "enum": ["MONTHLY_WAGE", "HOURLY_WAGE", "COMMISION_PERCENTAGE", "FEE", "NOT_CHOSEN", "PIECEWORK_WAGE"]},
+            "employmentType": {"type": "string", "enum": ["ORDINARY", "MARITIME", "FREELANCE", "NOT_CHOSEN"]},
+            "employmentForm": {"type": "string", "enum": ["PERMANENT", "TEMPORARY", "PERMANENT_AND_HIRED_OUT", "TEMPORARY_AND_HIRED_OUT", "TEMPORARY_ON_CALL", "NOT_CHOSEN"]},
+            "workingHoursScheme": {"type": "string", "enum": ["NOT_SHIFT", "ROUND_THE_CLOCK", "SHIFT_365", "OFFSHORE_336", "CONTINUOUS", "OTHER_SHIFT", "NOT_CHOSEN"]},
+            "workingHoursSchemeId": {"type": "integer", "description": "Optional ID from GET /employee/employment/workingHoursScheme; executor resolves it to the enum value."},
+            "hoursPerDay": {"type": "number", "description": "Convenience alias. Applied through employee/standardTime, not employment/details."},
+            "hoursPerWeek": {"type": "number", "description": "Convenience alias. Converted to hoursPerDay by dividing by 5."},
+            "department": {"type": "object", "description": "Convenience alias. Applied to employee.department, not employment/details."},
+            "departmentId": {"type": "integer", "description": "Convenience alias for department.id"},
+            "hourlyWage": {"type": "number"},
+            "shiftDurationHours": {"type": "number"},
+            "occupationCode": {"type": "object", "description": "{\"id\": occupation_code_id}"},
+            "payrollTaxMunicipalityId": {"type": "object", "description": "{\"id\": municipality_id}"},
+        },
+    }),
+    _tool("create_standard_time", "Create or update employee standard working time. Use this for hoursPerDay.", {
+        "type": "object",
+        "properties": {
+            "employee": {"type": "object", "description": "{\"id\": employee_id}"},
+            "employeeId": {"type": "integer"},
+            "fromDate": {"type": "string", "description": "Effective date YYYY-MM-DD"},
+            "date": {"type": "string", "description": "Alias for fromDate"},
+            "startDate": {"type": "string", "description": "Alias for fromDate"},
+            "hoursPerDay": {"type": "number"},
+            "hoursPerWeek": {"type": "number", "description": "Converted to hoursPerDay by dividing by 5."},
+        },
     }),
     _tool("create_travel_expense", "Create a travel expense report in Tripletex.", {
         "type": "object",
@@ -602,6 +687,28 @@ def _is_duplicate_error(exc: Exception, *needles: str) -> bool:
     return any(needle.lower() in message for needle in needles)
 
 
+def _extract_reference_id(value) -> int | None:
+    if isinstance(value, dict):
+        value = value.get("id")
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+WORKING_HOURS_SCHEME_VALUES = {
+    "NOT_SHIFT",
+    "ROUND_THE_CLOCK",
+    "SHIFT_365",
+    "OFFSHORE_336",
+    "CONTINUOUS",
+    "OTHER_SHIFT",
+    "NOT_CHOSEN",
+}
+
+
 async def dispatch_tool(
     client: TripletexClient,
     name: str,
@@ -660,6 +767,146 @@ async def _ensure_project_manager(client: TripletexClient) -> int | None:
     except Exception as e:
         logger.warning(f"Failed to find reusable project manager: {e}")
     return None
+
+
+async def _resolve_employment_id(client: TripletexClient, args: dict, ctx: EntityContext | None) -> int | None:
+    employment_id = _extract_reference_id(args.get("employment"))
+    if employment_id is None:
+        employment_id = _extract_reference_id(args.get("employmentId"))
+    if employment_id is not None:
+        return employment_id
+    if ctx and ctx.last_employment_id:
+        return ctx.last_employment_id
+    employee_id = _extract_reference_id(args.get("employee"))
+    if employee_id is None:
+        employee_id = _extract_reference_id(args.get("employeeId"))
+    if employee_id is None and ctx and ctx.last_employee_id:
+        employee_id = ctx.last_employee_id
+    if employee_id is None:
+        return None
+    try:
+        result = await client.get("/employee/employment", params={
+            "employeeId": employee_id,
+            "fields": "id,startDate",
+            "count": 20,
+        })
+        values = result.get("values", [])
+        if not values:
+            return None
+        target_date = args.get("date") or args.get("fromDate") or args.get("startDate")
+        if target_date:
+            for employment in values:
+                if employment.get("startDate") == target_date and employment.get("id") is not None:
+                    return employment["id"]
+        return values[0].get("id")
+    except Exception as e:
+        logger.warning(f"Failed to resolve employment ID from employee: {e}")
+        return None
+
+
+async def _resolve_employee_id(
+    client: TripletexClient,
+    args: dict,
+    ctx: EntityContext | None,
+    employment_id: int | None = None,
+) -> int | None:
+    employee_id = _extract_reference_id(args.get("employee"))
+    if employee_id is None:
+        employee_id = _extract_reference_id(args.get("employeeId"))
+    if employee_id is not None:
+        return employee_id
+    if ctx and ctx.last_employee_id:
+        return ctx.last_employee_id
+    if employment_id is None:
+        employment_id = _extract_reference_id(args.get("employment"))
+    if employment_id is None:
+        employment_id = _extract_reference_id(args.get("employmentId"))
+    if employment_id is None and ctx and ctx.last_employment_id:
+        employment_id = ctx.last_employment_id
+    if employment_id is None:
+        return None
+    try:
+        result = await client.get(f"/employee/employment/{employment_id}")
+        employee = (result.get("value") or {}).get("employee") or {}
+        return _extract_reference_id(employee)
+    except Exception as e:
+        logger.warning(f"Failed to resolve employee ID from employment {employment_id}: {e}")
+        return None
+
+
+async def _resolve_working_hours_scheme(client: TripletexClient, scheme_value) -> str | None:
+    if isinstance(scheme_value, dict):
+        if scheme_value.get("workingHoursScheme") in WORKING_HOURS_SCHEME_VALUES:
+            return scheme_value["workingHoursScheme"]
+        scheme_value = scheme_value.get("id")
+    if scheme_value in (None, ""):
+        return None
+    if isinstance(scheme_value, str):
+        normalized = scheme_value.strip().upper()
+        if normalized in WORKING_HOURS_SCHEME_VALUES:
+            return normalized
+        if normalized.isdigit():
+            scheme_value = int(normalized)
+        else:
+            try:
+                result = await client.get("/employee/employment/workingHoursScheme", params={
+                    "fields": "id,workingHoursScheme,nameNO,code",
+                    "count": 50,
+                })
+                values = result.get("values", [])
+                for item in values:
+                    candidates = {
+                        str(item.get("workingHoursScheme", "")).strip().upper(),
+                        str(item.get("nameNO", "")).strip().upper(),
+                        str(item.get("code", "")).strip().upper(),
+                    }
+                    if normalized in candidates:
+                        return item.get("workingHoursScheme")
+            except Exception as e:
+                logger.warning(f"Failed to resolve working-hours scheme {scheme_value}: {e}")
+            return None
+    try:
+        scheme_id = int(scheme_value)
+    except (TypeError, ValueError):
+        return None
+    try:
+        result = await client.get("/employee/employment/workingHoursScheme", params={
+            "id": str(scheme_id),
+            "fields": "id,workingHoursScheme,nameNO,code",
+            "count": 1,
+        })
+        values = result.get("values", [])
+        if values:
+            return values[0].get("workingHoursScheme")
+    except Exception as e:
+        logger.warning(f"Failed to resolve working-hours scheme ID {scheme_id}: {e}")
+    return None
+
+
+async def _upsert_standard_time(
+    client: TripletexClient,
+    employee_id: int,
+    from_date: str,
+    hours_per_day: float,
+) -> dict:
+    payload = {
+        "employee": {"id": employee_id},
+        "fromDate": from_date,
+        "hoursPerDay": hours_per_day,
+    }
+    try:
+        result = await client.get("/employee/standardTime", params={
+            "employeeId": employee_id,
+            "fields": "id,fromDate,hoursPerDay",
+            "count": 100,
+        })
+        for standard_time in result.get("values", []):
+            if standard_time.get("fromDate") == from_date and standard_time.get("id") is not None:
+                standard_time_id = standard_time["id"]
+                return await client.put(f"/employee/standardTime/{standard_time_id}", json={"id": standard_time_id, **payload})
+    except Exception as e:
+        logger.warning(f"Failed to look up existing standard time for employee {employee_id}: {e}")
+    return await client.post("/employee/standardTime", json=payload)
 
 
 async def _list_postings_by_date(client: TripletexClient, date_from: str, date_to: str) -> list[dict]:
@@ -760,6 +1007,9 @@ async def _execute(
     if name == "create_employee":
         if "userType" not in args:
             args["userType"] = "STANDARD"
+        if "department" not in args and ctx and ctx.last_department_id:
+            args["department"] = {"id": ctx.last_department_id}
+            logger.info(f"Auto-injected department id={ctx.last_department_id} into employee")
         # Move startDate into an employments array if provided
         start_date = args.pop("startDate", None)
         if start_date and "employments" not in args:
@@ -773,11 +1023,19 @@ async def _execute(
         # Search first if email given — avoids 422 error on conflict
         if email:
             try:
-                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email,department"})
                 values = result.get("values", [])
                 if values:
                     employee = values[0]
                     employee_id = employee["id"]
+                    requested_department_id = _extract_reference_id(args.get("department"))
+                    current_department_id = _extract_reference_id(employee.get("department"))
+                    if requested_department_id and requested_department_id != current_department_id:
+                        logger.info(f"Updating existing employee id={employee_id} with department id={requested_department_id}")
+                        return await client.put(
+                            f"/employee/{employee_id}",
+                            json={"id": employee_id, "department": {"id": requested_department_id}},
+                        )
                     logger.info(f"Reusing existing employee id={employee_id} for email {email}")
                     return {"value": employee}
             except Exception:
@@ -786,16 +1044,16 @@ async def _execute(
             return await client.post("/employee", json=args)
         except Exception as e:
             # Auto-inject department if required
-            if "department" in str(e) and "department" not in args:
+            if "department" in str(e).lower() and "department" not in args:
                 logger.info("Employee requires department — auto-finding/creating one")
-                dept_id = await _ensure_department(client)
+                dept_id = ctx.last_department_id if ctx and ctx.last_department_id else await _ensure_department(client)
                 if dept_id:
                     args["department"] = {"id": dept_id}
                     try:
                         return await client.post("/employee", json=args)
                     except Exception as retry_error:
                         if email and _is_duplicate_error(retry_error, "bruker med denne e-postadressen", "already exists"):
-                            result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                            result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email,department"})
                             values = result.get("values", [])
                             if values:
                                 employee = values[0]
@@ -803,7 +1061,7 @@ async def _execute(
                                 return {"value": employee}
                         raise
             if email and _is_duplicate_error(e, "bruker med denne e-postadressen", "already exists"):
-                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email"})
+                result = await client.get("/employee", params={"email": email, "fields": "id,firstName,lastName,email,department"})
                 values = result.get("values", [])
                 if values:
                     employee = values[0]
@@ -812,8 +1070,18 @@ async def _execute(
             raise
 
     if name == "update_employee":
-        eid = args["employee_id"]
-        fields = args["fields"]
+        eid = args.get("employee_id")
+        if eid is None and ctx and ctx.last_employee_id:
+            eid = ctx.last_employee_id
+            logger.info(f"Auto-injected employee id={eid} into update_employee")
+        if eid is None:
+            raise ValueError("update_employee requires employee_id")
+        fields = dict(args.get("fields") or {})
+        if "department" not in fields and ctx and ctx.last_department_id:
+            fields["department"] = {"id": ctx.last_department_id}
+            logger.info(f"Auto-injected department id={ctx.last_department_id} into update_employee")
+        if not fields:
+            raise ValueError("update_employee requires fields or usable context such as last_department_id")
         return await client.put(f"/employee/{eid}", json={"id": eid, **fields})
 
     if name == "create_customer":
@@ -1026,6 +1294,100 @@ async def _execute(
             except Exception:
                 pass
         return await client.post("/department", json=args)
+
+    if name == "create_employment_details":
+        employment_id = await _resolve_employment_id(client, args, ctx)
+        if employment_id is None:
+            raise ValueError("create_employment_details requires employment/employmentId, or a prior employee/employment in context")
+        employee_id = await _resolve_employee_id(client, args, ctx, employment_id=employment_id)
+        department_id = _extract_reference_id(args.get("department"))
+        if department_id is None:
+            department_id = _extract_reference_id(args.get("departmentId"))
+        if department_id is None and ctx and ctx.last_department_id:
+            department_id = ctx.last_department_id
+        if employee_id is not None and department_id is not None:
+            await client.put(
+                f"/employee/{employee_id}",
+                json={"id": employee_id, "department": {"id": department_id}},
+            )
+            logger.info(f"Updated employee id={employee_id} to department id={department_id}")
+        effective_date = args.get("date") or args.get("fromDate") or args.get("startDate") or datetime.date.today().isoformat()
+        annual_salary = args.get("annualSalary")
+        if annual_salary is None:
+            annual_salary = args.get("salary")
+        if annual_salary is not None:
+            annual_salary = _coerce_number(annual_salary)
+        percentage = args.get("percentageOfFullTimeEquivalent")
+        if percentage is None:
+            percentage = args.get("employmentPercentage")
+        if percentage is not None:
+            percentage = _coerce_number(percentage)
+        hourly_wage = args.get("hourlyWage")
+        if hourly_wage is not None:
+            hourly_wage = _coerce_number(hourly_wage)
+        remuneration_type = args.get("remunerationType")
+        if remuneration_type is None:
+            if hourly_wage not in (None, 0):
+                remuneration_type = "HOURLY_WAGE"
+            elif annual_salary not in (None, 0):
+                remuneration_type = "MONTHLY_WAGE"
+        working_hours_scheme = await _resolve_working_hours_scheme(client, args.get("workingHoursScheme"))
+        if working_hours_scheme is None:
+            working_hours_scheme = await _resolve_working_hours_scheme(client, args.get("workingHoursSchemeId"))
+        if working_hours_scheme is None:
+            working_hours_scheme = "NOT_SHIFT"
+        payload = _compact_dict({
+            "employment": {"id": employment_id},
+            "date": effective_date,
+            "employmentType": args.get("employmentType"),
+            "employmentForm": args.get("employmentForm"),
+            "remunerationType": remuneration_type,
+            "workingHoursScheme": working_hours_scheme,
+            "shiftDurationHours": args.get("shiftDurationHours"),
+            "occupationCode": args.get("occupationCode"),
+            "percentageOfFullTimeEquivalent": percentage,
+            "annualSalary": annual_salary,
+            "hourlyWage": hourly_wage,
+            "payrollTaxMunicipalityId": args.get("payrollTaxMunicipalityId"),
+        })
+        try:
+            result = await client.get("/employee/employment/details", params={
+                "employmentId": str(employment_id),
+                "fields": "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme",
+                "count": 100,
+            })
+            for details in result.get("values", []):
+                if details.get("date") == effective_date and details.get("id") is not None:
+                    details_id = details["id"]
+                    result = await client.put(f"/employee/employment/details/{details_id}", json={"id": details_id, **payload})
+                    break
+            else:
+                result = await client.post("/employee/employment/details", json=payload)
+        except Exception:
+            result = await client.post("/employee/employment/details", json=payload)
+        hours_per_day = args.get("hoursPerDay")
+        if hours_per_day in (None, "") and args.get("hoursPerWeek") not in (None, ""):
+            hours_per_day = _coerce_number(args["hoursPerWeek"]) / 5
+        elif hours_per_day not in (None, ""):
+            hours_per_day = _coerce_number(hours_per_day)
+        if employee_id is not None and hours_per_day not in (None, ""):
+            await _upsert_standard_time(client, employee_id, effective_date, hours_per_day)
+            logger.info(f"Updated employee id={employee_id} standard time to {hours_per_day} hours/day from {effective_date}")
+        return result
+
+    if name == "create_standard_time":
+        employee_id = await _resolve_employee_id(client, args, ctx)
+        if employee_id is None:
+            raise ValueError("create_standard_time requires employee/employeeId, or a prior employee in context")
+        from_date = args.get("fromDate") or args.get("date") or args.get("startDate") or datetime.date.today().isoformat()
+        hours_per_day = args.get("hoursPerDay")
+        if hours_per_day in (None, "") and args.get("hoursPerWeek") not in (None, ""):
+            hours_per_day = _coerce_number(args["hoursPerWeek"]) / 5
+        elif hours_per_day not in (None, ""):
+            hours_per_day = _coerce_number(hours_per_day)
+        if hours_per_day in (None, ""):
+            raise ValueError("create_standard_time requires hoursPerDay or hoursPerWeek")
+        return await _upsert_standard_time(client, employee_id, from_date, hours_per_day)
 
     if name == "create_travel_expense":
         # Auto-inject employee if missing
@@ -1309,6 +1671,44 @@ async def _execute(
                 params["productNumber"] = number_value
                 params.pop("number", None)
                 logger.info(f"Normalized product lookup number -> productNumber for value {number_value}")
+        if method == "POST" and path == "/employee/employment/details" and not body:
+            translated_args = {}
+            for source_key, target_key in {
+                "employmentId": "employmentId",
+                "employeeId": "employeeId",
+                "fromDate": "fromDate",
+                "date": "date",
+                "salary": "salary",
+                "annualSalary": "annualSalary",
+                "employmentPercentage": "employmentPercentage",
+                "percentageOfFullTimeEquivalent": "percentageOfFullTimeEquivalent",
+                "hoursPerDay": "hoursPerDay",
+                "hoursPerWeek": "hoursPerWeek",
+                "departmentId": "departmentId",
+                "workingHoursSchemeId": "workingHoursSchemeId",
+                "workingHoursScheme": "workingHoursScheme",
+                "remunerationType": "remunerationType",
+                "employmentType": "employmentType",
+                "employmentForm": "employmentForm",
+            }.items():
+                if source_key in params:
+                    translated_args[target_key] = params[source_key]
+            logger.info("Normalized raw /employee/employment/details POST into create_employment_details")
+            return await _execute(client, "create_employment_details", translated_args, endpoint_search, ctx)
+        if method == "POST" and path == "/employee/standardTime" and not body:
+            translated_args = {}
+            for source_key, target_key in {
+                "employeeId": "employeeId",
+                "fromDate": "fromDate",
+                "date": "date",
+                "startDate": "startDate",
+                "hoursPerDay": "hoursPerDay",
+                "hoursPerWeek": "hoursPerWeek",
+            }.items():
+                if source_key in params:
+                    translated_args[target_key] = params[source_key]
+            logger.info("Normalized raw /employee/standardTime POST into create_standard_time")
+            return await _execute(client, "create_standard_time", translated_args, endpoint_search, ctx)
         # Auto-inject required date range for invoice LIST searches only (not by-ID lookups)
         is_invoice_list = method == "GET" and "/invoice" in path and "/:payment" not in path
         # Skip if path has a numeric ID (e.g. /invoice/2147493584)

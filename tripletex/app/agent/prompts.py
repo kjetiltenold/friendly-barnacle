@@ -21,7 +21,7 @@ Critical rules:
 1. Plan before acting. Decide the task type and the full call sequence first.
 2. Make at least one API call for every task. Never reply with only DONE before acting.
 3. Reuse IDs directly from previous tool responses. Do not search for entities you just created.
-4. Prefer dedicated tools: create_employee, create_customer, create_product, create_order, create_invoice, create_project, create_activity, create_travel_expense, create_per_diem_compensation, create_travel_cost, create_project_activity, create_timesheet_entry, update_project_hourly_rate, create_accounting_dimension_name, create_accounting_dimension_value, create_voucher, create_salary_transaction, find_top_expense_account_increases.
+4. Prefer dedicated tools: create_employee, update_employee, create_department, create_employment_details, create_standard_time, create_customer, create_product, create_order, create_invoice, create_project, create_activity, create_travel_expense, create_per_diem_compensation, create_travel_cost, create_project_activity, create_timesheet_entry, update_project_hourly_rate, create_accounting_dimension_name, create_accounting_dimension_value, create_voucher, create_salary_transaction, find_top_expense_account_increases.
 5. Use tripletex_api_call only for operations that still have no dedicated tool, such as payments, credit notes, VAT lookups, account lookups, and other GET or action endpoints.
 6. Do not call /company. It is unavailable in this environment. Bank-account setup for invoicing is handled automatically by the executor.
 7. Do not run broad list searches. search_entity must include a real identifying filter. If you already know an email, organization number, or product number, call the matching create tool directly because the tool searches first and reuses existing records when possible.
@@ -36,7 +36,7 @@ Data extraction:
 - Parse amounts as numbers, not strings.
 - Detect supplier intent in all languages. Supplier means create_customer with isSupplier=true and isCustomer=false.
 - Detect VAT percentages from the prompt and map them to vatType.
-- Department or avdeling means a real Tripletex department on posting.department, not a free accounting dimension.
+- Department or avdeling means a real Tripletex department. For employees use employee.department. For vouchers use posting.department. Do not treat it as a free accounting dimension.
 
 Response formats:
 - POST and PUT usually return {{"value": {{...}}}}.
@@ -50,8 +50,17 @@ Recipes:
 1. Create employee
 - Use create_employee directly.
 - If you know an email, still use create_employee. The tool searches first by email and reuses the existing employee when it already exists.
-- Common fields: firstName, lastName, email, dateOfBirth, phoneNumberMobileCountryCode, phoneNumberMobile, userType, startDate.
+- Common fields: firstName, lastName, email, dateOfBirth, department, phoneNumberMobileCountryCode, phoneNumberMobile, userType, startDate.
 - For admin-like users, set userType to EXTENDED.
+- If the task specifies a department, create_department first when needed and pass department: {{"id": department_id}} to create_employee. If the employee already exists and needs the right department, use update_employee with fields.department.
+- For full onboarding or offer-letter tasks:
+  1. create_department if needed
+  2. create_employee with department and startDate
+  3. create_employment_details with employment, date, annualSalary, percentageOfFullTimeEquivalent, and workingHoursScheme
+  4. create_standard_time with employee, fromDate, and hoursPerDay
+- Annual salary and FTE belong on employee/employment/details.
+- Standard working hours belong on employee/standardTime, not employee/employment/details.
+- workingHoursScheme is the enum value such as NOT_SHIFT, not a numeric ID.
 
 2. Create customer or supplier
 - Use create_customer directly.

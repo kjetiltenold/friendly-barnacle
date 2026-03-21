@@ -45,7 +45,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             get_responses={
                 (
                     "/employee",
-                    (("email", "mia@example.org"), ("fields", "id,firstName,lastName,email")),
+                    (("email", "mia@example.org"), ("fields", "id,firstName,lastName,email,department")),
                 ): {"fullResultSize": 1, "values": [{"id": 42, "email": "mia@example.org"}]}
             }
         )
@@ -66,7 +66,80 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 42)
         self.assertEqual(
             client.calls,
-            [("GET", "/employee", {"email": "mia@example.org", "fields": "id,firstName,lastName,email"})],
+            [("GET", "/employee", {"email": "mia@example.org", "fields": "id,firstName,lastName,email,department"})],
+        )
+
+    async def test_create_employee_uses_context_department(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_employee",
+            {
+                "firstName": "Lars",
+                "lastName": "Strand",
+                "email": "lars.strand@example.com",
+                "dateOfBirth": "1982-08-04",
+                "startDate": "2026-06-24",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(last_department_id=926884),
+        )
+
+        self.assertEqual(client.calls[0][0:2], ("GET", "/employee"))
+        self.assertEqual(client.calls[1][0:2], ("POST", "/employee"))
+        self.assertEqual(client.calls[1][2]["department"], {"id": 926884})
+
+    async def test_create_employee_updates_existing_department_when_requested(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee",
+                    (("email", "lars.strand@example.com"), ("fields", "id,firstName,lastName,email,department")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 42, "email": "lars.strand@example.com", "department": {"id": 709031}}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_employee",
+            {
+                "firstName": "Lars",
+                "lastName": "Strand",
+                "email": "lars.strand@example.com",
+                "department": {"id": 926884},
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["department"], {"id": 926884})
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/employee", {"email": "lars.strand@example.com", "fields": "id,firstName,lastName,email,department"}),
+                ("PUT", "/employee/42", {"id": 42, "department": {"id": 926884}}, None),
+            ],
+        )
+
+    async def test_update_employee_uses_context_department_when_fields_missing(self):
+        client = FakeTripletexClient()
+
+        result = await _execute(
+            client,
+            "update_employee",
+            {"employee_id": 42},
+            endpoint_search=None,
+            ctx=EntityContext(last_department_id=926884),
+        )
+
+        self.assertEqual(result["value"]["department"], {"id": 926884})
+        self.assertEqual(
+            client.calls,
+            [("PUT", "/employee/42", {"id": 42, "department": {"id": 926884}}, None)],
         )
 
     async def test_create_customer_reuses_existing_customer_when_flags_match(self):
@@ -283,6 +356,116 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
             [("GET", "/department", {"name": "Salg", "fields": "id,name", "count": 10})],
         )
+
+    def test_entity_context_tracks_employment_from_employee_create(self):
+        ctx = EntityContext()
+
+        ctx.track(
+            "create_employee",
+            {"value": {"id": 42, "employments": [{"id": 2813136, "startDate": "2026-06-24"}]}},
+        )
+
+        self.assertEqual(ctx.last_employee_id, 42)
+        self.assertEqual(ctx.last_employment_id, 2813136)
+
+    async def test_create_employment_details_upserts_department_and_standard_time(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/workingHoursScheme",
+                    (("count", 1), ("fields", "id,workingHoursScheme,nameNO,code"), ("id", "50")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 50, "workingHoursScheme": "NOT_SHIFT", "nameNO": "Ikke skift", "code": "NS"}],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2813136"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/standardTime",
+                    (("count", 100), ("employeeId", 18618852), ("fields", "id,fromDate,hoursPerDay")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employmentId": 2813136,
+                "employeeId": 18618852,
+                "fromDate": "2026-06-24",
+                "salary": 800000,
+                "employmentPercentage": 100,
+                "hoursPerDay": 7.5,
+                "departmentId": 926884,
+                "workingHoursSchemeId": 50,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["employment"], {"id": 2813136})
+        self.assertEqual(
+            client.calls,
+            [
+                ("PUT", "/employee/18618852", {"id": 18618852, "department": {"id": 926884}}, None),
+                ("GET", "/employee/employment/workingHoursScheme", {"id": "50", "fields": "id,workingHoursScheme,nameNO,code", "count": 1}),
+                ("GET", "/employee/employment/details", {"employmentId": "2813136", "fields": "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme", "count": 100}),
+                ("POST", "/employee/employment/details", {
+                    "employment": {"id": 2813136},
+                    "date": "2026-06-24",
+                    "remunerationType": "MONTHLY_WAGE",
+                    "workingHoursScheme": "NOT_SHIFT",
+                    "percentageOfFullTimeEquivalent": 100.0,
+                    "annualSalary": 800000.0,
+                }),
+                ("GET", "/employee/standardTime", {"employeeId": 18618852, "fields": "id,fromDate,hoursPerDay", "count": 100}),
+                ("POST", "/employee/standardTime", {
+                    "employee": {"id": 18618852},
+                    "fromDate": "2026-06-24",
+                    "hoursPerDay": 7.5,
+                }),
+            ],
+        )
+
+    async def test_tripletex_api_call_normalizes_raw_employment_details_post(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/workingHoursScheme",
+                    (("count", 1), ("fields", "id,workingHoursScheme,nameNO,code"), ("id", "50")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 50, "workingHoursScheme": "NOT_SHIFT", "nameNO": "Ikke skift", "code": "NS"}],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2813136"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/standardTime",
+                    (("count", 100), ("employeeId", 18618852), ("fields", "id,fromDate,hoursPerDay")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "POST",
+                "path": "/employee/employment/details?employmentId=2813136&employeeId=18618852&fromDate=2026-06-24&salary=800000&employmentPercentage=100&hoursPerDay=7.5&departmentId=926884&workingHoursSchemeId=50",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls[0], ("PUT", "/employee/18618852", {"id": 18618852, "department": {"id": 926884}}, None))
+        self.assertEqual(client.calls[3][0:2], ("POST", "/employee/employment/details"))
+        self.assertEqual(client.calls[3][2]["workingHoursScheme"], "NOT_SHIFT")
+        self.assertEqual(client.calls[5][0:2], ("POST", "/employee/standardTime"))
 
     async def test_create_activity_reuses_existing_by_name(self):
         client = FakeTripletexClient(
