@@ -184,6 +184,12 @@ def _build_fake_response(name: str, args: dict, _legacy_id: int) -> dict:
     if name == "create_salary_transaction":
         return {"value": {"id": _new_id()}}
 
+    if name == "delete_travel_expense":
+        return {}
+
+    if name == "reverse_voucher":
+        return {"value": {"id": args.get("voucher_id"), "reversed": True}}
+
     if name == "find_top_expense_account_increases":
         return {
             "periodA": {"from": args.get("period_a_from"), "to": args.get("period_a_to")},

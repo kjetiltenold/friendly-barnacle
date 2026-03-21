@@ -816,5 +816,126 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         }), client.calls)
 
 
+    async def test_delete_travel_expense_by_email(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee",
+                    (("count", 1), ("email", "charles@example.org"), ("fields", "id")),
+                ): {"fullResultSize": 1, "values": [{"id": 42}]},
+                (
+                    "/travelExpense",
+                    (("count", 100), ("employeeId", 42), ("fields", "id,title")),
+                ): {"fullResultSize": 1, "values": [{"id": 777, "title": "Client visit"}]},
+            }
+        )
+
+        await _execute(
+            client,
+            "delete_travel_expense",
+            {"employee_email": "charles@example.org"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls[-1], ("DELETE", "/travelExpense/777"))
+
+    async def test_delete_travel_expense_by_id(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "delete_travel_expense",
+            {"travel_expense_id": 888},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls, [("DELETE", "/travelExpense/888")])
+
+    async def test_reverse_voucher(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "reverse_voucher",
+            {"voucher_id": 555, "date": "2026-03-21"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [("PUT", "/ledger/voucher/555/:reverse", None, {"date": "2026-03-21"})],
+        )
+
+    async def test_create_voucher_rejects_unbalanced_postings(self):
+        client = FakeTripletexClient()
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Unbalanced voucher",
+                "postings": [
+                    {"account": {"id": 100}, "amountGross": 5000},
+                    {"account": {"id": 200}, "amountGross": -3000},
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("do not balance", result["error"])
+        # No API call should have been made
+        self.assertEqual(client.calls, [])
+
+    async def test_create_voucher_accepts_balanced_postings(self):
+        client = FakeTripletexClient()
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Balanced voucher",
+                "postings": [
+                    {"account": {"id": 100}, "amountGross": 5000},
+                    {"account": {"id": 200}, "amountGross": -5000},
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(client.calls[0][0:2], ("POST", "/ledger/voucher"))
+
+    def test_entity_context_tracks_voucher_id(self):
+        ctx = EntityContext()
+        ctx.track("create_voucher", {"value": {"id": 12345}})
+        self.assertEqual(ctx.last_voucher_id, 12345)
+
+    def test_vat_type_cache_populated_from_lookup(self):
+        from app.agent.tools import _track_lookup_context
+
+        ctx = EntityContext()
+        _track_lookup_context(ctx, "/ledger/vatType", {
+            "values": [
+                {"id": 3, "percentage": 25, "name": "Utgående mva høy sats"},
+                {"id": 50, "percentage": 25, "name": "Inngående mva høy sats"},
+                {"id": 5, "percentage": 15, "name": "Utgående mva middels sats"},
+            ],
+        })
+
+        self.assertEqual(ctx.last_vat_type_id, 3)
+        self.assertIsNotNone(ctx.vat_type_cache)
+        self.assertEqual(ctx.vat_type_cache[(25, "outgoing")], 3)
+        self.assertEqual(ctx.vat_type_cache[(25, "incoming")], 50)
+        self.assertEqual(ctx.vat_type_cache[(15, "outgoing")], 5)
+
+
 if __name__ == "__main__":
     unittest.main()

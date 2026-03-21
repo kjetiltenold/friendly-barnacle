@@ -66,6 +66,10 @@ class EntityContext:
     last_dimension_value_id: int | None = None
     last_department_id: int | None = None
     last_standard_time_id: int | None = None
+    last_voucher_id: int | None = None
+    last_vat_type_id: int | None = None
+    last_account_id: int | None = None
+    vat_type_cache: dict | None = None  # Maps (percentage, direction_hint) -> vat_type_id
     next_project_activity_pair_index: int = 0
 
     def __post_init__(self):
@@ -94,6 +98,7 @@ class EntityContext:
             "create_travel_expense": "last_travel_expense_id",
             "create_department": "last_department_id",
             "create_standard_time": "last_standard_time_id",
+            "create_voucher": "last_voucher_id",
         }
         attr = mapping.get(name)
         if attr:
@@ -177,6 +182,21 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
             ctx.last_employee_id = employee_id
     elif path.startswith("/department"):
         ctx.last_department_id = first_id
+    elif path.startswith("/ledger/vatType"):
+        ctx.last_vat_type_id = first_id
+        # Cache all VAT types from the response for auto-selection
+        if values and ctx.vat_type_cache is None:
+            ctx.vat_type_cache = {}
+        if values:
+            for vt in values:
+                vt_id = vt.get("id")
+                pct = vt.get("percentage")
+                name_lower = str(vt.get("name", "")).lower()
+                if vt_id is not None and pct is not None:
+                    direction = "incoming" if "inng" in name_lower or "incoming" in name_lower else "outgoing"
+                    ctx.vat_type_cache[(pct, direction)] = vt_id
+    elif path.startswith("/ledger/account"):
+        ctx.last_account_id = first_id
 
 
 def _tool(name: str, description: str, parameters: dict) -> dict:
@@ -592,6 +612,21 @@ BASE_TOOL_DEFINITIONS.extend([
             "top_n": {"type": "integer", "default": 3},
         },
         "required": ["period_a_from", "period_a_to", "period_b_from", "period_b_to"],
+    }),
+    _tool("delete_travel_expense", "Delete a travel expense report. Searches by employee email if travel_expense_id is not given.", {
+        "type": "object",
+        "properties": {
+            "travel_expense_id": {"type": "integer", "description": "ID of the travel expense to delete. If omitted, the tool searches by employee_email."},
+            "employee_email": {"type": "string", "description": "Employee email to find travel expenses for deletion."},
+        },
+    }),
+    _tool("reverse_voucher", "Reverse a voucher in the ledger. Creates a reversal entry on the given date.", {
+        "type": "object",
+        "properties": {
+            "voucher_id": {"type": "integer", "description": "ID of the voucher to reverse."},
+            "date": {"type": "string", "description": "Reversal date YYYY-MM-DD"},
+        },
+        "required": ["voucher_id", "date"],
     }),
 ])
 
@@ -1582,6 +1617,12 @@ async def _execute(
                     ):
                         posting["department"] = {"id": ctx.last_department_id}
                         logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
+            # Pre-validate that postings balance before sending
+            total = sum(
+                p.get("amountGross", 0) for p in args["postings"] if isinstance(p, dict)
+            )
+            if abs(total) > 0.01:
+                return {"error": f"Voucher postings do not balance. Net total: {total}. Debit (positive) and credit (negative) amounts must sum to zero. Adjust the posting amounts and retry."}
         try:
             return await client.post("/ledger/voucher", json=args)
         except Exception as e:
@@ -1710,6 +1751,38 @@ async def _execute(
 
     if name == "delete_entity":
         return await client.delete(f"/{args['entity_type']}/{args['entity_id']}")
+
+    if name == "delete_travel_expense":
+        te_id = args.get("travel_expense_id")
+        if te_id is None and ctx and ctx.last_travel_expense_id:
+            te_id = ctx.last_travel_expense_id
+        if te_id is None:
+            # Search by employee email
+            email = args.get("employee_email")
+            if not email:
+                raise ValueError("delete_travel_expense requires travel_expense_id or employee_email")
+            # Find the employee first
+            emp_result = await client.get("/employee", params={"email": email, "fields": "id", "count": 1})
+            emp_values = emp_result.get("values", [])
+            if not emp_values:
+                raise ValueError(f"No employee found with email {email}")
+            employee_id = emp_values[0]["id"]
+            # Search travel expenses for this employee
+            te_result = await client.get("/travelExpense", params={
+                "employeeId": employee_id,
+                "fields": "id,title",
+                "count": 100,
+            })
+            te_values = te_result.get("values", [])
+            if not te_values:
+                raise ValueError(f"No travel expenses found for employee {email}")
+            te_id = te_values[0]["id"]
+        return await client.delete(f"/travelExpense/{te_id}")
+
+    if name == "reverse_voucher":
+        voucher_id = args["voucher_id"]
+        date = args["date"]
+        return await client.put(f"/ledger/voucher/{voucher_id}/:reverse", params={"date": date})
 
     if name == "tripletex_api_call":
         method = args["method"]
