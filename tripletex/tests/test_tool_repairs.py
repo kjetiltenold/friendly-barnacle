@@ -163,6 +163,43 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "employments": [{"startDate": "2026-07-11"}],
         })])
 
+    async def test_create_employee_defaults_to_no_access_and_skips_prefetched_department_for_generic_new_employee_prompt(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_employee",
+            {
+                "firstName": "Lucia",
+                "lastName": "Hernandez",
+                "email": "lucia.hernandez@example.org",
+                "dateOfBirth": "1986-03-14",
+                "userType": "STANDARD",
+                "startDate": "2026-01-17",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                prompt_text=(
+                    "Tenemos un nuevo empleado llamado Lucia Hernandez, nacido el 14. March 1986. "
+                    "Creelo como empleado con el correo lucia.hernandez@example.org y fecha de inicio 17. January 2026."
+                ),
+                last_department_id=736856,
+                last_department_id_prefetched=True,
+            ),
+        )
+
+        self.assertEqual(client.calls, [
+            ("GET", "/employee", {"email": "lucia.hernandez@example.org", "fields": "id,firstName,lastName,email,department"}),
+            ("POST", "/employee", {
+                "firstName": "Lucia",
+                "lastName": "Hernandez",
+                "email": "lucia.hernandez@example.org",
+                "dateOfBirth": "1986-03-14",
+                "userType": "NO_ACCESS",
+                "employments": [{"startDate": "2026-01-17"}],
+            }),
+        ])
+
     async def test_create_employee_updates_existing_department_when_requested(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1078,6 +1115,29 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 }),
             ],
         )
+
+    def test_entity_context_tracks_employment_details_occupation_code_presence(self):
+        ctx = EntityContext()
+
+        ctx.track(
+            "create_employment_details",
+            {
+                "value": {
+                    "id": 3729000,
+                    "employment": {"id": 2829000},
+                    "occupationCode": {"id": 991},
+                }
+            },
+            {
+                "employmentId": 2829000,
+                "date": "2026-06-06",
+                "occupationCodeCode": "3323",
+            },
+        )
+
+        self.assertEqual(ctx.last_employment_details_id, 3729000)
+        self.assertEqual(ctx.last_employment_id, 2829000)
+        self.assertTrue(ctx.last_employment_details_had_occupation_code)
 
     async def test_create_employment_details_fallback_resolves_prefixed_occupation_code(self):
         client = FakeTripletexClient(

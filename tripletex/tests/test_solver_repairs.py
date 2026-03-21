@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from app.agent.solver import (
     TerminalTripletexProxyTokenError,
+    _build_incomplete_task_reminder,
     _build_user_content,
     _compress_messages,
     _execute_tool_calls,
@@ -332,6 +333,67 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_should_retry_text_only_response_for_offer_letter_onboarding_until_occupation_code_is_written(self):
+        prompt = (
+            "Du har motteke eit tilbodsbrev for ein ny tilsett. "
+            "Utfor komplett onboarding: opprett den tilsette, tilknytt rett avdeling, "
+            "set opp tilsetjingsforhold med stillingsprosent og arslonn, og konfigurer standard arbeidstid."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3728594,
+            last_employment_details_had_occupation_code=False,
+            last_standard_time_id=44176,
+        )
+
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                3,
+                0,
+                ctx,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_for_offer_letter_onboarding_when_occupation_code_was_written(self):
+        prompt = (
+            "Du har motteke eit tilbodsbrev for ein ny tilsett. "
+            "Utfor komplett onboarding: opprett den tilsette, tilknytt rett avdeling, "
+            "set opp tilsetjingsforhold med stillingsprosent og arslonn, og konfigurer standard arbeidstid."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3728594,
+            last_employment_details_had_occupation_code=True,
+            last_standard_time_id=44176,
+        )
+
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                3,
+                0,
+                ctx,
+            )
+        )
+
+    def test_build_incomplete_task_reminder_for_offer_letter_mentions_occupation_code(self):
+        prompt = (
+            "Du har motteke eit tilbodsbrev for ein ny tilsett. "
+            "Utfor komplett onboarding: opprett den tilsette, tilknytt rett avdeling, "
+            "set opp tilsetjingsforhold med stillingsprosent og arslonn, og konfigurer standard arbeidstid."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3728594,
+            last_employment_details_had_occupation_code=False,
+            last_standard_time_id=44176,
+        )
+
+        reminder = _build_incomplete_task_reminder(prompt, ctx)
+
+        self.assertIn("occupationCodeCode or occupationCodeName", reminder)
+        self.assertIn("standard time is configured", reminder)
+
     def test_should_retry_text_only_response_when_invoice_payment_not_registered_yet(self):
         self.assertTrue(
             _should_retry_text_only_response(
@@ -473,6 +535,12 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("copy department, occupation code, salary, FTE, standard working hours, start date, birth date, and national identity number literally from the attachment", prompt)
         self.assertIn("use those literal hours for create_standard_time instead of deriving hoursPerDay from FTE", prompt)
         self.assertIn("do not infer or synthesize an email address from the employee name", prompt)
+
+    def test_system_prompt_includes_employee_access_default_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("Do not grant Tripletex access just because an email address is present", prompt)
+        self.assertIn("default to userType NO_ACCESS", prompt)
 
     def test_system_prompt_includes_ledger_error_counterpart_guidance(self):
         prompt = get_system_prompt("2026-03-21")

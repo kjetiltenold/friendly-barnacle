@@ -59,6 +59,7 @@ class EntityContext:
     last_employee_id: int | None = None
     last_employment_id: int | None = None
     last_employment_details_id: int | None = None
+    last_employment_details_had_occupation_code: bool = False
     last_project_id: int | None = None
     last_invoice_id: int | None = None
     last_travel_expense_id: int | None = None
@@ -76,6 +77,7 @@ class EntityContext:
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
     last_department_id: int | None = None
+    last_department_id_prefetched: bool = False
     last_standard_time_id: int | None = None
     last_voucher_id: int | None = None
     last_vat_type_id: int | None = None
@@ -138,6 +140,8 @@ class EntityContext:
         if attr:
             setattr(self, attr, entity_id)
             logger.info(f"EntityContext: {attr} = {entity_id}")
+            if name == "create_department":
+                self.last_department_id_prefetched = False
         if name == "create_customer":
             requested_is_customer = None
             requested_is_supplier = None
@@ -172,6 +176,25 @@ class EntityContext:
             employment_id = employment.get("id")
             if employment_id is not None:
                 self.last_employment_id = employment_id
+            request_has_occupation_code = False
+            if isinstance(request_args, dict):
+                for key in ("occupationCode", "occupationCodeCode", "occupationCodeName", "stillingskode"):
+                    raw_value = request_args.get(key)
+                    if isinstance(raw_value, dict):
+                        if _extract_reference_id(raw_value) is not None:
+                            request_has_occupation_code = True
+                            break
+                    elif str(raw_value or "").strip():
+                        request_has_occupation_code = True
+                        break
+            response_has_occupation_code = _extract_reference_id(value.get("occupationCode")) is not None
+            self.last_employment_details_had_occupation_code = (
+                request_has_occupation_code or response_has_occupation_code
+            )
+            logger.info(
+                "EntityContext: last_employment_details_had_occupation_code = %s",
+                self.last_employment_details_had_occupation_code,
+            )
         if name == "create_standard_time":
             employee = value.get("employee") or {}
             employee_id = employee.get("id")
@@ -1985,6 +2008,36 @@ def _prompt_contains_any_email(ctx: EntityContext | None) -> bool:
     return re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", raw_text, re.IGNORECASE) is not None
 
 
+def _prompt_explicitly_requests_employee_access(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "standarduser",
+            "restricteduser",
+            "adminuser",
+            "administrator",
+            "administrador",
+            "administrateur",
+            "kontoadministrator",
+            "systemaccess",
+            "useraccess",
+            "loginaccess",
+            "accesoalsistema",
+            "sinacceso",
+            "noaccess",
+            "uten tilgang",
+            "utentilgang",
+            "semacesso",
+            "medtilgang",
+            "tilsystemet",
+            "extended",
+        )
+    )
+
+
 def _looks_like_placeholder_email(email: str | None) -> bool:
     text = str(email or "").strip().lower()
     if "@" not in text:
@@ -3614,15 +3667,23 @@ async def _execute(
             if args.get("userType") in (None, "", "STANDARD"):
                 args["userType"] = "NO_ACCESS"
                 logger.info("Normalized employee userType to NO_ACCESS after removing placeholder email")
-        if "userType" not in args:
-            args["userType"] = "STANDARD" if args.get("email") else "NO_ACCESS"
+        if args.get("userType") in (None, ""):
+            args["userType"] = "NO_ACCESS"
+        elif args.get("userType") == "STANDARD" and not _prompt_explicitly_requests_employee_access(ctx):
+            args["userType"] = "NO_ACCESS"
+            logger.info("Normalized employee userType to NO_ACCESS for generic employee-create task without explicit access request")
         national_identity_number = _normalize_identifier(args.get("nationalIdentityNumber"))
         if national_identity_number:
             args["nationalIdentityNumber"] = national_identity_number
         dnumber = _normalize_identifier(args.get("dnumber"))
         if dnumber:
             args["dnumber"] = dnumber
-        if "department" not in args and ctx and ctx.last_department_id:
+        if (
+            "department" not in args
+            and ctx
+            and ctx.last_department_id
+            and not ctx.last_department_id_prefetched
+        ):
             args["department"] = {"id": ctx.last_department_id}
             logger.info(f"Auto-injected department id={ctx.last_department_id} into employee")
         # Move startDate into an employments array if provided

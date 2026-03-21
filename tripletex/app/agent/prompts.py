@@ -57,6 +57,7 @@ Recipes:
 - If you know an email, still use create_employee. The tool searches first by email and reuses the existing employee when it already exists.
 - Common fields: firstName, lastName, email, dateOfBirth, nationalIdentityNumber, dnumber, department, phoneNumberMobileCountryCode, phoneNumberMobile, userType, startDate.
 - For admin-like users, set userType to EXTENDED.
+- Do not grant Tripletex access just because an email address is present. Unless the prompt explicitly asks for access or names a role like standard user, restricted user, no access, or administrator, default to userType NO_ACCESS.
 - Do not invent an email address. If the source document does not provide an email, omit email and use userType NO_ACCESS.
 - If the task specifies a department, create_department first when needed and pass department: {{"id": department_id}} to create_employee. If the employee already exists and needs the right department, use update_employee with fields.department.
 - For full onboarding or offer-letter tasks:

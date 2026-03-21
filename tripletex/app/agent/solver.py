@@ -137,6 +137,26 @@ def _prompt_likely_requires_bank_reconciliation_payments(prompt: str) -> bool:
     )
 
 
+def _prompt_likely_requires_contract_onboarding_completion(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    onboarding_markers = (
+        "arbeidskontrakt",
+        "employment contract",
+        "offer letter",
+        "offerletter",
+        "job offer",
+        "joboffer",
+        "tilbudsbrev",
+        "tilbodsbrev",
+        "onboarding",
+        "contrato de trabajo",
+        "carta de oferta",
+        "contrat de travail",
+        "contrato de trabalho",
+    )
+    return any(marker in normalized for marker in onboarding_markers)
+
+
 def _should_retry_text_only_response(
     assistant_text: str,
     prompt: str,
@@ -160,6 +180,22 @@ def _should_retry_text_only_response(
         )
     if _prompt_likely_requires_invoice_payment(prompt):
         return getattr(ctx, "invoice_payment_action_count", 0) == 0
+    if _prompt_likely_requires_contract_onboarding_completion(prompt):
+        missing_employment_details = getattr(ctx, "last_employment_details_id", None) is None
+        missing_standard_time = getattr(ctx, "last_standard_time_id", None) is None
+        missing_occupation_code = not getattr(
+            ctx,
+            "last_employment_details_had_occupation_code",
+            False,
+        )
+        if missing_employment_details or missing_standard_time or missing_occupation_code:
+            if missing_occupation_code:
+                logger.info("Onboarding task missing occupation code in employment details; continuing before DONE")
+            elif missing_employment_details:
+                logger.info("Onboarding task missing employment details; continuing before DONE")
+            else:
+                logger.info("Onboarding task missing standard time; continuing before DONE")
+            return True
     return False
 
 
@@ -210,6 +246,28 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
             + payment_type_hint
             + "Register the payment with PUT /invoice/{invoice_id}/:payment using paymentDate, paymentTypeId, and paidAmount. "
             "Reply only with DONE when the payment registration is finished."
+        )
+    if _prompt_likely_requires_contract_onboarding_completion(prompt):
+        missing_actions: list[str] = []
+        if ctx.last_employment_details_id is None:
+            missing_actions.append(
+                "call create_employment_details with the attachment's salary, FTE, employment type, workingHoursScheme, and occupationCodeCode or occupationCodeName"
+            )
+        elif not ctx.last_employment_details_had_occupation_code:
+            missing_actions.append(
+                "update or recreate create_employment_details so it includes occupationCodeCode or occupationCodeName copied literally from the attachment"
+            )
+        if ctx.last_standard_time_id is None:
+            missing_actions.append(
+                "call create_standard_time with the attachment's literal standard working hours"
+            )
+        missing_text = " Then ".join(missing_actions) if missing_actions else (
+            "re-inspect the attachment and complete the remaining onboarding writes"
+        )
+        return (
+            "The onboarding task is not complete yet. Re-inspect the attached contract or offer letter. "
+            + missing_text
+            + ". Reply only with DONE when the employee is created, employment details are written, standard time is configured, and employment details include an occupation code."
         )
     return (
         "The task is not complete yet. Execute all requested Tripletex create, update, delete, "
@@ -360,6 +418,7 @@ async def _prime_context(tx: TripletexClient, ctx: EntityContext) -> None:
         values = result.get("values", [])
         if values:
             ctx.last_department_id = values[0].get("id")
+            ctx.last_department_id_prefetched = True
     except Exception as e:
         if _is_terminal_tripletex_proxy_token_error_message(str(e)):
             logger.warning("Stopping before agent loop due to invalid or expired Tripletex proxy token during department prefetch")
