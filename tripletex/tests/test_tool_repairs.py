@@ -1563,10 +1563,10 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             get_responses={
                 (
                     "/activity",
-                    (("count", 10), ("fields", "id,name"), ("name", "Analyse")),
+                    (("count", 10), ("fields", "id,name,activityType"), ("name", "Analyse")),
                 ): {
                     "fullResultSize": 1,
-                    "values": [{"id": 77, "name": "Analyse"}],
+                    "values": [{"id": 77, "name": "Analyse", "activityType": "GENERAL_ACTIVITY"}],
                 }
             }
         )
@@ -1582,7 +1582,61 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 77)
         self.assertEqual(
             client.calls,
-            [("GET", "/activity", {"name": "Analyse", "fields": "id,name", "count": 10})],
+            [("GET", "/activity", {"name": "Analyse", "fields": "id,name,activityType", "count": 10})],
+        )
+
+    async def test_create_activity_defaults_project_general_activity_for_project_lifecycle_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Execute o ciclo de vida completo do projeto Plataforma Dados Horizonte. "
+                "Registe horas e crie uma fatura ao cliente."
+            )
+        )
+
+        await _execute(
+            client,
+            "create_activity",
+            {"name": "Fakturerbart trabalho"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/activity", {"name": "Fakturerbart trabalho", "fields": "id,name,activityType", "count": 10}),
+                ("POST", "/activity", {"name": "Fakturerbart trabalho", "activityType": "PROJECT_GENERAL_ACTIVITY"}),
+            ],
+        )
+
+    async def test_create_activity_does_not_reuse_same_name_with_wrong_type_for_project_task(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/activity",
+                    (("count", 10), ("fields", "id,name,activityType"), ("name", "Analyse")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 77, "name": "Analyse", "activityType": "GENERAL_ACTIVITY"}],
+                }
+            }
+        )
+        ctx = EntityContext(
+            prompt_text="Create a project, register hours, and invoice the customer."
+        )
+
+        await _execute(
+            client,
+            "create_activity",
+            {"name": "Analyse"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            ("POST", "/activity", {"name": "Analyse", "activityType": "PROJECT_GENERAL_ACTIVITY"}),
         )
 
     async def test_create_project_activity_pairs_multiple_projects_and_activities(self):
@@ -1747,6 +1801,115 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["values"]), 6)
         self.assertTrue(timesheet_calls)
         self.assertTrue(all(call[2]["employee"] == {"id": 101} for call in timesheet_calls))
+
+    async def test_create_project_activity_auto_creates_project_general_activity_for_project_lifecycle_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_project_id=402033048,
+            prompt_text=(
+                "Execute o ciclo de vida completo do projeto Plataforma Dados Horizonte. "
+                "O projeto tem um orçamento de 367550 NOK. Registe horas e crie uma fatura ao cliente."
+            ),
+        )
+
+        await _execute(
+            client,
+            "create_project_activity",
+            {},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/activity", {"name": "Project work 402033048", "activityType": "PROJECT_GENERAL_ACTIVITY"}),
+                ("POST", "/project/projectActivity", {
+                    "project": {"id": 402033048},
+                    "activity": {"id": 999},
+                    "budgetFeeCurrency": 367550.0,
+                }),
+            ],
+        )
+
+    async def test_create_timesheet_entry_auto_creates_and_links_project_general_activity_for_portuguese_project_lifecycle_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_employee_id=18660214,
+            last_project_id=402033048,
+            prompt_text=(
+                "Execute o ciclo de vida completo do projeto Plataforma Dados Horizonte. "
+                "O projeto tem um orçamento de 367550 NOK. Registe horas e crie uma fatura ao cliente."
+            ),
+        )
+
+        await _execute(
+            client,
+            "create_timesheet_entry",
+            {"date": "2026-03-23", "hours": 8},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/activity", {"name": "Project work 402033048", "activityType": "PROJECT_GENERAL_ACTIVITY"}),
+                ("POST", "/project/projectActivity", {
+                    "project": {"id": 402033048},
+                    "activity": {"id": 999},
+                    "budgetFeeCurrency": 367550.0,
+                }),
+                ("POST", "/timesheet/entry", {
+                    "date": "2026-03-23",
+                    "hours": 8,
+                    "employee": {"id": 18660214},
+                    "project": {"id": 402033048},
+                    "activity": {"id": 999},
+                }),
+            ],
+        )
+
+    async def test_create_timesheet_entry_resolves_remaining_portuguese_prompt_hours_to_next_employee(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Execute o ciclo de vida completo do projeto Plataforma Dados Horizonte. "
+                "Registe horas: Sofia Ferreira (gestor de projeto, sofia.ferreira@example.org) 72 horas "
+                "e Maria Oliveira (consultor, maria.oliveira@example.org) 51 horas."
+            ),
+            last_project_id=402033048,
+            last_activity_id=5877567,
+            timesheet_hours_by_day={(101, 402033048, 5877567, "2026-03-31"): 72.0},
+        )
+        ctx.track(
+            "create_employee",
+            {"value": {"id": 101, "firstName": "Sofia", "lastName": "Ferreira", "email": "sofia.ferreira@example.org"}},
+        )
+        ctx.track(
+            "create_employee",
+            {"value": {"id": 102, "firstName": "Maria", "lastName": "Oliveira", "email": "maria.oliveira@example.org"}},
+        )
+        ctx.linked_project_activity_pairs.add((402033048, 5877567))
+
+        await _execute(
+            client,
+            "create_timesheet_entry",
+            {"project": {"id": 402033048}, "activity": {"id": 5877567}, "date": "2026-04-01", "hours": 8},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            ("POST", "/timesheet/entry", {
+                "project": {"id": 402033048},
+                "activity": {"id": 5877567},
+                "date": "2026-04-01",
+                "hours": 8,
+                "employee": {"id": 102},
+            }),
+        )
 
     async def test_create_timesheet_entry_auto_links_project_activity_before_post(self):
         client = FakeTripletexClient()
@@ -5152,6 +5315,30 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.last_account_id, 364015653)
         self.assertEqual(ctx.account_cache[364015653]["number"], 7140)
         self.assertTrue(ctx.account_cache[364015350]["isBankAccount"])
+
+    async def test_tripletex_api_call_unfiltered_activity_lookup_does_not_track_last_activity(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/activity",
+                    (("fields", "id,name"),),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 5946735, "name": "Analyse"}],
+                }
+            }
+        )
+        ctx = EntityContext()
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/activity?fields=id,name"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIsNone(ctx.last_activity_id)
 
     async def test_create_voucher_receipt_uses_account_default_vat_type(self):
         client = FakeTripletexClient()

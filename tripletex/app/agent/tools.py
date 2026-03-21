@@ -510,6 +510,7 @@ BASE_TOOL_DEFINITIONS = [
         "type": "object",
         "properties": {
             "name": {"type": "string"},
+            "activityType": {"type": "string", "enum": ["GENERAL_ACTIVITY", "PROJECT_GENERAL_ACTIVITY", "PROJECT_SPECIFIC_ACTIVITY", "TASK"]},
             "isInactive": {"type": "boolean"},
         },
         "required": ["name"],
@@ -2361,6 +2362,282 @@ def _normalize_prompt_text(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _prompt_likely_requires_project_linked_activity(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    direct_markers = (
+        "prosjektsyklus",
+        "projectcycle",
+        "projectlifecycle",
+        "projectinvoice",
+        "timesheetplusprojectinvoice",
+        "ciclodevida",
+        "ciclodevidacompleto",
+        "ciclodevidadoprojeto",
+    )
+    if any(marker in normalized for marker in direct_markers):
+        return True
+    project_markers = ("project", "prosjekt", "projeto", "projet", "proyecto")
+    activity_markers = (
+        "activity",
+        "aktivitet",
+        "atividade",
+        "actividad",
+        "activite",
+        "timesheet",
+        "timeentry",
+        "hours",
+        "hour",
+        "horas",
+        "heures",
+        "timer",
+        "invoice",
+        "fatura",
+        "factura",
+        "facture",
+        "faktura",
+        "fakturer",
+        "facturer",
+        "faturar",
+        "budget",
+        "budsjett",
+        "orcamento",
+    )
+    return any(marker in normalized for marker in project_markers) and any(
+        marker in normalized for marker in activity_markers
+    )
+
+
+def _prompt_likely_requires_project_lifecycle_activity(ctx: EntityContext | None) -> bool:
+    if _extract_prompt_timesheet_assignments(ctx):
+        return True
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    direct_markers = (
+        "prosjektsyklus",
+        "projectcycle",
+        "projectlifecycle",
+        "projectinvoice",
+        "timesheetplusprojectinvoice",
+        "ciclodevida",
+        "ciclodevidacompleto",
+        "ciclodevidadoprojeto",
+    )
+    if any(marker in normalized for marker in direct_markers):
+        return True
+    project_markers = ("project", "prosjekt", "projeto", "projet", "proyecto")
+    lifecycle_markers = (
+        "timesheet",
+        "timeentry",
+        "hours",
+        "hour",
+        "horas",
+        "heures",
+        "timer",
+        "invoice",
+        "fatura",
+        "factura",
+        "facture",
+        "faktura",
+        "fakturer",
+        "facturer",
+        "faturar",
+        "projectmanager",
+        "prosjektleder",
+        "gestordeprojeto",
+        "consultor",
+        "consultant",
+    )
+    return any(marker in normalized for marker in project_markers) and any(
+        marker in normalized for marker in lifecycle_markers
+    )
+
+
+def _extract_prompt_timesheet_assignments(ctx: EntityContext | None) -> list[dict]:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return []
+    pattern = re.compile(
+        r"([^\W\d_][\w'.-]*(?:\s+[^\W\d_][\w'.-]*)+)\s*\(([^)]*)\)\s*([0-9]+(?:[.,][0-9]+)?)\s*(?:timer?|hours?|hrs?|horas?|heures?|stunden)",
+        re.IGNORECASE,
+    )
+    assignments: list[dict] = []
+    for match in pattern.finditer(raw_text):
+        metadata = match.group(2) or ""
+        email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", metadata)
+        hours = _coerce_number(str(match.group(3)).replace(",", "."))
+        if hours <= 0:
+            continue
+        assignments.append(
+            {
+                "name": str(match.group(1) or "").strip(),
+                "email": email_match.group(1) if email_match else None,
+                "hours": round(hours, 2),
+            }
+        )
+    return assignments
+
+
+def _extract_prompt_total_timesheet_hours(ctx: EntityContext | None) -> float | None:
+    assignments = _extract_prompt_timesheet_assignments(ctx)
+    if assignments:
+        return round(sum(_coerce_number(item.get("hours")) for item in assignments), 2)
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    matches = re.findall(
+        r"([0-9]+(?:[.,][0-9]+)?)\s*(?:timer?|hours?|hrs?|horas?|heures?|stunden)",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if not matches:
+        return None
+    total = round(sum(_coerce_number(match.replace(",", ".")) for match in matches), 2)
+    return total if total > 0 else None
+
+
+def _sum_booked_timesheet_hours(
+    ctx: EntityContext | None,
+    employee_id: int,
+    project_id: int | None,
+) -> float:
+    if ctx is None:
+        return 0.0
+    total = 0.0
+    for (booked_employee_id, booked_project_id, _activity_id, _entry_date), hours in (ctx.timesheet_hours_by_day or {}).items():
+        if booked_employee_id != employee_id:
+            continue
+        if project_id is not None and booked_project_id != project_id:
+            continue
+        total += _coerce_number(hours)
+    return round(total, 2)
+
+
+def _resolve_timesheet_employee_from_prompt(args: dict, ctx: EntityContext | None) -> int | None:
+    explicit_email = args.get("employeeEmail") or args.get("email")
+    employee_id = _find_employee_id_by_email(ctx, explicit_email)
+    if employee_id is not None:
+        return employee_id
+    explicit_name = args.get("employeeName") or args.get("name")
+    employee_id = _find_employee_id_by_name(ctx, explicit_name)
+    if employee_id is not None:
+        return employee_id
+    if ctx is None or len(ctx.employee_ids or []) <= 1:
+        return None
+    requested_hours = round(_coerce_number(args.get("hours")), 2)
+    if requested_hours <= 0:
+        return None
+    matches = [
+        assignment
+        for assignment in _extract_prompt_timesheet_assignments(ctx)
+        if abs(_coerce_number(assignment.get("hours")) - requested_hours) <= 0.01
+    ]
+    resolved_ids: list[int] = []
+    for assignment in matches:
+        assignment_employee_id = _find_employee_id_by_email(ctx, assignment.get("email"))
+        if assignment_employee_id is None:
+            assignment_employee_id = _find_employee_id_by_name(ctx, assignment.get("name"))
+        if assignment_employee_id is not None and assignment_employee_id not in resolved_ids:
+            resolved_ids.append(assignment_employee_id)
+    if len(resolved_ids) == 1:
+        return resolved_ids[0]
+    if requested_hours > 12:
+        return None
+    project_id = _extract_reference_id(args.get("project"))
+    if project_id is None:
+        project_id = _coerce_int(args.get("projectId"))
+    if project_id is None and ctx is not None:
+        project_id = ctx.last_project_id
+    remaining_candidates: list[tuple[int, float]] = []
+    for assignment in _extract_prompt_timesheet_assignments(ctx):
+        assignment_employee_id = _find_employee_id_by_email(ctx, assignment.get("email"))
+        if assignment_employee_id is None:
+            assignment_employee_id = _find_employee_id_by_name(ctx, assignment.get("name"))
+        if assignment_employee_id is None:
+            continue
+        target_hours = round(_coerce_number(assignment.get("hours")), 2)
+        if target_hours <= 0:
+            continue
+        booked_hours = _sum_booked_timesheet_hours(ctx, assignment_employee_id, project_id)
+        remaining_hours = round(target_hours - booked_hours, 2)
+        if remaining_hours > 0.01:
+            remaining_candidates.append((assignment_employee_id, remaining_hours))
+    for assignment_employee_id, remaining_hours in remaining_candidates:
+        if requested_hours <= remaining_hours + 0.01:
+            return assignment_employee_id
+    if len(remaining_candidates) == 1:
+        return remaining_candidates[0][0]
+    return None
+
+
+async def _ensure_project_activity_link(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+    project_id: int | None,
+    activity_id: int | None,
+) -> None:
+    prompt_text = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if (
+        ctx is None
+        or project_id is None
+        or activity_id is None
+        or not (
+            _prompt_likely_requires_project_lifecycle_activity(ctx)
+            or any(
+                token in prompt_text
+                for token in (
+                    "kundefaktura",
+                    "invoice",
+                    "fakturer",
+                )
+            )
+        )
+        or (project_id, activity_id) in ctx.linked_project_activity_pairs
+    ):
+        return
+    payload = {"project": {"id": project_id}, "activity": {"id": activity_id}}
+    budget_amount = _extract_prompt_budget_amount(ctx)
+    if budget_amount is not None:
+        payload["budgetFeeCurrency"] = round(budget_amount, 2)
+    try:
+        logger.info(
+            "Auto-linking project id=%s and activity id=%s before timesheet entry",
+            project_id,
+            activity_id,
+        )
+        result = await client.post("/project/projectActivity", json=payload)
+        ctx.track("create_project_activity", result, payload)
+    except Exception as exc:
+        logger.warning(
+            "Project/activity auto-link failed for project id=%s activity id=%s; continuing with timesheet entry: %s",
+            project_id,
+            activity_id,
+            exc,
+        )
+
+
+async def _ensure_project_general_activity(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+) -> int | None:
+    if ctx is None or not _prompt_likely_requires_project_lifecycle_activity(ctx):
+        return None
+    if ctx.last_activity_id is not None:
+        return ctx.last_activity_id
+    activity_name = f"Project work {ctx.last_project_id}" if ctx.last_project_id is not None else "Project work"
+    payload = {"name": activity_name, "activityType": "PROJECT_GENERAL_ACTIVITY"}
+    logger.info(
+        "Auto-creating project general activity for project lifecycle task with name=%s",
+        activity_name,
+    )
+    result = await client.post("/activity", json=payload)
+    ctx.track("create_activity", result, payload)
+    activity_id = (result.get("value") or {}).get("id")
+    return activity_id if isinstance(activity_id, int) else ctx.last_activity_id
 
 
 def _prompt_contains_any_email(ctx: EntityContext | None) -> bool:
@@ -4847,14 +5124,31 @@ async def _execute(
             raise
 
     if name == "create_activity":
+        if not args.get("activityType"):
+            args["activityType"] = (
+                "PROJECT_GENERAL_ACTIVITY"
+                if _prompt_likely_requires_project_linked_activity(ctx)
+                else "GENERAL_ACTIVITY"
+            )
+            logger.info(f"Defaulted create_activity activityType={args['activityType']}")
         activity_name = args.get("name")
+        desired_activity_type = str(args.get("activityType") or "").strip().upper()
         if activity_name:
             try:
-                result = await client.get("/activity", params={"name": activity_name, "fields": "id,name", "count": 10})
+                result = await client.get(
+                    "/activity",
+                    params={"name": activity_name, "fields": "id,name,activityType", "count": 10},
+                )
                 values = result.get("values", [])
                 normalized_name = activity_name.strip().lower()
                 for activity in values:
-                    if str(activity.get("name", "")).strip().lower() == normalized_name:
+                    if (
+                        str(activity.get("name", "")).strip().lower() == normalized_name
+                        and (
+                            not desired_activity_type
+                            or str(activity.get("activityType") or "").strip().upper() == desired_activity_type
+                        )
+                    ):
                         logger.info(f"Reusing existing activity id={activity['id']} for name {activity_name}")
                         return {"value": activity}
             except Exception:
@@ -5214,6 +5508,13 @@ async def _execute(
         if "activity" not in args and ctx and ctx.last_activity_id:
             args["activity"] = {"id": ctx.last_activity_id}
             logger.info(f"Auto-injected activity id={ctx.last_activity_id} into project activity")
+        if "activity" not in args:
+            fallback_activity_id = await _ensure_project_general_activity(client, ctx)
+            if fallback_activity_id is not None:
+                args["activity"] = {"id": fallback_activity_id}
+                logger.info(
+                    f"Auto-injected fallback project general activity id={fallback_activity_id} into project activity"
+                )
         if (
             args.get("budgetFeeCurrency") in (None, "")
             and args.get("budgetHours") in (None, "")
@@ -5226,6 +5527,9 @@ async def _execute(
         return await client.post("/project/projectActivity", json=args)
 
     if name == "create_timesheet_entry":
+        if "project" not in args and ctx and ctx.last_project_id:
+            args["project"] = {"id": ctx.last_project_id}
+            logger.info(f"Auto-injected project id={ctx.last_project_id} into timesheet entry")
         if "employee" not in args and "employeeId" not in args:
             resolved_employee_id = _resolve_timesheet_employee_from_prompt(args, ctx)
             if resolved_employee_id is not None:
@@ -5238,12 +5542,16 @@ async def _execute(
         if "employee" not in args and ctx and ctx.last_employee_id:
             args["employee"] = {"id": ctx.last_employee_id}
             logger.info(f"Auto-injected employee id={ctx.last_employee_id} into timesheet entry")
-        if "project" not in args and ctx and ctx.last_project_id:
-            args["project"] = {"id": ctx.last_project_id}
-            logger.info(f"Auto-injected project id={ctx.last_project_id} into timesheet entry")
         if "activity" not in args and ctx and ctx.last_activity_id:
             args["activity"] = {"id": ctx.last_activity_id}
             logger.info(f"Auto-injected activity id={ctx.last_activity_id} into timesheet entry")
+        if "activity" not in args:
+            fallback_activity_id = await _ensure_project_general_activity(client, ctx)
+            if fallback_activity_id is not None:
+                args["activity"] = {"id": fallback_activity_id}
+                logger.info(
+                    f"Auto-injected fallback project general activity id={fallback_activity_id} into timesheet entry"
+                )
         await _ensure_project_activity_link(
             client,
             ctx,
@@ -5984,7 +6292,10 @@ async def _execute(
 
         if method == "GET":
             result = await client.get(path, params=params)
-            _track_lookup_context(ctx, path, result)
+            if path == "/activity" and not _has_meaningful_search_filters(params):
+                logger.info("Skipped context tracking for unfiltered /activity lookup")
+            else:
+                _track_lookup_context(ctx, path, result)
             return result
         if method == "POST":
             if "/invoice" in path or "/:invoice" in path:
