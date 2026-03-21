@@ -61,6 +61,8 @@ class EntityContext:
     last_project_id: int | None = None
     last_invoice_id: int | None = None
     last_travel_expense_id: int | None = None
+    last_travel_expense_departure_date: str | None = None
+    last_travel_expense_return_date: str | None = None
     last_activity_id: int | None = None
     last_rate_category_id: int | None = None
     last_cost_category_id: int | None = None
@@ -1328,6 +1330,170 @@ def _prompt_mentions_partial_payments(ctx: EntityContext | None) -> bool:
         "paiementspartiels",
     )
     return any(token in normalized for token in partial_tokens)
+
+
+def _parse_iso_date(value: str | None) -> datetime.date | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _iso_date_plus_days(value: str | None, days: int) -> str | None:
+    parsed = _parse_iso_date(value)
+    if parsed is None:
+        return None
+    return (parsed + datetime.timedelta(days=days)).isoformat()
+
+
+def _date_within_category(target: datetime.date | None, from_date: str | None, to_date: str | None) -> bool:
+    if target is None:
+        return True
+    from_parsed = _parse_iso_date(from_date)
+    to_parsed = _parse_iso_date(to_date)
+    if from_parsed is not None and target < from_parsed:
+        return False
+    if to_parsed is not None and target >= to_parsed:
+        return False
+    return True
+
+
+def _infer_per_diem_country_code(args: dict, ctx: EntityContext | None) -> str | None:
+    explicit = args.get("countryCode")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip().upper()
+    normalized = re.sub(
+        r"[^a-z0-9]+",
+        "",
+        _normalize_occupation_name(
+        " ".join(
+            part
+            for part in (
+                str(args.get("location") or "").strip(),
+                str((ctx.prompt_text if ctx else None) or "").strip(),
+            )
+            if part
+        ),
+        ),
+    )
+    if not normalized:
+        return None
+    norwegian_markers = (
+        "norge",
+        "norway",
+        "tromso",
+        "oslo",
+        "bergen",
+        "trondheim",
+        "stavanger",
+        "bodo",
+        "alesund",
+        "kirkenes",
+        "innenriks",
+    )
+    if any(marker in normalized for marker in norwegian_markers):
+        return "NO"
+    return None
+
+
+def _pick_per_diem_rate_category(
+    values: list[dict],
+    departure_date: str | None,
+    return_date: str | None,
+    country_code: str | None,
+    overnight_accommodation: str | None,
+) -> dict | None:
+    departure = _parse_iso_date(departure_date)
+    return_date_parsed = _parse_iso_date(return_date)
+    normalized_country = (country_code or "").strip().upper()
+    overnight = str(overnight_accommodation or "").strip().upper()
+    best: tuple[int, datetime.date, dict] | None = None
+
+    for item in values:
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        if str(item.get("type") or "").upper() not in ("", "PER_DIEM"):
+            continue
+        if normalized_country == "NO" and item.get("isValidDomestic") is False:
+            continue
+        if normalized_country and normalized_country != "NO" and item.get("isValidForeignTravel") is False:
+            continue
+        if overnight and overnight != "NONE" and item.get("isValidAccommodation") is False:
+            continue
+        if not _date_within_category(departure, item.get("fromDate"), item.get("toDate")):
+            continue
+        if not _date_within_category(return_date_parsed, item.get("fromDate"), item.get("toDate")):
+            continue
+
+        score = 0
+        if normalized_country == "NO" and item.get("isValidDomestic") is True:
+            score += 40
+        elif normalized_country and normalized_country != "NO" and item.get("isValidForeignTravel") is True:
+            score += 40
+        if overnight and overnight != "NONE" and item.get("isValidAccommodation") is True:
+            score += 20
+        if overnight and overnight != "NONE" and item.get("isRequiresOvernightAccommodation") is True:
+            score += 10
+        category_from = _parse_iso_date(item.get("fromDate")) or datetime.date.min
+        if departure and category_from <= departure:
+            score += 5
+        candidate = (score, category_from, item)
+        if best is None or candidate[0] > best[0] or (candidate[0] == best[0] and candidate[1] > best[1]):
+            best = candidate
+    return best[2] if best else None
+
+
+async def _resolve_per_diem_rate_category(
+    client: TripletexClient,
+    args: dict,
+    ctx: EntityContext | None,
+) -> dict | None:
+    departure_date = args.get("departureDate") or (ctx.last_travel_expense_departure_date if ctx else None)
+    return_date = args.get("returnDate") or (ctx.last_travel_expense_return_date if ctx else None)
+    country_code = _infer_per_diem_country_code(args, ctx)
+    overnight = str(args.get("overnightAccommodation") or "").strip().upper()
+    params: dict[str, object] = {"type": "PER_DIEM", "count": 100}
+    if departure_date:
+        params["dateFrom"] = departure_date
+    return_exclusive = _iso_date_plus_days(return_date, 1)
+    if return_exclusive:
+        params["dateTo"] = return_exclusive
+    if overnight and overnight != "NONE":
+        params["isValidAccommodation"] = True
+    if country_code == "NO":
+        params["isValidDomestic"] = True
+    logger.info(
+        "Resolving per diem rate category with params=%s, departure=%s, return=%s, country=%s",
+        params,
+        departure_date,
+        return_date,
+        country_code or "",
+    )
+    result = await client.get("/travelExpense/rateCategory", params=params)
+    values = result.get("values", [])
+    selected = _pick_per_diem_rate_category(values, departure_date, return_date, country_code, overnight)
+    if selected is None:
+        logger.warning(
+            "No matching per diem rate category found for departure=%s return=%s country=%s overnight=%s",
+            departure_date,
+            return_date,
+            country_code or "",
+            overnight or "",
+        )
+        return None
+    selected_id = selected.get("id")
+    if ctx is not None and selected_id is not None:
+        ctx.last_rate_category_id = selected_id
+    logger.info(
+        "Resolved per diem rate category id=%s name=%s fromDate=%s toDate=%s",
+        selected_id,
+        selected.get("name", ""),
+        selected.get("fromDate"),
+        selected.get("toDate"),
+    )
+    return {"id": selected_id} if selected_id is not None else None
 
 
 def _extract_prompt_budget_amount(ctx: EntityContext | None) -> float | None:
@@ -2756,16 +2922,58 @@ async def _execute(
                 travel_details[normalized] = val
         if travel_details:
             args["travelDetails"] = travel_details
+            if ctx is not None:
+                ctx.last_travel_expense_departure_date = travel_details.get("departureDate")
+                ctx.last_travel_expense_return_date = travel_details.get("returnDate")
+                logger.info(
+                    "Tracked travel expense dates departure=%s return=%s for per diem resolution",
+                    ctx.last_travel_expense_departure_date,
+                    ctx.last_travel_expense_return_date,
+                )
         return await client.post("/travelExpense", json=args)
 
     if name == "create_per_diem_compensation":
         if "travelExpense" not in args and ctx and ctx.last_travel_expense_id:
             args["travelExpense"] = {"id": ctx.last_travel_expense_id}
             logger.info(f"Auto-injected travel expense id={ctx.last_travel_expense_id} into per diem compensation")
-        if "rateCategory" not in args and ctx and ctx.last_rate_category_id:
-            args["rateCategory"] = {"id": ctx.last_rate_category_id}
-            logger.info(f"Auto-injected rate category id={ctx.last_rate_category_id} into per diem compensation")
-        return await client.post("/travelExpense/perDiemCompensation", json=args)
+        inferred_country = _infer_per_diem_country_code(args, ctx)
+        if "countryCode" not in args and inferred_country:
+            args["countryCode"] = inferred_country
+            logger.info(f"Inferred per diem countryCode={inferred_country} from location/prompt")
+        if "rateCategory" not in args:
+            resolved_rate_category = await _resolve_per_diem_rate_category(client, args, ctx)
+            if resolved_rate_category is not None:
+                args["rateCategory"] = resolved_rate_category
+            elif ctx and ctx.last_rate_category_id:
+                args["rateCategory"] = {"id": ctx.last_rate_category_id}
+                logger.info(f"Auto-injected fallback rate category id={ctx.last_rate_category_id} into per diem compensation")
+        try:
+            return await client.post("/travelExpense/perDiemCompensation", json=args)
+        except Exception as e:
+            error_text = str(e).lower()
+            retry_args = json.loads(json.dumps(args))
+            retried = False
+            if "country not enabled for travel expense" in error_text and "countryCode" not in retry_args:
+                inferred_country = _infer_per_diem_country_code(retry_args, ctx)
+                if inferred_country:
+                    retry_args["countryCode"] = inferred_country
+                    retried = True
+                    logger.info(
+                        "Per diem compensation failed on country validation; retrying with inferred countryCode=%s",
+                        inferred_country,
+                    )
+            if "satskategori" in error_text or "ratecategory.id" in error_text:
+                resolved_rate_category = await _resolve_per_diem_rate_category(client, retry_args, ctx)
+                if resolved_rate_category is not None and resolved_rate_category != retry_args.get("rateCategory"):
+                    retry_args["rateCategory"] = resolved_rate_category
+                    retried = True
+                    logger.info(
+                        "Per diem compensation failed on rate-category validation; retrying with rateCategory id=%s",
+                        resolved_rate_category.get("id"),
+                    )
+            if retried:
+                return await client.post("/travelExpense/perDiemCompensation", json=retry_args)
+            raise
 
     if name == "create_travel_cost":
         if "travelExpense" not in args and ctx and ctx.last_travel_expense_id:

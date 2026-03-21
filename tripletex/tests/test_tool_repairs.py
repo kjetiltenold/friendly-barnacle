@@ -1,5 +1,6 @@
 import datetime
 import unittest
+import httpx
 from unittest.mock import ANY
 
 from app.agent.tools import EntityContext, _execute
@@ -47,6 +48,11 @@ class FakeTripletexClient:
 
 
 class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
+    def _http_status_error(self, path: str, message: str, status_code: int = 422):
+        request = httpx.Request("POST", f"https://example.invalid{path}")
+        response = httpx.Response(status_code, request=request, text=message)
+        return httpx.HTTPStatusError(message, request=request, response=response)
+
     async def test_create_employee_reuses_existing_by_email(self):
         client = FakeTripletexClient(
             get_responses={
@@ -2688,7 +2694,173 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "overnightAccommodation": "HOTEL",
             "count": 5,
             "rate": 800,
+            "countryCode": "NO",
         }), client.calls)
+
+    async def test_create_per_diem_infers_no_and_resolves_rate_category_from_dates(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/travelExpense/rateCategory",
+                    (
+                        ("count", 100),
+                        ("dateFrom", "2026-03-19"),
+                        ("dateTo", "2026-03-22"),
+                        ("isValidAccommodation", True),
+                        ("isValidDomestic", True),
+                        ("type", "PER_DIEM"),
+                    ),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {
+                            "id": 2,
+                            "name": "Old category",
+                            "type": "PER_DIEM",
+                            "isValidAccommodation": True,
+                            "isValidDomestic": True,
+                            "isRequiresOvernightAccommodation": True,
+                            "fromDate": "2025-01-01",
+                            "toDate": "2026-01-01",
+                        },
+                        {
+                            "id": 740,
+                            "name": "Current category",
+                            "type": "PER_DIEM",
+                            "isValidAccommodation": True,
+                            "isValidDomestic": True,
+                            "isRequiresOvernightAccommodation": True,
+                            "fromDate": "2026-01-01",
+                            "toDate": "2027-01-01",
+                        },
+                    ],
+                },
+            }
+        )
+
+        await _execute(
+            client,
+            "create_per_diem_compensation",
+            {
+                "location": "Tromsø",
+                "overnightAccommodation": "HOTEL",
+                "count": 3,
+                "rate": 800,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_id=555,
+                last_rate_category_id=2,
+                last_travel_expense_departure_date="2026-03-19",
+                last_travel_expense_return_date="2026-03-21",
+                prompt_text='Erfassen Sie eine Reisekostenabrechnung für "Kundenbesuch Tromsø".',
+            ),
+        )
+
+        self.assertEqual(client.calls[0], ("GET", "/travelExpense/rateCategory", {
+            "type": "PER_DIEM",
+            "count": 100,
+            "dateFrom": "2026-03-19",
+            "dateTo": "2026-03-22",
+            "isValidAccommodation": True,
+            "isValidDomestic": True,
+        }))
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/perDiemCompensation", {
+            "travelExpense": {"id": 555},
+            "countryCode": "NO",
+            "rateCategory": {"id": 740},
+            "location": "Tromsø",
+            "overnightAccommodation": "HOTEL",
+            "count": 3,
+            "rate": 800,
+        }))
+
+    async def test_create_per_diem_retries_with_resolved_rate_category_after_validation_error(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/travelExpense/rateCategory",
+                    (
+                        ("count", 100),
+                        ("dateFrom", "2026-03-19"),
+                        ("dateTo", "2026-03-22"),
+                        ("isValidAccommodation", True),
+                        ("isValidDomestic", True),
+                        ("type", "PER_DIEM"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [
+                        {
+                            "id": 740,
+                            "name": "Current category",
+                            "type": "PER_DIEM",
+                            "isValidAccommodation": True,
+                            "isValidDomestic": True,
+                            "isRequiresOvernightAccommodation": True,
+                            "fromDate": "2026-01-01",
+                            "toDate": "2027-01-01",
+                        },
+                    ],
+                },
+            },
+            post_errors={
+                "/travelExpense/perDiemCompensation": [
+                    self._http_status_error(
+                        "/travelExpense/perDiemCompensation",
+                        "422 unknown: rateCategory.id Reiseregningens dato samsvarer ikke med valgt satskategori.",
+                    ),
+                    None,
+                ],
+            },
+        )
+
+        await _execute(
+            client,
+            "create_per_diem_compensation",
+            {
+                "travelExpense": {"id": 555},
+                "countryCode": "NO",
+                "rateCategory": {"id": 2},
+                "location": "Tromsø",
+                "overnightAccommodation": "HOTEL",
+                "count": 3,
+                "rate": 800,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_departure_date="2026-03-19",
+                last_travel_expense_return_date="2026-03-21",
+                prompt_text='Erfassen Sie eine Reisekostenabrechnung für "Kundenbesuch Tromsø".',
+            ),
+        )
+
+        self.assertEqual(client.calls[0], ("POST", "/travelExpense/perDiemCompensation", {
+            "travelExpense": {"id": 555},
+            "countryCode": "NO",
+            "rateCategory": {"id": 2},
+            "location": "Tromsø",
+            "overnightAccommodation": "HOTEL",
+            "count": 3,
+            "rate": 800,
+        }))
+        self.assertEqual(client.calls[1], ("GET", "/travelExpense/rateCategory", {
+            "type": "PER_DIEM",
+            "count": 100,
+            "dateFrom": "2026-03-19",
+            "dateTo": "2026-03-22",
+            "isValidAccommodation": True,
+            "isValidDomestic": True,
+        }))
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/perDiemCompensation", {
+            "travelExpense": {"id": 555},
+            "countryCode": "NO",
+            "rateCategory": {"id": 740},
+            "location": "Tromsø",
+            "overnightAccommodation": "HOTEL",
+            "count": 3,
+            "rate": 800,
+        }))
 
 
     async def test_delete_travel_expense_by_email(self):

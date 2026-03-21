@@ -288,8 +288,16 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GET /ledger/paymentTypeOut", prompt)
         self.assertIn("PUT /supplierInvoice/{invoice_id}/:addPayment with paymentDate, paymentType, and amount", prompt)
         self.assertIn("amountOutstanding, not amountRemaining", prompt)
+        self.assertIn("On supplier-invoice fields filters, prefer amount", prompt)
         self.assertIn("customer(name) or supplier(name)", prompt)
         self.assertIn("inspect the page image carefully", prompt)
+
+    def test_system_prompt_includes_travel_per_diem_country_and_rate_category_guidance(self):
+        prompt = get_system_prompt("2026-03-21")
+
+        self.assertIn("For Norwegian domestic travel locations such as Tromsø", prompt)
+        self.assertIn("set `countryCode=NO`", prompt)
+        self.assertIn("Do not blindly reuse the first `/travelExpense/rateCategory` result", prompt)
 
 
 if __name__ == "__main__":

@@ -168,6 +168,8 @@ Recipes:
   - overnightAccommodation
   - count
   - rate
+- For Norwegian domestic travel locations such as Tromsø, Oslo, Bergen, or Trondheim, set `countryCode=NO`.
+- Do not blindly reuse the first `/travelExpense/rateCategory` result. Choose a per-diem rate category that matches the travel date range and the domestic/overnight context.
 - Travel cost body fields:
   - travelExpense
   - costCategory
