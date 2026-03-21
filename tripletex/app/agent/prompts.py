@@ -104,6 +104,9 @@ Recipes:
   - paymentDate
   - paymentTypeId
   - paidAmount
+- For dunning, reminder, or late-fee tasks such as Mahngebühr, purregebyr, or late fee:
+  - Use 0 percent VAT on the fee product and sales order line.
+  - Put the customer reference on the accounts-receivable voucher posting.
 
 6. Create credit note
 - Find the invoice first.

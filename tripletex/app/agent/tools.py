@@ -789,6 +789,21 @@ def _vat_direction_from_name(name: str) -> str:
     return "incoming" if ("inng" in normalized or "incoming" in normalized) else "outgoing"
 
 
+def _looks_like_fee_text(*parts) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    keywords = (
+        "mahn",
+        "dunning",
+        "reminder fee",
+        "late fee",
+        "purre",
+        "purring",
+        "inkasso",
+        "gebyr",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
 async def _resolve_vat_type(
     client: TripletexClient,
     ctx: EntityContext | None,
@@ -805,7 +820,7 @@ async def _resolve_vat_type(
     try:
         result = await client.get("/ledger/vatType", params={
             "percentage": str(int(normalized_percentage) if normalized_percentage.is_integer() else normalized_percentage),
-            "fields": "id,name,percentage",
+            "fields": "id,number,name,percentage",
         })
         _track_lookup_context(ctx, "/ledger/vatType", result)
         values = result.get("values", [])
@@ -815,7 +830,13 @@ async def _resolve_vat_type(
             if item.get("id") is None or item_percentage != normalized_percentage:
                 continue
             item_direction = _vat_direction_from_name(item.get("name", ""))
-            candidates.append((item_direction == direction, item))
+            score = 10 if item_direction == direction else 0
+            if normalized_percentage == 0 and direction == "outgoing":
+                if item.get("id") == 0:
+                    score += 5
+                if str(item.get("number", "")).strip() == "0":
+                    score += 4
+            candidates.append((score, item))
         if candidates:
             candidates.sort(key=lambda pair: pair[0], reverse=True)
             return {"id": candidates[0][1]["id"]}
@@ -1393,6 +1414,11 @@ async def _execute(
         elif "vatType" not in args and ctx and ctx.last_vat_type_id:
             args["vatType"] = {"id": ctx.last_vat_type_id}
             logger.info(f"Auto-injected last vatType id={ctx.last_vat_type_id} into product")
+        elif "vatType" not in args and _looks_like_fee_text(args.get("name"), args.get("number")):
+            resolved_vat_type = await _resolve_vat_type(client, ctx, 0, direction="outgoing")
+            if resolved_vat_type is not None:
+                args["vatType"] = resolved_vat_type
+                logger.info(f"Resolved zero-VAT fee product to vatType id={resolved_vat_type['id']}")
         # Search first if product number given — avoids 422 error on conflict
         if product_number:
             try:
@@ -1443,6 +1469,11 @@ async def _execute(
             has_ex_vat = False
             has_inc_vat = False
             for line in args["orderLines"]:
+                if _looks_like_fee_text(line.get("description")):
+                    resolved_vat_type = await _resolve_vat_type(client, ctx, 0, direction="outgoing")
+                    if resolved_vat_type is not None and _extract_reference_id(line.get("vatType")) != resolved_vat_type["id"]:
+                        line["vatType"] = resolved_vat_type
+                        logger.info(f"Normalized fee order line vatType to id={resolved_vat_type['id']}")
                 if "vatType" not in line:
                     line["vatType"] = {"id": 3}
                     logger.info("Auto-injected default vatType id=3 (25%) into order line")
@@ -1814,6 +1845,16 @@ async def _execute(
                         posting["supplier"] = {"id": ctx.last_customer_id}
                         retried = True
                         logger.info(f"Auto-injected supplier id={ctx.last_customer_id} into voucher posting retry")
+            if "kunde mangler" in error_text and ctx and ctx.last_customer_id:
+                for posting in retry_args.get("postings", []):
+                    if (
+                        isinstance(posting, dict)
+                        and posting.get("amountGross", 0) > 0
+                        and "customer" not in posting
+                    ):
+                        posting["customer"] = {"id": ctx.last_customer_id}
+                        retried = True
+                        logger.info(f"Auto-injected customer id={ctx.last_customer_id} into voucher posting retry")
             if retried:
                 for i, posting in enumerate(retry_args.get("postings", [])):
                     if isinstance(posting, dict):
@@ -2020,6 +2061,17 @@ async def _execute(
             if enriched_fields != params["fields"]:
                 params["fields"] = enriched_fields
                 logger.info(f"Enriched ledger account fields filter to {enriched_fields}")
+        if path == "/invoice" and isinstance(params.get("fields"), str):
+            rewritten_fields = _rewrite_fields_filter(
+                params["fields"],
+                {
+                    "amountTotal": "amount",
+                    "amountRemainder": "amountOutstanding",
+                },
+            )
+            if rewritten_fields != params["fields"]:
+                params["fields"] = rewritten_fields
+                logger.info(f"Normalized invoice fields filter to {rewritten_fields}")
         if path == "/product" and "number" in params and "productNumber" not in params:
             number_value = params.get("number")
             if isinstance(number_value, str) and not re.fullmatch(r"\s*\d+(?:\s*,\s*\d+)*\s*", number_value):
@@ -2065,7 +2117,7 @@ async def _execute(
             logger.info("Normalized raw /employee/standardTime POST into create_standard_time")
             return await _execute(client, "create_standard_time", translated_args, endpoint_search, ctx)
         # Auto-inject required date range for invoice LIST searches only (not by-ID lookups)
-        is_invoice_list = method == "GET" and "/invoice" in path and "/:payment" not in path
+        is_invoice_list = method == "GET" and path == "/invoice"
         # Skip if path has a numeric ID (e.g. /invoice/2147493584)
         if is_invoice_list and re.search(r'/invoice/\d+', path):
             is_invoice_list = False

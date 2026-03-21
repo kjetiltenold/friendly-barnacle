@@ -267,7 +267,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             get_responses={
                 (
                     "/ledger/vatType",
-                    (("fields", "id,name,percentage"), ("percentage", "15")),
+                    (("fields", "id,number,name,percentage"), ("percentage", "15")),
                 ): {
                     "fullResultSize": 2,
                     "values": [
@@ -298,7 +298,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [
-                ("GET", "/ledger/vatType", {"percentage": "15", "fields": "id,name,percentage"}),
+                ("GET", "/ledger/vatType", {"percentage": "15", "fields": "id,number,name,percentage"}),
                 ("GET", "/product", {"productNumber": "4431", "fields": "id,name,number"}),
                 ("POST", "/product", {
                     "name": "Galletas de avena",
@@ -308,6 +308,45 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 }),
             ],
         )
+
+    async def test_create_product_defaults_dunning_fee_to_zero_vat(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/vatType",
+                    (("fields", "id,number,name,percentage"), ("percentage", "0")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 7, "number": 7, "name": "Ingen mva", "percentage": 0.0},
+                        {"id": 0, "number": 0, "name": "Outgoing no VAT", "percentage": 0.0},
+                    ],
+                },
+                (
+                    "/product",
+                    (("fields", "id,name,number"), ("productNumber", "MAHNGEBUEHR-60")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_product",
+            {
+                "name": "Mahngebuhr",
+                "number": "MAHNGEBUEHR-60",
+                "priceExcludingVatCurrency": 60,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/product", {
+            "name": "Mahngebuhr",
+            "number": "MAHNGEBUEHR-60",
+            "priceExcludingVatCurrency": 60,
+            "vatType": {"id": 0},
+        }))
 
     async def test_search_entity_blocks_unfiltered_searches(self):
         client = FakeTripletexClient()
@@ -722,6 +761,59 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["orderLines"][0]["vatType"], {"id": 3})
         self.assertFalse(body["isPrioritizeAmountsIncludingVat"])
 
+    async def test_create_order_normalizes_fee_line_to_zero_vat(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/vatType",
+                    (("fields", "id,number,name,percentage"), ("percentage", "0")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 7, "number": 7, "name": "Ingen mva", "percentage": 0.0},
+                        {"id": 0, "number": 0, "name": "Outgoing no VAT", "percentage": 0.0},
+                    ],
+                },
+            }
+        )
+
+        await _execute(
+            client,
+            "create_order",
+            {
+                "customer": {"id": 108297625},
+                "orderDate": "2026-03-21",
+                "deliveryDate": "2026-03-21",
+                "orderLines": [
+                    {
+                        "product": {"id": 84414648},
+                        "description": "Mahngebuhr fur uberfallige Rechnung 3",
+                        "count": 1,
+                        "unitPriceExcludingVatCurrency": 60,
+                        "vatType": {"id": 7},
+                    }
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/order", {
+            "customer": {"id": 108297625},
+            "orderDate": "2026-03-21",
+            "deliveryDate": "2026-03-21",
+            "orderLines": [
+                {
+                    "product": {"id": 84414648},
+                    "description": "Mahngebuhr fur uberfallige Rechnung 3",
+                    "count": 1,
+                    "unitPriceExcludingVatCurrency": 60,
+                    "vatType": {"id": 0},
+                }
+            ],
+            "isPrioritizeAmountsIncludingVat": False,
+        }))
+
     async def test_tripletex_api_call_normalizes_vattype_fields(self):
         client = FakeTripletexClient(
             get_responses={
@@ -748,6 +840,56 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
             [("GET", "/ledger/vatType", {"fields": "id,name,percentage"})],
         )
+
+    async def test_tripletex_api_call_normalizes_invoice_fields(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice",
+                    (
+                        ("fields", "id,invoiceNumber,amountOutstanding,amount"),
+                        ("invoiceDateFrom", "2000-01-01"),
+                        ("invoiceDateTo", "2100-01-01"),
+                        ("isPaid", "false"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 1, "invoiceNumber": 3, "amountOutstanding": 5000, "amount": 10000}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/invoice?isPaid=false&fields=id,invoiceNumber,amountRemainder,amountTotal"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["amountOutstanding"], 5000)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/invoice", {"isPaid": "false", "fields": "id,invoiceNumber,amountOutstanding,amount", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
+        )
+
+    async def test_tripletex_api_call_does_not_inject_invoice_dates_on_payment_type(self):
+        client = FakeTripletexClient(
+            get_responses={
+                ("/invoice/paymentType", ()): {"fullResultSize": 1, "values": [{"id": 1, "description": "Bank"}]},
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/invoice/paymentType"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 1)
+        self.assertEqual(client.calls, [("GET", "/invoice/paymentType", {})])
 
     async def test_tripletex_api_call_enriches_ledger_account_fields(self):
         client = FakeTripletexClient(
@@ -890,6 +1032,34 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[1][0:2], ("POST", "/ledger/voucher"))
         self.assertIn("vatType", client.calls[0][2]["postings"][0])
         self.assertNotIn("vatType", client.calls[1][2]["postings"][0])
+
+    async def test_create_voucher_retries_with_customer_on_receivable_posting(self):
+        client = FakeTripletexClient(
+            post_errors={
+                "/ledger/voucher": [
+                    Exception("422 Validation failed: Kunde mangler."),
+                    None,
+                ]
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Mahngebuhr",
+                "postings": [
+                    {"account": {"id": 1500}, "amountGross": 60},
+                    {"account": {"id": 3400}, "amountGross": -60},
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(last_customer_id=108297625),
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[1][2]["postings"][0]["customer"], {"id": 108297625})
 
     async def test_create_per_diem_uses_last_travel_expense_context(self):
         client = FakeTripletexClient()
