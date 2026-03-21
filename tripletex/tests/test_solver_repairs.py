@@ -7,6 +7,7 @@ from app.agent.solver import (
     _build_user_content,
     _compress_messages,
     _execute_tool_calls,
+    _prompt_likely_requires_writes,
     _prime_context,
     _should_retry_text_only_response,
 )
@@ -222,6 +223,23 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             _should_retry_text_only_response(
                 "DONE",
                 "Crie um projeto interno para cada conta.",
+                0,
+                0,
+            )
+        )
+
+    def test_prompt_likely_requires_writes_handles_accented_french_create(self):
+        self.assertTrue(
+            _prompt_likely_requires_writes(
+                "Créez un projet interne pour chacun des trois comptes et créez aussi une activité."
+            )
+        )
+
+    def test_should_retry_text_only_response_when_done_after_french_analysis_but_no_writes(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                "Analysez le grand livre puis créez un projet interne pour chacun des trois comptes.",
                 0,
                 0,
             )

@@ -4,6 +4,7 @@ import datetime
 import json
 import logging
 import time
+import unicodedata
 from typing import Any
 
 from app.config import get_settings
@@ -20,10 +21,15 @@ logger = logging.getLogger(__name__)
 
 def _prompt_likely_requires_writes(prompt: str) -> bool:
     lowered = (prompt or "").lower()
+    normalized = unicodedata.normalize("NFKD", lowered)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
     write_markers = (
         "create",
         "opprett",
         "registrer",
+        "registe",
+        "enregistrez",
+        "registre",
         "register",
         "update",
         "oppdater",
@@ -35,9 +41,12 @@ def _prompt_likely_requires_writes(prompt: str) -> bool:
         "crie",
         "crear",
         "créer",
+        "criar",
+        "creer",
+        "creez",
         "erstell",
     )
-    return any(marker in lowered for marker in write_markers)
+    return any(marker in normalized for marker in write_markers)
 
 
 def _should_retry_text_only_response(
