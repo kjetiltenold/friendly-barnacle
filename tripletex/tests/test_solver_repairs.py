@@ -166,7 +166,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
                 "Here are the top three accounts.",
                 "Analyze the increases and create a project for each.",
                 0,
-                False,
+                0,
             )
         )
 
@@ -176,7 +176,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
                 "DONE",
                 "Crie um projeto interno para cada conta.",
                 0,
-                False,
+                0,
             )
         )
 
@@ -186,7 +186,17 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
                 "DONE",
                 "Create a project and activity.",
                 2,
-                False,
+                0,
+            )
+        )
+
+    def test_should_not_retry_text_only_response_after_two_reminders(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                "Create a project and activity.",
+                0,
+                2,
             )
         )
 

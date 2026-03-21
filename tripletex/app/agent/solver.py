@@ -44,14 +44,36 @@ def _should_retry_text_only_response(
     assistant_text: str,
     prompt: str,
     write_call_count: int,
-    reminder_already_sent: bool,
+    reminder_count: int,
 ) -> bool:
-    if reminder_already_sent:
+    if reminder_count >= 2:
         return False
     normalized = assistant_text.strip().upper()
     if normalized != "DONE":
         return True
     return _prompt_likely_requires_writes(prompt) and write_call_count == 0
+
+
+def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
+    if isinstance(ctx.last_top_expense_analysis, dict):
+        account_names = [
+            str((item.get("account") or {}).get("name") or "").strip()
+            for item in (ctx.last_top_expense_analysis.get("topAccounts") or [])
+            if isinstance(item, dict)
+        ]
+        account_names = [name for name in account_names if name]
+        accounts_text = ", ".join(account_names[:3])
+        if accounts_text:
+            return (
+                "The task is not complete yet. Do not call find_top_expense_account_increases again. "
+                f"Use the existing topAccounts result ({accounts_text}) and now execute the required write tools: "
+                "create_project with isInternal=true for each account name, create_activity with the same name, "
+                "and create_project_activity to link each activity to its project. Reply only with DONE when the writes are finished."
+            )
+    return (
+        "The task is not complete yet. Execute all requested Tripletex create, update, delete, "
+        "or posting actions before stopping. Reply only with DONE when the requested actions are finished."
+    )
 
 
 async def solve_task(request: SolveRequest) -> None:
@@ -67,7 +89,7 @@ async def solve_task(request: SolveRequest) -> None:
         today = datetime.date.today().isoformat()
         system_prompt = get_system_prompt(today)
         ctx = EntityContext()
-        completion_reminder_sent = False
+        completion_reminder_count = 0
 
         await _prime_context(tx, ctx)
 
@@ -106,17 +128,14 @@ async def solve_task(request: SolveRequest) -> None:
                     assistant_text,
                     request.prompt,
                     tx.write_call_count,
-                    completion_reminder_sent,
+                    completion_reminder_count,
                 ):
-                    completion_reminder_sent = True
+                    completion_reminder_count += 1
                     logger.info("Model stopped before completing requested actions; nudging to continue")
                     messages.append({"role": "assistant", "content": assistant_text})
                     messages.append({
                         "role": "user",
-                        "content": (
-                            "The task is not complete yet. Execute all requested Tripletex create, update, delete, "
-                            "or posting actions before stopping. Reply only with DONE when the requested actions are finished."
-                        ),
+                        "content": _build_incomplete_task_reminder(request.prompt, ctx),
                     })
                     continue
                 # Model is done (text-only response)

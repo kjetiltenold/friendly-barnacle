@@ -1292,6 +1292,41 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["postings"][0]["department"], {"id": 44})
         self.assertNotIn("department", body["postings"][1])
 
+    async def test_find_top_expense_account_increases_blocks_identical_repeat(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext()
+
+        first = await _execute(
+            client,
+            "find_top_expense_account_increases",
+            {
+                "period_a_from": "2026-01-01",
+                "period_a_to": "2026-02-01",
+                "period_b_from": "2026-02-01",
+                "period_b_to": "2026-03-01",
+                "top_n": 3,
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+        second = await _execute(
+            client,
+            "find_top_expense_account_increases",
+            {
+                "period_a_from": "2026-01-01",
+                "period_a_to": "2026-02-01",
+                "period_b_from": "2026-02-01",
+                "period_b_to": "2026-03-01",
+                "top_n": 3,
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("topAccounts", first)
+        self.assertIn("already ran for this exact comparison", second["error"])
+        self.assertEqual(len(client.calls), 2)
+
     async def test_create_voucher_retries_without_locked_vattype(self):
         client = FakeTripletexClient(
             post_errors={

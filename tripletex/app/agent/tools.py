@@ -76,6 +76,8 @@ class EntityContext:
     vat_type_cache: dict | None = None  # Maps (percentage, direction_hint) -> vat_type_id
     project_start_dates: dict[int, str] | None = None
     timesheet_hours_by_day: dict[tuple[int, int, int, str], float] | None = None
+    last_top_expense_analysis_key: str | None = None
+    last_top_expense_analysis: dict | None = None
     next_project_activity_pair_index: int = 0
 
     def __post_init__(self):
@@ -2166,6 +2168,33 @@ async def _execute(
         return await client.post("/salary/transaction", json=args)
 
     if name == "find_top_expense_account_increases":
+        analysis_key = json.dumps(
+            {
+                "period_a_from": args["period_a_from"],
+                "period_a_to": args["period_a_to"],
+                "period_b_from": args["period_b_from"],
+                "period_b_to": args["period_b_to"],
+                "top_n": int(args.get("top_n", 3)),
+            },
+            sort_keys=True,
+        )
+        if (
+            ctx
+            and ctx.last_top_expense_analysis_key == analysis_key
+            and isinstance(ctx.last_top_expense_analysis, dict)
+        ):
+            cached = ctx.last_top_expense_analysis
+            return {
+                "error": (
+                    "find_top_expense_account_increases already ran for this exact comparison. "
+                    "Use the topAccounts from the previous result and continue with create_project, "
+                    "create_activity, and create_project_activity. Do not call this tool again."
+                ),
+                "periodA": cached.get("periodA"),
+                "periodB": cached.get("periodB"),
+                "topAccounts": cached.get("topAccounts", []),
+                "nextStepHint": cached.get("nextStepHint"),
+            }
         top_n = max(1, int(args.get("top_n", 3)))
         postings_a = await _list_postings_by_date(client, args["period_a_from"], args["period_a_to"])
         postings_b = await _list_postings_by_date(client, args["period_b_from"], args["period_b_to"])
@@ -2216,12 +2245,16 @@ async def _execute(
 
         accounts.sort(key=lambda item: item["increase"], reverse=True)
         top_accounts = [item for item in accounts if item["increase"] > 0][:top_n]
-        return {
+        result = {
             "periodA": {"from": args["period_a_from"], "to": args["period_a_to"]},
             "periodB": {"from": args["period_b_from"], "to": args["period_b_to"]},
             "topAccounts": top_accounts,
             "nextStepHint": "Analysis only. If the task asks for follow-up writes, continue with create_project, create_activity, and create_project_activity for each top account.",
         }
+        if ctx is not None:
+            ctx.last_top_expense_analysis_key = analysis_key
+            ctx.last_top_expense_analysis = result
+        return result
 
     if name == "search_entity":
         entity_type = args["entity_type"]
