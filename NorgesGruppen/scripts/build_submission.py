@@ -65,6 +65,12 @@ def parse_args():
         default=True,
         help="Enable or disable half precision in inference.",
     )
+    parser.add_argument(
+        "--tta",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable test-time augmentation (multi-scale + flip) during inference.",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +137,7 @@ def main():
         "iou": args.iou,
         "max_det": args.max_det,
         "half": bool(args.half),
+        "augment": bool(args.tta),
     }
     if len(copied_weight_names) > 1:
         config["ensemble"] = {

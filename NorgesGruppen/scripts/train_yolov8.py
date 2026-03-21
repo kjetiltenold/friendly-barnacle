@@ -93,6 +93,8 @@ def parse_args():
     parser.add_argument("--hsv-h", type=float, default=0.015, help="HSV hue augmentation.")
     parser.add_argument("--hsv-s", type=float, default=0.5, help="HSV saturation augmentation.")
     parser.add_argument("--hsv-v", type=float, default=0.3, help="HSV value augmentation.")
+    parser.add_argument("--cls", type=float, default=0.5, help="Classification loss weight.")
+    parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing epsilon.")
     parser.add_argument("--close-mosaic", type=int, default=15, help="Disable mosaic near the end.")
     parser.add_argument("--save-period", type=int, default=5, help="Save a checkpoint every N epochs.")
     parser.add_argument(
@@ -182,6 +184,8 @@ def main():
         hsv_h=args.hsv_h,
         hsv_s=args.hsv_s,
         hsv_v=args.hsv_v,
+        cls=args.cls,
+        label_smoothing=args.label_smoothing,
         fliplr=0.0,
         flipud=0.0,
         val=use_val,

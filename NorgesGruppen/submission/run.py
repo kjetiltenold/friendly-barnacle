@@ -144,6 +144,8 @@ def predict_one(model, image_path: Path, config, device: str):
     }
     if bool(config.get("half", False)) and torch.cuda.is_available():
         predict_kwargs["half"] = True
+    if bool(config.get("augment", False)):
+        predict_kwargs["augment"] = True
     return model.predict(**predict_kwargs)[0]
 
 

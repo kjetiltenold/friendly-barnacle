@@ -142,6 +142,11 @@ def make_split(images, val_fraction: float, seed: int):
     train_ids = set()
     val_ids = set()
 
+    if val_fraction <= 0.0:
+        for image in images:
+            train_ids.add(image["id"])
+        return train_ids, val_ids
+
     for _, group in sorted(grouped.items()):
         shuffled = group[:]
         rng.shuffle(shuffled)
