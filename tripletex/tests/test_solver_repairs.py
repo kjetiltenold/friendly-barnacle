@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.agent.solver import (
+    TerminalTripletexProxyTokenError,
     _build_user_content,
     _compress_messages,
     _execute_tool_calls,
+    _is_terminal_tripletex_proxy_token_error_message,
     _prompt_likely_requires_writes,
     _prime_context,
     _should_retry_text_only_response,
@@ -54,6 +56,25 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             [("GET", "/department", {"fields": "id,name", "count": 1})],
         )
 
+    async def test_prime_context_stops_on_invalid_proxy_token(self):
+        class FailingClient(FakeTripletexClient):
+            async def get(self, path, params=None):
+                self.calls.append(("GET", path, params))
+                raise RuntimeError(
+                    '403 Forbidden: {"error":"Invalid or expired proxy token. Each submission receives a unique token - do not reuse tokens from previous submissions.","source":"nmiai-proxy"}'
+                )
+
+        client = FailingClient()
+        ctx = EntityContext()
+
+        with self.assertRaises(TerminalTripletexProxyTokenError):
+            await _prime_context(client, ctx)
+
+        self.assertEqual(
+            client.calls,
+            [("GET", "/department", {"fields": "id,name", "count": 1})],
+        )
+
     async def test_execute_tool_calls_runs_in_order_with_shared_context(self):
         ctx = EntityContext()
         observed_customer_ids = []
@@ -83,6 +104,39 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "tool", "tool_call_id": "tc2", "content": json.dumps({"value": {"id": 456, "customer": {"id": 123}}})},
             ],
         )
+
+    async def test_execute_tool_calls_stops_on_invalid_proxy_token_error(self):
+        ctx = EntityContext()
+        seen_calls = []
+
+        async def fake_dispatch_tool(tx, name, args_json, endpoint_search=None, ctx=None):
+            seen_calls.append(name)
+            if name == "create_customer":
+                return json.dumps(
+                    {
+                        "error": '403 Forbidden: {"error":"Invalid or expired proxy token. Each submission receives a unique token - do not reuse tokens from previous submissions.","source":"nmiai-proxy"}'
+                    }
+                )
+            raise AssertionError("Subsequent tool calls should not run after a terminal proxy-token error")
+
+        tool_calls = [
+            _tool_call("tc1", "create_customer", {"name": "Acme"}),
+            _tool_call("tc2", "tripletex_api_call", {"method": "GET", "path": "/ledger/account?number=2400"}),
+        ]
+
+        with patch("app.agent.solver.dispatch_tool", side_effect=fake_dispatch_tool):
+            with self.assertRaises(TerminalTripletexProxyTokenError):
+                await _execute_tool_calls(FakeTripletexClient(), tool_calls, None, ctx)
+
+        self.assertEqual(seen_calls, ["create_customer"])
+
+    def test_terminal_tripletex_proxy_token_error_message_detection(self):
+        self.assertTrue(
+            _is_terminal_tripletex_proxy_token_error_message(
+                '403 Forbidden: {"error":"Invalid or expired proxy token. Each submission receives a unique token - do not reuse tokens from previous submissions.","source":"nmiai-proxy"}'
+            )
+        )
+        self.assertFalse(_is_terminal_tripletex_proxy_token_error_message("422 Validation failed"))
 
     def test_compress_messages_keeps_lookup_payloads(self):
         lookup_payload = json.dumps(

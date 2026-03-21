@@ -17,6 +17,15 @@ from app.agent.tools import dispatch_tool, EntityContext
 from app.agent.prompts import get_system_prompt
 
 logger = logging.getLogger(__name__)
+TERMINAL_PROXY_TOKEN_MARKER = "invalid or expired proxy token"
+
+
+class TerminalTripletexProxyTokenError(RuntimeError):
+    """Raised when the submission-specific Tripletex proxy token is already invalid."""
+
+
+def _is_terminal_tripletex_proxy_token_error_message(message: str | None) -> bool:
+    return TERMINAL_PROXY_TOKEN_MARKER in str(message or "").lower()
 
 
 def _prompt_likely_requires_writes(prompt: str) -> bool:
@@ -183,6 +192,8 @@ async def solve_task(request: SolveRequest) -> None:
             _compress_messages(messages)
         else:
             logger.warning(f"Agent hit max iterations ({settings.max_agent_iterations})")
+    except TerminalTripletexProxyTokenError as e:
+        logger.warning(f"Agent stopping due to invalid or expired Tripletex proxy token: {e}")
 
     finally:
         if endpoint_search is not None:
@@ -228,6 +239,9 @@ async def _prime_context(tx: TripletexClient, ctx: EntityContext) -> None:
         if values:
             ctx.last_department_id = values[0].get("id")
     except Exception as e:
+        if _is_terminal_tripletex_proxy_token_error_message(str(e)):
+            logger.warning("Stopping before agent loop due to invalid or expired Tripletex proxy token during department prefetch")
+            raise TerminalTripletexProxyTokenError(str(e)) from e
         logger.info(f"Department prefetch skipped: {e}")
 
 
@@ -248,6 +262,13 @@ async def _execute_tool_calls(
             ctx=ctx,
         )
         tool_messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+        try:
+            result = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            result = None
+        if isinstance(result, dict) and _is_terminal_tripletex_proxy_token_error_message(result.get("error")):
+            logger.warning("Stopping tool execution due to invalid or expired Tripletex proxy token")
+            raise TerminalTripletexProxyTokenError(str(result.get("error")))
     return tool_messages
 
 
