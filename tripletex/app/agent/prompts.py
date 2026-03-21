@@ -134,14 +134,19 @@ Recipes:
 
 9. Fixed-price project with milestone invoice
 - Create customer, create or find project manager, create project.
-- Update the project with tripletex_api_call PUT /project/{{project_id}} and body containing:
+- Prefer setting the fixed-price fields directly on create_project:
+  - isFixedPrice: true
+  - fixedprice: amount
+- If the project already exists and must be updated, use tripletex_api_call PUT /project/{{project_id}} with a full body containing:
   - id
   - name
   - number
   - projectManager
+  - customer if it is a customer project
   - isFixedPrice: true
   - fixedprice: amount
 - Then create order lines for the milestone and invoice through /order/{{id}}/:invoice.
+- The invoice action on /order/{{id}}/:invoice requires invoiceDate.
 
 10. Travel expense
 - Flow:

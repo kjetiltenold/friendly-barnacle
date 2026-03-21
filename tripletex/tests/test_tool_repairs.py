@@ -1,3 +1,4 @@
+import datetime
 import unittest
 from unittest.mock import ANY
 
@@ -284,6 +285,49 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn(("POST", "/customer", {"name": "Silberberg GmbH", "organizationNumber": "871719500", "isCustomer": False, "isSupplier": True}), client.calls)
 
+    async def test_create_customer_corrects_flags_after_create_when_put_response_is_stale(self):
+        client = FakeTripletexClient(
+            post_responses={
+                "/customer": {
+                    "value": {
+                        "id": 108341268,
+                        "name": "Bruckentor GmbH",
+                        "organizationNumber": "981448294",
+                        "isCustomer": True,
+                        "isSupplier": True,
+                    }
+                }
+            },
+            put_responses={
+                "/customer/108341268": {
+                    "value": {
+                        "id": 108341268,
+                        "name": "Bruckentor GmbH",
+                        "organizationNumber": "981448294",
+                        "isCustomer": True,
+                        "isSupplier": True,
+                    }
+                }
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_customer",
+            {
+                "name": "Bruckentor GmbH",
+                "organizationNumber": "981448294",
+                "isCustomer": False,
+                "isSupplier": True,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 108341268)
+        self.assertFalse(result["value"]["isCustomer"])
+        self.assertTrue(result["value"]["isSupplier"])
+
     async def test_create_product_reuses_existing_product_number(self):
         client = FakeTripletexClient(
             get_responses={
@@ -547,6 +591,31 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((method, path), ("POST", "/project"))
         self.assertEqual(body["customer"], {"id": 108293203})
         self.assertEqual(body["projectManager"], {"id": 18596035})
+
+    async def test_create_project_normalizes_fixed_price_alias(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_project",
+            {
+                "name": "Migracao para nuvem",
+                "number": "PRJ-20260321-001",
+                "startDate": "2026-03-21",
+                "isFixedPrice": True,
+                "fixedPrice": 362300,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(last_customer_id=100, last_employee_id=200),
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/project"))
+        self.assertEqual(body["customer"], {"id": 100})
+        self.assertEqual(body["projectManager"], {"id": 200})
+        self.assertTrue(body["isFixedPrice"])
+        self.assertEqual(body["fixedprice"], 362300)
+        self.assertNotIn("fixedPrice", body)
 
     async def test_create_department_reuses_existing_by_name(self):
         client = FakeTripletexClient(
@@ -1136,6 +1205,30 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             [("GET", "/supplierInvoice", {"fields": "*", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
         )
 
+    async def test_tripletex_api_call_injects_invoice_date_for_order_invoice_action(self):
+        client = FakeTripletexClient()
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "PUT", "path": "/order/402003015/:invoice"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "PUT",
+                    "/order/402003015/:invoice",
+                    None,
+                    {"invoiceDate": datetime.date.today().isoformat()},
+                )
+            ],
+        )
+
     async def test_tripletex_api_call_normalizes_ledger_posting_month_end_date_to_exclusive(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1559,6 +1652,78 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[-1][2]["postings"][0]["amountGross"], 81812)
         self.assertEqual(client.calls[-1][2]["postings"][0]["amountGrossCurrency"], 81812)
         self.assertEqual(client.calls[-1][2]["postings"][0]["vatType"], {"id": 50})
+
+    async def test_create_voucher_expands_simple_supplier_invoice_gross_amount_into_explicit_vat_split(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "2710"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 30, "number": 2710, "name": "Inngaaende mva"}],
+                }
+            }
+        )
+        ctx = EntityContext(last_department_id=730036)
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6590,
+                "name": "Burodienstleistungen",
+                "vatType": {"id": 1},
+                "legalVatTypes": [{"id": 1}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+        ctx.vat_type_cache = {(25.0, "incoming"): 1}
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Supplier invoice INV-2026-2118",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 70400,
+                        "amountGrossCurrency": 70400,
+                        "vatType": {"id": 1},
+                        "description": "Burodienstleistungen",
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -70400,
+                        "amountGrossCurrency": -70400,
+                        "supplier": {"id": 77},
+                        "description": "Supplier invoice",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[0][0:2], ("GET", "/ledger/account"))
+        self.assertEqual(client.calls[-1][0:2], ("POST", "/ledger/voucher"))
+        voucher_postings = client.calls[-1][2]["postings"]
+        self.assertEqual(len(voucher_postings), 3)
+        self.assertEqual(voucher_postings[0]["amountGross"], 56320.0)
+        self.assertNotIn("vatType", voucher_postings[0])
+        self.assertEqual(voucher_postings[1]["account"], {"id": 30})
+        self.assertEqual(voucher_postings[1]["amountGross"], 14080.0)
+        self.assertEqual(voucher_postings[1]["department"], {"id": 730036})
+        self.assertEqual(voucher_postings[2]["amountGross"], -70400)
 
     async def test_create_voucher_normalizes_year_end_depreciation_to_requested_accounts(self):
         client = FakeTripletexClient()

@@ -405,6 +405,9 @@ BASE_TOOL_DEFINITIONS = [
             "startDate": {"type": "string"},
             "endDate": {"type": "string"},
             "isInternal": {"type": "boolean"},
+            "isFixedPrice": {"type": "boolean"},
+            "fixedprice": {"type": "number", "description": "Fixed project price amount in project currency."},
+            "fixedPrice": {"type": "number", "description": "Convenience alias for fixedprice."},
             "isClosed": {"type": "boolean"},
         },
         "required": ["name"],
@@ -1141,6 +1144,89 @@ def _normalize_simple_supplier_invoice_amounts(postings: list[dict] | None, ctx:
     return True
 
 
+def _find_cached_vat_percentage(ctx: EntityContext | None, vat_type_id: int | None, direction: str | None = None) -> float | None:
+    if ctx is None or vat_type_id is None or not ctx.vat_type_cache:
+        return None
+    for (percentage, cached_direction), cached_id in ctx.vat_type_cache.items():
+        if cached_id != vat_type_id:
+            continue
+        if direction is None or cached_direction == direction:
+            return float(percentage)
+    for (percentage, _cached_direction), cached_id in ctx.vat_type_cache.items():
+        if cached_id == vat_type_id:
+            return float(percentage)
+    return None
+
+
+async def _expand_simple_supplier_invoice_vat_split(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    ctx: EntityContext | None,
+) -> bool:
+    if not isinstance(postings, list):
+        return False
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return False
+    expense_posting = positive_postings[0]
+    payable_posting = negative_postings[0]
+    vat_type_id = _extract_reference_id(expense_posting.get("vatType"))
+    if vat_type_id in (None, 0):
+        return False
+    payable_account = _get_cached_account(ctx, payable_posting) or {}
+    is_supplier_liability = "supplier" in payable_posting or str(payable_account.get("number")) == "2400"
+    if not is_supplier_liability:
+        return False
+    gross_amount = round(abs(_coerce_number(payable_posting.get("amountGross"))), 2)
+    expense_amount = round(_coerce_number(expense_posting.get("amountGross")), 2)
+    if abs(expense_amount - gross_amount) > 0.01:
+        return False
+    vat_percentage = _find_cached_vat_percentage(ctx, vat_type_id, direction="incoming")
+    if vat_percentage in (None, 0):
+        return False
+    vat_account = _find_cached_account_by_number(ctx, "2710")
+    if vat_account is None:
+        result = await client.get(
+            "/ledger/account",
+            params={
+                "number": "2710",
+                "fields": "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount",
+            },
+        )
+        values = result.get("values", [])
+        if values:
+            vat_account = values[0]
+            if ctx is not None:
+                ctx.account_cache[vat_account["id"]] = vat_account
+    if vat_account is None:
+        return False
+    vat_amount = round(gross_amount * vat_percentage / (100 + vat_percentage), 2)
+    net_amount = round(gross_amount - vat_amount, 2)
+    if vat_amount <= 0 or net_amount <= 0:
+        return False
+    expense_posting["amountGross"] = net_amount
+    expense_posting["amountGrossCurrency"] = net_amount
+    expense_posting.pop("vatType", None)
+    vat_posting = {
+        "account": {"id": vat_account["id"]},
+        "amountGross": vat_amount,
+        "amountGrossCurrency": vat_amount,
+        "description": f"Inngående MVA {vat_percentage:g}%",
+    }
+    if ctx and ctx.last_department_id:
+        vat_posting["department"] = {"id": ctx.last_department_id}
+    insert_index = postings.index(expense_posting) + 1
+    postings.insert(insert_index, vat_posting)
+    for i, posting in enumerate(postings):
+        if isinstance(posting, dict):
+            posting["row"] = i + 1
+    logger.info(
+        f"Expanded supplier invoice gross amount {gross_amount} into net {net_amount} + VAT {vat_amount} on account 2710"
+    )
+    return True
+
+
 async def dispatch_tool(
     client: TripletexClient,
     name: str,
@@ -1722,7 +1808,11 @@ async def _execute(
             if update_fields:
                 try:
                     logger.info(f"Correcting created customer id={customer_id} flags after create")
-                    return await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
+                    corrected = await client.put(f"/customer/{customer_id}", json={"id": customer_id, **update_fields})
+                    corrected_value = dict(corrected.get("value", {}))
+                    corrected_value.setdefault("id", customer_id)
+                    corrected_value.update(update_fields)
+                    return {"value": corrected_value}
                 except Exception as update_error:
                     logger.warning(f"Customer post-create flag correction failed for id={customer_id}: {update_error}")
             return result
@@ -1849,6 +1939,9 @@ async def _execute(
             raise
 
     if name == "create_project":
+        if "fixedprice" not in args and args.get("fixedPrice") not in (None, ""):
+            args["fixedprice"] = _coerce_number(args.pop("fixedPrice"))
+            logger.info(f"Normalized create_project fixedPrice -> fixedprice ({args['fixedprice']})")
         # Auto-inject projectManager if missing
         preferred_manager_id = _preferred_project_manager_id(ctx)
         if "projectManager" not in args and preferred_manager_id:
@@ -2205,6 +2298,7 @@ async def _execute(
                         posting["department"] = {"id": ctx.last_department_id}
                         logger.info(f"Auto-injected department id={ctx.last_department_id} into voucher posting")
             _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
+            await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
             # Pre-validate that postings balance before sending
             total = sum(
                 p.get("amountGross", 0) for p in args["postings"] if isinstance(p, dict)
@@ -2610,6 +2704,10 @@ async def _execute(
             if date_to_key not in params:
                 params[date_to_key] = "2100-01-01"
                 logger.info(f"Auto-injected {date_to_key} for {path} search")
+        if method == "PUT" and re.fullmatch(r"/order/\d+/:invoice", path):
+            if "invoiceDate" not in params:
+                params["invoiceDate"] = datetime.date.today().isoformat()
+                logger.info(f"Auto-injected invoiceDate={params['invoiceDate']} for order invoice action")
         # Fix row numbering in voucher postings — row 0 is reserved by Tripletex
         if body and "postings" in body and isinstance(body["postings"], list):
             for i, posting in enumerate(body["postings"]):
