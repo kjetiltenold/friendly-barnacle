@@ -1608,6 +1608,88 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_create_salary_transaction_retries_after_setting_placeholder_dob(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment",
+                    (("count", 20), ("employeeId", 18610434), ("fields", "id,startDate,endDate")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/18610434",
+                    (("fields", "id,firstName,lastName,email,dateOfBirth,department"),),
+                ): {"value": {"id": 18610434, "email": "ana.ferreira@example.org"}},
+            },
+            post_errors={
+                "/salary/transaction": [
+                    Exception("422 unknown: employee is not registered with an employment in the period"),
+                    None,
+                ],
+            },
+            post_responses={
+                "/employee/employment": {"value": {"id": 2815301, "employee": {"id": 18610434}, "startDate": "2026-03-21"}},
+            },
+        )
+
+        await _execute(
+            client,
+            "create_salary_transaction",
+            {
+                "date": "2026-03-21",
+                "year": 2026,
+                "month": 3,
+                "payslips": [
+                    {
+                        "employee": {"id": 18610434},
+                        "specifications": [
+                            {"salaryType": {"id": 53258510}, "rate": 41750, "count": 1},
+                            {"salaryType": {"id": 53258687}, "rate": 6750, "count": 1},
+                        ],
+                    }
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18610434},
+                            "specifications": [
+                                {"salaryType": {"id": 53258510}, "rate": 41750, "count": 1},
+                                {"salaryType": {"id": 53258687}, "rate": 6750, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+                ("GET", "/employee/employment", {"employeeId": 18610434, "fields": "id,startDate,endDate", "count": 20}),
+                ("GET", "/employee/18610434", {"fields": "id,firstName,lastName,email,dateOfBirth,department"}),
+                ("PUT", "/employee/18610434", {"id": 18610434, "dateOfBirth": "1990-01-01"}, None),
+                ("POST", "/employee/employment", {"employee": {"id": 18610434, "dateOfBirth": "1990-01-01"}, "startDate": "2026-03-21"}),
+                ("POST", "/salary/transaction", {
+                    "date": "2026-03-21",
+                    "year": 2026,
+                    "month": 3,
+                    "payslips": [
+                        {
+                            "employee": {"id": 18610434},
+                            "specifications": [
+                                {"salaryType": {"id": 53258510}, "rate": 41750, "count": 1},
+                                {"salaryType": {"id": 53258687}, "rate": 6750, "count": 1},
+                            ],
+                        }
+                    ],
+                }),
+            ],
+        )
+
     async def test_find_top_expense_account_increases_blocks_identical_repeat(self):
         client = FakeTripletexClient()
         ctx = EntityContext()

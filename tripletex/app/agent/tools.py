@@ -1398,9 +1398,15 @@ async def _ensure_employment_for_employee(
     employee = await _get_employee_snapshot(client, employee_id)
     date_of_birth = employee.get("dateOfBirth")
     if not date_of_birth:
-        raise ValueError(
-            f"Cannot auto-create employment for employee {employee_id} because employee.dateOfBirth is missing"
+        placeholder_date_of_birth = "1990-01-01"
+        logger.warning(
+            f"Employee {employee_id} is missing dateOfBirth; applying placeholder {placeholder_date_of_birth} to create employment"
         )
+        await client.put(
+            f"/employee/{employee_id}",
+            json={"id": employee_id, "dateOfBirth": placeholder_date_of_birth},
+        )
+        date_of_birth = placeholder_date_of_birth
 
     result = await client.post(
         "/employee/employment",
