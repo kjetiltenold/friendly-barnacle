@@ -2065,8 +2065,10 @@ async def _execute(
             rewritten_fields = _rewrite_fields_filter(
                 params["fields"],
                 {
+                    "dueDate": "invoiceDueDate",
                     "amountTotal": "amount",
                     "amountRemainder": "amountOutstanding",
+                    "amountGross": "amount",
                 },
             )
             if rewritten_fields != params["fields"]:
@@ -2116,18 +2118,19 @@ async def _execute(
                     translated_args[target_key] = params[source_key]
             logger.info("Normalized raw /employee/standardTime POST into create_standard_time")
             return await _execute(client, "create_standard_time", translated_args, endpoint_search, ctx)
-        # Auto-inject required date range for invoice LIST searches only (not by-ID lookups)
-        is_invoice_list = method == "GET" and path == "/invoice"
-        # Skip if path has a numeric ID (e.g. /invoice/2147493584)
-        if is_invoice_list and re.search(r'/invoice/\d+', path):
-            is_invoice_list = False
-        if is_invoice_list:
-            if "invoiceDateFrom" not in params and "invoiceDateFrom" not in path:
-                params["invoiceDateFrom"] = "2000-01-01"
-                logger.info("Auto-injected invoiceDateFrom for invoice search")
-            if "invoiceDateTo" not in params and "invoiceDateTo" not in path:
-                params["invoiceDateTo"] = "2100-01-01"
-                logger.info("Auto-injected invoiceDateTo for invoice search")
+        # Auto-inject required date range for invoice and supplier-invoice list searches.
+        list_date_requirements = {
+            "/invoice": ("invoiceDateFrom", "invoiceDateTo"),
+            "/supplierInvoice": ("invoiceDateFrom", "invoiceDateTo"),
+        }
+        if method == "GET" and path in list_date_requirements:
+            date_from_key, date_to_key = list_date_requirements[path]
+            if date_from_key not in params:
+                params[date_from_key] = "2000-01-01"
+                logger.info(f"Auto-injected {date_from_key} for {path} search")
+            if date_to_key not in params:
+                params[date_to_key] = "2100-01-01"
+                logger.info(f"Auto-injected {date_to_key} for {path} search")
         # Fix row numbering in voucher postings — row 0 is reserved by Tripletex
         if body and "postings" in body and isinstance(body["postings"], list):
             for i, posting in enumerate(body["postings"]):

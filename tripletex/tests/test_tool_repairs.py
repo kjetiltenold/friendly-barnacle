@@ -847,14 +847,14 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 (
                     "/invoice",
                     (
-                        ("fields", "id,invoiceNumber,amountOutstanding,amount"),
+                        ("fields", "id,invoiceNumber,invoiceDueDate,amountOutstanding,amount"),
                         ("invoiceDateFrom", "2000-01-01"),
                         ("invoiceDateTo", "2100-01-01"),
                         ("isPaid", "false"),
                     ),
                 ): {
                     "fullResultSize": 1,
-                    "values": [{"id": 1, "invoiceNumber": 3, "amountOutstanding": 5000, "amount": 10000}],
+                    "values": [{"id": 1, "invoiceNumber": 3, "invoiceDueDate": "2026-03-20", "amountOutstanding": 5000, "amount": 10000}],
                 }
             }
         )
@@ -862,15 +862,47 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         result = await _execute(
             client,
             "tripletex_api_call",
-            {"method": "GET", "path": "/invoice?isPaid=false&fields=id,invoiceNumber,amountRemainder,amountTotal"},
+            {"method": "GET", "path": "/invoice?isPaid=false&fields=id,invoiceNumber,dueDate,amountRemainder,amountTotal,amountGross"},
             endpoint_search=None,
             ctx=EntityContext(),
         )
 
         self.assertEqual(result["values"][0]["amountOutstanding"], 5000)
+        self.assertEqual(result["values"][0]["invoiceDueDate"], "2026-03-20")
         self.assertEqual(
             client.calls,
-            [("GET", "/invoice", {"isPaid": "false", "fields": "id,invoiceNumber,amountOutstanding,amount", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
+            [("GET", "/invoice", {"isPaid": "false", "fields": "id,invoiceNumber,invoiceDueDate,amountOutstanding,amount", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
+        )
+
+    async def test_tripletex_api_call_injects_supplier_invoice_dates(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/supplierInvoice",
+                    (
+                        ("fields", "*"),
+                        ("invoiceDateFrom", "2000-01-01"),
+                        ("invoiceDateTo", "2100-01-01"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 1, "invoiceNumber": "SI-1"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/supplierInvoice?fields=*"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["invoiceNumber"], "SI-1")
+        self.assertEqual(
+            client.calls,
+            [("GET", "/supplierInvoice", {"fields": "*", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
         )
 
     async def test_tripletex_api_call_does_not_inject_invoice_dates_on_payment_type(self):

@@ -37,6 +37,7 @@ Data extraction:
 - Detect supplier intent in all languages. Supplier means create_customer with isSupplier=true and isCustomer=false.
 - Detect VAT percentages from the prompt and map them to vatType.
 - Department or avdeling means a real Tripletex department. For employees use employee.department. For vouchers use posting.department. Do not treat it as a free accounting dimension.
+- If an attached CSV or text file contains transactions, treat the attachment as the primary source of truth for payment dates, amounts, references, counterparties, and direction (incoming vs outgoing). Do not ignore attached bank-statement files.
 
 Response formats:
 - POST and PUT usually return {{"value": {{...}}}}.
@@ -289,9 +290,22 @@ Recipes:
 - To reverse a voucher: use reverse_voucher with voucher_id and date.
 - To correct: reverse the incorrect voucher, then create a new correct voucher with create_voucher.
 
+23. Bank statement reconciliation
+- If a CSV or text bank statement is attached, read the attachment first and treat it as the source of truth.
+- Do not call /bank/statement as a substitute for the attached file.
+- Extract one transaction row at a time: booking date, amount, payer/payee, reference, and direction.
+- Match incoming payments to open customer invoices by amount, customer name/reference, and payment date.
+- Match outgoing payments to supplier invoices by amount, supplier name/reference, and payment date.
+- Customer invoice payments use PUT /invoice/{{invoice_id}}/:payment with paymentDate, paymentTypeId, and paidAmount.
+- Supplier invoice payments use PUT /supplierInvoice/{{invoice_id}}/:addPayment with paymentDate, paymentTypeId, and paidAmount.
+- Handle partial payments by paying only the transaction amount from the attached row, not the full outstanding invoice amount.
+- Do not register payments for invoices that are not represented by an attachment row.
+
 Error prevention:
 - Never call POST or PUT through tripletex_api_call without a body, unless it is an action endpoint such as /:payment, /:createCreditNote, /:invoice, or /:reverse that only uses query params.
 - Invoice searches require invoiceDateFrom and invoiceDateTo.
+- Supplier invoice searches require invoiceDateFrom and invoiceDateTo.
+- If a bank statement attachment is present, do not ignore it in favor of generic Tripletex list endpoints.
 - Voucher postings must balance.
 - Use account IDs from lookups, never raw account numbers inside posting.account.id.
 - For raw search_entity calls, always include a meaningful filter. Empty searches are unsafe.

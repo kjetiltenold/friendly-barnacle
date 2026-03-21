@@ -1,7 +1,9 @@
+import base64
 import unittest
 from unittest.mock import patch
 
-from app.attachments.parser import _process_pdf
+from app.attachments.parser import _process_pdf, process_attachments
+from app.models import FileAttachment
 
 
 class _FakePixmap:
@@ -30,6 +32,23 @@ class _FakeDoc(list):
 
 
 class AttachmentParserTests(unittest.TestCase):
+    def test_process_attachments_parses_csv_into_text_block(self):
+        csv_bytes = "Dato;Belop;Tekst\n2026-02-15;24000;Nordlicht GmbH\n2026-02-15;-14500;Arctic Supplies\n".encode("utf-8")
+        attachment = FileAttachment(
+            filename="bank.csv",
+            mime_type="text/csv",
+            content_base64=base64.b64encode(csv_bytes).decode("ascii"),
+        )
+
+        blocks = process_attachments([attachment])
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["type"], "text")
+        self.assertIn("[Content from bank.csv]", blocks[0]["text"])
+        self.assertIn("Parsed CSV with 3 row(s).", blocks[0]["text"])
+        self.assertIn("Dato\tBelop\tTekst", blocks[0]["text"])
+        self.assertIn("2026-02-15\t24000\tNordlicht GmbH", blocks[0]["text"])
+
     def test_process_pdf_adds_image_for_short_text_page(self):
         doc = _FakeDoc([_FakePage("NSB\nTogbillett\n13.04.2026\n141,00\n")])
 
