@@ -1840,6 +1840,44 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             })],
         )
 
+    async def test_tripletex_api_call_normalizes_ledger_voucher_posting_voucher_number_field(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/voucher",
+                    (
+                        ("dateFrom", "2026-01-01"),
+                        ("dateTo", "2026-03-01"),
+                        ("fields", "id,date,description,postings(amountGross,account(number,name),voucher(number))"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 555, "description": "Voucher"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/ledger/voucher?dateFrom=2026-01-01&dateTo=2026-03-01&fields=id,date,description,postings(amountGross,account(number,name),voucherNumber)",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 555)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/ledger/voucher", {
+                "dateFrom": "2026-01-01",
+                "dateTo": "2026-03-01",
+                "fields": "id,date,description,postings(amountGross,account(number,name),voucher(number))",
+            })],
+        )
+
     async def test_tripletex_api_call_blocks_ledger_result(self):
         client = FakeTripletexClient()
 
@@ -2828,6 +2866,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             12: {"id": 12, "number": 6010, "name": "Avskrivning"},
             13: {"id": 13, "number": 1239, "name": "Akkumulert avskrivning"},
             14: {"id": 14, "number": 6030, "name": "Avskrivning transportmidler"},
+            19: {"id": 19, "number": 1209, "name": "Akkumulert avskrivning"},
             15: {"id": 15, "number": 5020, "name": "Wrong salary expense"},
             16: {"id": 16, "number": 2990, "name": "Wrong accrued salary"},
             17: {"id": 17, "number": 5000, "name": "Lonn til ansatte"},
@@ -2859,9 +2898,46 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[1][2]["description"], "Month-end closing March 2026 - depreciation")
         self.assertEqual(client.calls[2][2]["description"], "Month-end closing March 2026 - salary accrual")
         self.assertEqual(client.calls[1][2]["postings"][0]["account"], {"id": 14})
+        self.assertEqual(client.calls[1][2]["postings"][1]["account"], {"id": 19})
         self.assertEqual(client.calls[2][2]["postings"][0]["account"], {"id": 17})
         self.assertEqual(client.calls[2][2]["postings"][1]["account"], {"id": 18})
         self.assertEqual(len(result["values"]), 3)
+
+    async def test_create_voucher_normalizes_german_month_end_accrual_reversal_accounts(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Führen Sie den Monatsabschluss für März 2026 durch. "
+                "Buchen Sie die Rechnungsabgrenzung (4200 NOK pro Monat von Konto 1700 auf Aufwand)."
+            )
+        )
+        ctx.account_cache = {
+            1: {"id": 1, "number": 4200, "name": "Amount mistaken for account"},
+            2: {"id": 2, "number": 1700, "name": "Forskuddsbetalte kostnader"},
+            3: {"id": 3, "number": 6000, "name": "Annen driftskostnad"},
+            4: {"id": 4, "number": 1209, "name": "Akkumulert avskrivning"},
+        }
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-31",
+                "description": "Monatsabschluss März 2026 - Rechnungsabgrenzung",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 1}, "amountGross": 4200, "amountGrossCurrency": 4200},
+                    {"account": {"id": 4}, "amountGross": -4200, "amountGrossCurrency": -4200},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["account"], {"id": 3})
+        self.assertEqual(body["postings"][1]["account"], {"id": 2})
 
     async def test_create_voucher_keeps_supported_locked_vattype(self):
         client = FakeTripletexClient()
@@ -3703,6 +3779,39 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 "postings": [
                     {"account": {"id": 466691025}, "amountGross": -6400, "amountGrossCurrency": -6400},
                     {"account": {"id": 466690878}, "amountGross": 6400, "amountGrossCurrency": 6400},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("original voucher's counterpart account", result["error"])
+        self.assertEqual(client.calls, [])
+
+    async def test_create_voucher_blocks_wrong_amount_correction_with_guessed_bank_balancing_account_for_french_ledger_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Nous avons découvert des erreurs dans le grand livre de janvier et février 2026. "
+                "Vérifiez toutes les pièces et trouvez les 4 erreurs : un montant incorrect "
+                "(compte 6590, 10000 NOK comptabilisé au lieu de 7200 NOK)."
+            ),
+            account_cache={
+                466919149: {"id": 466919149, "number": 6590, "name": "Andre driftskostnader"},
+                466918873: {"id": 466918873, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Correction incorrect amount on account 6590 from 10000 to 7200",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466918873}, "amountGross": 2800, "amountGrossCurrency": 2800},
+                    {"account": {"id": 466919149}, "amountGross": -2800, "amountGrossCurrency": -2800},
                 ],
             },
             endpoint_search=None,

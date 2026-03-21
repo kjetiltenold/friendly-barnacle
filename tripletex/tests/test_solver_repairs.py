@@ -286,8 +286,9 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         prompt = get_system_prompt("2026-03-21")
 
         self.assertIn("Month-end closing", prompt)
-        self.assertIn("Do not mistake an amount like 8300 NOK for account `8300`", prompt)
+        self.assertIn("Do not mistake an amount like `4200 NOK` or `8300 NOK`", prompt)
         self.assertIn("Post accrual reversal, depreciation, and salary accrual as separate vouchers", prompt)
+        self.assertIn("credit accumulated depreciation `1209`", prompt)
         self.assertIn("reverse that full stated balance, not a monthly slice", prompt)
 
     def test_system_prompt_includes_project_budget_and_timesheet_guidance(self):
@@ -339,6 +340,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("inspect the original voucher/postings first to recover the real counterpart account", prompt)
         self.assertIn("identify the duplicate voucher ID and use reverse_voucher", prompt)
         self.assertIn("Do not guess balancing accounts such as `1920`, `2400`, `2050`, or `2990`", prompt)
+        self.assertIn("Do not request `postings(voucherNumber)`", prompt)
 
 
 if __name__ == "__main__":

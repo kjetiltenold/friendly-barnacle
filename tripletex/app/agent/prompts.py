@@ -337,6 +337,7 @@ Recipes:
 - For ledger-review correction tasks, inspect the original voucher/postings first to recover the real counterpart account. For duplicate vouchers, identify the duplicate voucher ID and use reverse_voucher. For wrong-amount corrections, use the original counterpart account for the delta.
 - For wrong-account or wrong-amount corrections, do not touch bank `1920` unless the original bank side itself was wrong.
 - Do not guess balancing accounts such as `1920`, `2400`, `2050`, or `2990` for duplicate-voucher or wrong-amount corrections when the original counterpart is not yet known.
+- When querying `/ledger/voucher`, the voucher number field is top-level `number`. Do not request `postings(voucherNumber)` because `Posting` does not have that field; if you need voucher info from a posting, use `postings(voucher(number))`.
 - For a missing input-VAT line on an already booked expense voucher, add the VAT by debiting the input VAT account such as `2710` and crediting the original expense account such as `6500`. Do not credit bank `1920` just because the original expense was paid.
 - If the prompt gives an amount excluding VAT for the missing-VAT case, calculate VAT from that net amount and post only the missing VAT amount.
 
@@ -374,8 +375,9 @@ Recipes:
 
 25. Month-end closing
 - Use the exact accounts named in the prompt for each closing entry.
-- If the prompt says prepaid/accrual reversal from `1720` to expense, make sure the prepaid side is `1720`. Do not mistake an amount like 8300 NOK for account `8300`.
+- If the prompt says prepaid/accrual reversal from `1700` or `1720` to expense, make sure the prepaid side stays on that account. Do not mistake an amount like `4200 NOK` or `8300 NOK` for account `4200` or `8300`.
 - If the prompt says monthly depreciation to account `6030`, debit `6030` exactly.
+- For monthly depreciation, credit accumulated depreciation `1209` unless the prompt explicitly names a different accumulated-depreciation account.
 - If the prompt says salary accrual on `5000` / `2900`, debit `5000` and credit `2900` exactly.
 - Post accrual reversal, depreciation, and salary accrual as separate vouchers unless the prompt explicitly asks for one combined voucher.
 - If the salary-accrual amount is not explicitly stated, derive it from available salary/payroll evidence for the period. Do not invent a round number.

@@ -779,7 +779,7 @@ def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
     """Rewrite invalid field aliases while preserving order."""
     rewritten: list[str] = []
     seen: set[str] = set()
-    for raw_part in fields.split(","):
+    for raw_part in _split_filter_parts(fields):
         part = raw_part.strip()
         if not part:
             continue
@@ -823,13 +823,77 @@ def _rewrite_sorting_filter(sorting: str, replacements: dict[str, str]) -> str:
 def _extend_fields_filter(fields: str, extra_fields: list[str]) -> str:
     """Append extra fields to a fields filter if they are missing."""
     base_fields = _rewrite_fields_filter(fields, {})
-    current = [field for field in base_fields.split(",") if field]
+    current = [field for field in _split_filter_parts(base_fields) if field]
     seen = set(current)
     for field in extra_fields:
         if field not in seen:
             current.append(field)
             seen.add(field)
     return ",".join(current)
+
+
+def _split_filter_parts(value: str) -> list[str]:
+    """Split a Tripletex fields/sorting filter on top-level commas only."""
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in value:
+        if char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth > 0:
+            depth -= 1
+        current.append(char)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _normalize_ledger_voucher_fields_filter(fields: str) -> str:
+    """Normalize common invalid ledger/voucher fields to schema-valid Voucher/Posting fields."""
+    top_level_replacements = {
+        "voucherNumber": "number",
+        "voucherTempNumber": "tempNumber",
+        "voucherYear": "year",
+    }
+    posting_replacements = {
+        "voucherNumber": "voucher(number)",
+        "voucherTempNumber": "voucher(tempNumber)",
+        "voucherYear": "voucher(year)",
+    }
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for raw_part in _split_filter_parts(fields):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if part.startswith("postings(") and part.endswith(")"):
+            inner = part[len("postings("):-1]
+            rewritten_inner: list[str] = []
+            inner_seen: set[str] = set()
+            for raw_child in _split_filter_parts(inner):
+                child = raw_child.strip()
+                if not child:
+                    continue
+                normalized_child = posting_replacements.get(child, child)
+                if normalized_child in inner_seen:
+                    continue
+                inner_seen.add(normalized_child)
+                rewritten_inner.append(normalized_child)
+            part = f"postings({','.join(rewritten_inner)})"
+        else:
+            part = top_level_replacements.get(part, part)
+        if part in seen:
+            continue
+        seen.add(part)
+        rewritten.append(part)
+    return ",".join(rewritten)
 
 
 def _normalize_exclusive_date_range(path: str, params: dict) -> None:
@@ -901,13 +965,70 @@ def _classify_month_end_closing_pair(postings: list[dict] | None, description: s
     ).lower()
     fallback_text = str(description or "").lower()
     for text in (pair_text, fallback_text):
-        if "salary accrual" in text or "accrued salary" in text:
+        if any(token in text for token in ("salary accrual", "accrued salary", "gehaltsruckstellung", "gehaltsrueckstellung", "gehaltsrückstellung")):
             return "salary accrual"
-        if "depreciat" in text or "avskriv" in text:
+        if any(token in text for token in ("depreciat", "avskriv", "abschreib", "amortis")):
             return "depreciation"
-        if "accrual reversal" in text or "prepaid" in text or "forskudds" in text:
+        if any(token in text for token in ("accrual reversal", "prepaid", "forskudds", "rechnungsabgrenz")):
             return "accrual reversal"
     return None
+
+
+def _extract_prompt_month_end_accrual_amount(ctx: EntityContext | None) -> float | None:
+    raw_text = (ctx.prompt_text if ctx else None) or ""
+    if not raw_text:
+        return None
+    normalized_text = unicodedata.normalize("NFKD", raw_text.lower())
+    normalized_text = "".join(ch for ch in normalized_text if not unicodedata.combining(ch))
+    match = re.search(
+        r"([0-9][0-9\s\u00a0.,']*)\s*(?:nok|kr|eur)?\D{0,20}(?:per\s+month|pro\s+monat|par\s+mois|por\s+mes|per\s+maned)",
+        normalized_text,
+    )
+    if not match:
+        return None
+    token = match.group(1).strip()
+    if not token:
+        return None
+    token = token.replace("\u00a0", "").replace(" ", "").replace("'", "")
+    if token.count(",") and token.count("."):
+        last_comma = token.rfind(",")
+        last_dot = token.rfind(".")
+        decimal_separator = "," if last_comma > last_dot else "."
+        thousands_separator = "." if decimal_separator == "," else ","
+        token = token.replace(thousands_separator, "")
+        if decimal_separator == ",":
+            token = token.replace(",", ".")
+    elif token.count(",") == 1 and token.count(".") == 0:
+        left, right = token.split(",", 1)
+        token = f"{left}.{right}" if len(right) <= 2 else f"{left}{right}"
+    elif token.count(".") > 1:
+        token = token.replace(".", "")
+    elif token.count(".") == 1:
+        left, right = token.split(".", 1)
+        if len(right) > 2:
+            token = f"{left}{right}"
+    amount = _coerce_number(token)
+    return amount if amount > 0 else None
+
+
+def _preferred_month_end_expense_account(ctx: EntityContext | None) -> dict | None:
+    preferred = _find_cached_account_by_number(ctx, "6000")
+    if preferred is not None:
+        return preferred
+    if ctx is None or not ctx.account_cache:
+        return None
+    candidates: list[tuple[int, dict]] = []
+    for account in ctx.account_cache.values():
+        number_raw = str(account.get("number") or "")
+        if not number_raw.isdigit():
+            continue
+        number = int(number_raw)
+        if 6000 <= number < 8000 and number not in {6030}:
+            candidates.append((number, account))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
 
 
 def _extract_prompt_year_end_prepaid_amount(ctx: EntityContext | None, account_number: str = "1700") -> float | None:
@@ -1084,7 +1205,25 @@ def _validate_ledger_error_correction_postings(
     if ctx is None or not isinstance(postings, list) or len(postings) < 2:
         return None
     normalized_prompt = _normalize_prompt_text(ctx.prompt_text)
-    if not any(token in normalized_prompt for token in ("generalledger", "ledgererrors", "findthe4errors")):
+    if not any(
+        token in normalized_prompt
+        for token in (
+            "generalledger",
+            "ledgererrors",
+            "findthe4errors",
+            "grandlivre",
+            "trouvezles4erreurs",
+            "hauptbuch",
+            "findedie4fehler",
+            "livromaior",
+            "livrorazao",
+            "encontreos4erros",
+            "libromayor",
+            "encuentralos4errores",
+            "hovedbok",
+            "finnende4feilene",
+        )
+    ):
         return None
     normalized_description = _normalize_prompt_text(description)
     account_numbers = {
@@ -1097,7 +1236,7 @@ def _validate_ledger_error_correction_postings(
     )
     if not suspicious_numbers:
         return None
-    if "duplicatevoucher" in normalized_description:
+    if any(token in normalized_description for token in ("duplicatevoucher", "pieceendouble", "duplicertbilag", "doppelterbeleg", "lançamentoduplicado", "asientoduplicado")):
         logger.warning(
             "Blocked duplicate-voucher correction using guessed balancing account(s): %s",
             ", ".join(suspicious_numbers),
@@ -1109,7 +1248,20 @@ def _validate_ledger_error_correction_postings(
                 "balancing line on guessed bank/liability accounts such as 1920, 2400, 2050, or 2990."
             )
         }
-    if any(token in normalized_description for token in ("overstatedamount", "incorrectamount", "wrongamount")):
+    if any(
+        token in normalized_description
+        for token in (
+            "overstatedamount",
+            "incorrectamount",
+            "wrongamount",
+            "montantincorrect",
+            "mauvaismontant",
+            "feilbelop",
+            "falscherbetrag",
+            "valorincorreto",
+            "importeincorrecto",
+        )
+    ):
         logger.warning(
             "Blocked wrong-amount correction using guessed balancing account(s): %s",
             ", ".join(suspicious_numbers),
@@ -1149,6 +1301,10 @@ def _normalize_month_end_closing_pair_postings(
             logger.info(
                 f"Normalized month-end depreciation expense posting to account {preferred_expense['number']} from cached lookup"
             )
+        preferred_accumulated = _find_cached_account_by_number(ctx, "1209")
+        if preferred_accumulated and str(credit_account.get("number")) != "1209":
+            credit_posting["account"] = {"id": preferred_accumulated["id"]}
+            logger.info("Normalized month-end depreciation credit posting to account 1209 from cached lookup")
         return
     if topic == "salary accrual":
         preferred_expense = _find_cached_account_by_number(ctx, "5000")
@@ -1160,7 +1316,7 @@ def _normalize_month_end_closing_pair_postings(
             credit_posting["account"] = {"id": preferred_accrued["id"]}
             logger.info("Normalized salary accrual credit posting to account 2900 from cached lookup")
         return
-    preferred_prepaid = _find_cached_account_by_number(ctx, "1720")
+    preferred_prepaid = None
     text = " ".join(
         [str(description or "")]
         + [
@@ -1169,9 +1325,33 @@ def _normalize_month_end_closing_pair_postings(
             if isinstance(posting, dict)
         ]
     ).lower()
-    if preferred_prepaid and "1720" in text and str(credit_account.get("number")) != "1720":
+    prompt_text = str((ctx.prompt_text if ctx else None) or "").lower()
+    combined_text = f"{text} {prompt_text}".strip()
+    if "1700" in combined_text:
+        preferred_prepaid = _find_cached_account_by_number(ctx, "1700")
+    elif "1720" in combined_text:
+        preferred_prepaid = _find_cached_account_by_number(ctx, "1720")
+    if preferred_prepaid and str(credit_account.get("number")) != str(preferred_prepaid.get("number")):
         credit_posting["account"] = {"id": preferred_prepaid["id"]}
-        logger.info("Normalized accrual-reversal credit posting to account 1720 from cached lookup")
+        logger.info(
+            "Normalized accrual-reversal credit posting to account %s from cached lookup",
+            preferred_prepaid["number"],
+        )
+    prompt_amount = _extract_prompt_month_end_accrual_amount(ctx)
+    preferred_expense = _preferred_month_end_expense_account(ctx)
+    debit_number = str(debit_account.get("number") or "")
+    if (
+        prompt_amount is not None
+        and preferred_expense is not None
+        and debit_number == str(int(round(prompt_amount)))
+        and debit_number != str(preferred_expense.get("number"))
+    ):
+        debit_posting["account"] = {"id": preferred_expense["id"]}
+        logger.info(
+            "Normalized accrual-reversal debit posting from amount-like account %s to expense account %s from cached lookup",
+            debit_number,
+            preferred_expense["number"],
+        )
 
 
 def _split_month_end_closing_vouchers(args: dict) -> list[dict] | None:
@@ -4146,6 +4326,11 @@ async def _execute(
                 if rewritten_fields != params["fields"]:
                     params["fields"] = rewritten_fields
                     logger.info(f"Normalized ledger/posting fields filter to {rewritten_fields}")
+        if path == "/ledger/voucher" and isinstance(params.get("fields"), str):
+            rewritten_fields = _normalize_ledger_voucher_fields_filter(params["fields"])
+            if rewritten_fields != params["fields"]:
+                params["fields"] = rewritten_fields
+                logger.info(f"Normalized ledger/voucher fields filter to {rewritten_fields}")
         if path == "/invoice" and isinstance(params.get("fields"), str):
             rewritten_fields = _rewrite_fields_filter(
                 params["fields"],
