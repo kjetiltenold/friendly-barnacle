@@ -12,7 +12,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     openai_api_key: str
     openai_base_url: str = "https://api.openai.com/v1"
-    model_name: str = "gpt-4o"
+    model_name: str = "gpt-5.4"
     log_level: str = "INFO"
     max_agent_iterations: int = 15
     soft_timeout_seconds: int = 270
