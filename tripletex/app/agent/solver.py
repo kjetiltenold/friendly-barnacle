@@ -302,34 +302,41 @@ def _build_user_content(request: SolveRequest) -> str | list[dict]:
     OpenAI-format content blocks when images are present (multimodal).
     """
     text_parts: list[str] = []
-    image_blocks: list[dict] = []
+    multimodal_blocks: list[dict[str, Any]] = []
+    has_images = False
 
     if request.files:
-        text_parts.append(
+        attachment_guidance = (
             "[Attachment handling]\n"
             "Treat attached files as the source of truth for exact names, dates, invoice numbers, and amounts. "
             "Preserve European decimal separators when converting amounts: 109,00 means 109.00 and 51 312,50 means 51312.50. "
-            "If extracted text conflicts with an attached image, trust the image."
+            "If extracted text conflicts with an attached image, trust the image. "
+            "For short receipt PDFs, inspect the image first because OCR may flatten decimal separators or layout."
         )
+        text_parts.append(attachment_guidance)
+        multimodal_blocks.append({"type": "text", "text": attachment_guidance})
         attachment_blocks = process_attachments(request.files)
         for block in attachment_blocks:
             if block["type"] == "text":
                 text_parts.append(block["text"])
+                multimodal_blocks.append({"type": "text", "text": block["text"]})
             elif block["type"] == "image":
                 # Convert from Anthropic image format to OpenAI image_url format
                 source = block["source"]
                 mime = source["media_type"]
                 data = source["data"]
-                image_blocks.append({
+                has_images = True
+                multimodal_blocks.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime};base64,{data}"},
                 })
 
-    text_parts.append(f"Complete this accounting task in Tripletex:\n\n{request.prompt}")
+    task_text = f"Complete this accounting task in Tripletex:\n\n{request.prompt}"
+    text_parts.append(task_text)
     full_text = "\n\n".join(text_parts)
 
-    if not image_blocks:
+    if not has_images:
         return full_text
 
-    # Multimodal: text + images as content block list
-    return [{"type": "text", "text": full_text}, *image_blocks]
+    multimodal_blocks.append({"type": "text", "text": task_text})
+    return multimodal_blocks

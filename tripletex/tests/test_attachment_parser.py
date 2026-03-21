@@ -55,8 +55,9 @@ class AttachmentParserTests(unittest.TestCase):
         with patch("app.attachments.parser.fitz.open", return_value=doc):
             blocks = _process_pdf(b"%PDF", "receipt.pdf")
 
-        self.assertEqual(blocks[0]["type"], "text")
-        self.assertEqual(blocks[1]["type"], "image")
+        self.assertEqual(blocks[0]["type"], "image")
+        self.assertEqual(blocks[1]["type"], "text")
+        self.assertIn("OCR text may miss separators", blocks[1]["text"])
 
     def test_process_pdf_adds_image_for_single_page_contract(self):
         long_text = "\n".join(

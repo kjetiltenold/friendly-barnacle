@@ -55,12 +55,14 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
     doc = fitz.open(stream=raw, filetype="pdf")
     text_parts = []
     page_count = len(doc)
+    prefer_image_first = False
 
     for page in doc:
         text = page.get_text()
+        weak_text = _should_render_pdf_page_as_image(text)
         if text.strip():
             text_parts.append(text)
-        if page_count == 1 or _should_render_pdf_page_as_image(text):
+        if page_count == 1 or weak_text:
             # Single-page contest documents are often visually structured even
             # when text extraction succeeds, so include the image too. For
             # multi-page PDFs, keep the existing weak-text heuristic.
@@ -74,12 +76,25 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
                     "data": base64.b64encode(img_bytes).decode(),
                 },
             })
+            if page_count == 1 and weak_text:
+                prefer_image_first = True
 
     if text_parts:
-        blocks.insert(0, {
+        header = f"[Content from {filename}]"
+        if prefer_image_first:
+            header += (
+                "\n\n[Extracted text note]\n"
+                "This OCR text may miss separators or layout details on short receipts. "
+                "Verify exact amounts, dates, and merchant details against the attached page image."
+            )
+        text_block = {
             "type": "text",
-            "text": f"[Content from {filename}]\n\n" + "\n---\n".join(text_parts),
-        })
+            "text": header + "\n\n" + "\n---\n".join(text_parts),
+        }
+        if prefer_image_first and blocks:
+            blocks.append(text_block)
+        else:
+            blocks.insert(0, text_block)
 
     doc.close()
     return blocks

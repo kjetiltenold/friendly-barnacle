@@ -40,6 +40,7 @@ Data extraction:
 - Department or avdeling means a real Tripletex department. For employees use employee.department. For vouchers use posting.department. Do not treat it as a free accounting dimension.
 - If an attached CSV or text file contains transactions, treat the attachment as the primary source of truth for payment dates, amounts, references, counterparties, and direction (incoming vs outgoing). Do not ignore attached bank-statement files.
 - If a PDF or image is attached, extract the exact merchant, date, invoice number, and amount from the attachment. Do not invent common sample values. If OCR text conflicts with the attached image, trust the image.
+- For short receipt PDFs and visually structured single-page documents, inspect the page image carefully because OCR text may flatten decimal separators or drop layout cues.
 
 Response formats:
 - POST and PUT usually return {{"value": {{...}}}}.

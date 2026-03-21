@@ -160,6 +160,51 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(content, str)
         self.assertIn("Treat attached files as the source of truth", content)
         self.assertIn("109,00 means 109.00", content)
+        self.assertIn("inspect the image first", content)
+
+    def test_build_user_content_preserves_multimodal_attachment_order(self):
+        request = SolveRequest(
+            prompt="Post this receipt correctly.",
+            files=[
+                FileAttachment(
+                    filename="receipt.pdf",
+                    mime_type="application/pdf",
+                    content_base64="cGRm",
+                )
+            ],
+            tripletex_credentials=TripletexCredentials(
+                base_url="https://example.invalid/v2",
+                session_token="token",
+            ),
+        )
+
+        with patch(
+            "app.agent.solver.process_attachments",
+            return_value=[
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U=",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "[Content from receipt.pdf]\n\nReceipt OCR text",
+                },
+            ],
+        ):
+            content = _build_user_content(request)
+
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0]["type"], "text")
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertEqual(content[2]["type"], "text")
+        self.assertEqual(content[3]["type"], "text")
+        self.assertIn("Attachment handling", content[0]["text"])
+        self.assertIn("Receipt OCR text", content[2]["text"])
+        self.assertIn("Complete this accounting task", content[3]["text"])
 
     def test_should_retry_text_only_response_when_model_stops_without_done(self):
         self.assertTrue(
@@ -244,6 +289,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PUT /supplierInvoice/{invoice_id}/:addPayment with paymentDate, paymentType, and amount", prompt)
         self.assertIn("amountOutstanding, not amountRemaining", prompt)
         self.assertIn("customer(name) or supplier(name)", prompt)
+        self.assertIn("inspect the page image carefully", prompt)
 
 
 if __name__ == "__main__":
