@@ -62,6 +62,7 @@ Recipes:
   2. create_employee with department and startDate
   3. create_employment_details with employment, date, annualSalary, percentageOfFullTimeEquivalent, employmentType, and workingHoursScheme
   4. create_standard_time with employee, fromDate, and hoursPerDay
+- In onboarding flows, do not send hoursPerDay to create_employment_details if you will also call create_standard_time. Put standard working hours on create_standard_time only once.
 - Annual salary and FTE belong on employee/employment/details.
 - Standard working hours belong on employee/standardTime, not employee/employment/details.
 - workingHoursScheme is the enum value such as NOT_SHIFT, not a numeric ID.

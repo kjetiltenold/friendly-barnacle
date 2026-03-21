@@ -729,6 +729,39 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_create_standard_time_noops_when_existing_value_matches(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/standardTime",
+                    (("count", 100), ("employeeId", 18622953), ("fields", "id,fromDate,hoursPerDay")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 43748, "fromDate": "2026-06-24", "hoursPerDay": 6.0}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "create_standard_time",
+            {
+                "employeeId": 18622953,
+                "fromDate": "2026-06-24",
+                "hoursPerDay": 6,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["id"], 43748)
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/employee/standardTime", {"employeeId": 18622953, "fields": "id,fromDate,hoursPerDay", "count": 100}),
+            ],
+        )
+
     async def test_create_employment_details_auto_creates_missing_employment_from_employee(self):
         client = FakeTripletexClient(
             get_responses={
