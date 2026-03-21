@@ -2511,7 +2511,29 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["values"][0]["id"], 7)
         self.assertEqual(ctx.last_payment_type_id, 7)
+        self.assertEqual(ctx.last_supplier_payment_type_id, 7)
         self.assertEqual(client.calls, [("GET", "/ledger/paymentTypeOut", {})])
+
+    async def test_tripletex_api_call_tracks_customer_payment_type_lookup_separately(self):
+        client = FakeTripletexClient(
+            get_responses={
+                ("/invoice/paymentType", ()): {"fullResultSize": 1, "values": [{"id": 3, "description": "Bank inn"}]},
+            }
+        )
+        ctx = EntityContext()
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/invoice/paymentType"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["values"][0]["id"], 3)
+        self.assertEqual(ctx.last_payment_type_id, 3)
+        self.assertEqual(ctx.last_customer_payment_type_id, 3)
+        self.assertEqual(client.calls, [("GET", "/invoice/paymentType", {})])
 
     async def test_tripletex_api_call_normalizes_invoice_child_fields_and_amount_remaining(self):
         client = FakeTripletexClient(
@@ -2659,6 +2681,89 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                         "paymentDate": "2026-03-21",
                         "paymentTypeId": "3",
                         "paidAmount": "44100",
+                    },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_replaces_supplier_payment_type_on_customer_invoice_payment_during_bank_reconciliation(self):
+        client = FakeTripletexClient(
+            put_responses={
+                "/invoice/2147635240/:payment": {"value": {"id": 2147635240}}
+            }
+        )
+        ctx = EntityContext(
+            prompt_text=(
+                "Reconcile the bank statement against open invoices in Tripletex. "
+                "Match incoming payments to customer invoices and outgoing payments to supplier invoices. "
+                "Handle partial payments correctly."
+            ),
+            last_customer_payment_type_id=37193225,
+            last_supplier_payment_type_id=37193229,
+        )
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "PUT",
+                "path": "/invoice/2147635240/:payment?paymentDate=2026-01-16&paymentTypeId=37193229&paidAmount=5156.25",
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "PUT",
+                    "/invoice/2147635240/:payment",
+                    None,
+                    {
+                        "paymentDate": "2026-01-16",
+                        "paymentTypeId": "37193225",
+                        "paidAmount": "5156.25",
+                    },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_replaces_customer_payment_type_on_supplier_add_payment_during_bank_reconciliation(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Reconcile the bank statement against open invoices in Tripletex. "
+                "Match incoming payments to customer invoices and outgoing payments to supplier invoices. "
+                "Handle partial payments correctly."
+            ),
+            last_customer_payment_type_id=37193225,
+            last_supplier_payment_type_id=7,
+        )
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "PUT",
+                "path": "/supplierInvoice/77/:addPayment?paymentDate=2026-01-18&paymentTypeId=37193225&paidAmount=3650.00",
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "PUT",
+                    "/supplierInvoice/77/:addPayment",
+                    None,
+                    {
+                        "paymentDate": "2026-01-18",
+                        "paymentType": "7",
+                        "amount": "3650.00",
+                        "partialPayment": True,
                     },
                 )
             ],

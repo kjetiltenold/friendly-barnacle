@@ -71,6 +71,8 @@ class EntityContext:
     last_cost_category_id: int | None = None
     last_cost_categories: list[dict] | None = None
     last_payment_type_id: int | None = None
+    last_customer_payment_type_id: int | None = None
+    last_supplier_payment_type_id: int | None = None
     invoice_payment_action_count: int = 0
     customer_invoice_payment_action_count: int = 0
     supplier_invoice_payment_action_count: int = 0
@@ -296,12 +298,14 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
     elif path.startswith("/travelExpense/costCategory"):
         ctx.last_cost_category_id = first_id
         ctx.last_cost_categories = [item for item in values if isinstance(item, dict)]
-    elif (
-        path.startswith("/travelExpense/paymentType")
-        or path.startswith("/invoice/paymentType")
-        or path.startswith("/ledger/paymentTypeOut")
-    ):
+    elif path.startswith("/travelExpense/paymentType"):
         ctx.last_payment_type_id = first_id
+    elif path.startswith("/invoice/paymentType"):
+        ctx.last_payment_type_id = first_id
+        ctx.last_customer_payment_type_id = first_id
+    elif path.startswith("/ledger/paymentTypeOut"):
+        ctx.last_payment_type_id = first_id
+        ctx.last_supplier_payment_type_id = first_id
     elif path.startswith("/project/hourlyRates"):
         ctx.last_hourly_rate_id = first_id
     elif path.startswith("/employee/employment/details"):
@@ -2540,6 +2544,42 @@ def _prompt_mentions_partial_payments(ctx: EntityContext | None) -> bool:
         "paiementspartiels",
     )
     return any(token in normalized for token in partial_tokens)
+
+
+def _prompt_mentions_bank_reconciliation_payments(ctx: EntityContext | None) -> bool:
+    normalized = _normalize_prompt_text((ctx.prompt_text if ctx else None) or "")
+    if not normalized:
+        return False
+    statement_tokens = (
+        "bankstatement",
+        "kontoauszug",
+        "bankutskrift",
+        "reconcile",
+        "reconciliation",
+        "reconcilethebankstatement",
+        "matchincomingpayments",
+    )
+    customer_tokens = (
+        "customerinvoice",
+        "customerinvoices",
+        "incomingpayment",
+        "incomingpayments",
+        "kundenrechnung",
+        "kundenrechnungen",
+    )
+    supplier_tokens = (
+        "supplierinvoice",
+        "supplierinvoices",
+        "outgoingpayment",
+        "outgoingpayments",
+        "lieferantenrechnung",
+        "lieferantenrechnungen",
+    )
+    return (
+        any(token in normalized for token in statement_tokens)
+        and any(token in normalized for token in customer_tokens)
+        and any(token in normalized for token in supplier_tokens)
+    )
 
 
 def _prompt_requests_invoice_payment(ctx: EntityContext | None) -> bool:
@@ -5735,6 +5775,38 @@ async def _execute(
                 logger.info(f"Auto-injected invoiceDate={params['invoiceDate']} for order invoice action")
             await _ensure_bank_account(client)
             logger.info("Preflighted bank account before order invoice action")
+        if method == "PUT" and re.fullmatch(r"/invoice/\d+/:payment", path):
+            customer_payment_type_id = (
+                str(ctx.last_customer_payment_type_id)
+                if ctx and ctx.last_customer_payment_type_id is not None
+                else ""
+            )
+            supplier_payment_type_id = (
+                str(ctx.last_supplier_payment_type_id)
+                if ctx and ctx.last_supplier_payment_type_id is not None
+                else ""
+            )
+            current_payment_type_id = str(params.get("paymentTypeId") or "")
+            if not current_payment_type_id and customer_payment_type_id:
+                params["paymentTypeId"] = customer_payment_type_id
+                logger.info(
+                    "Auto-injected customer invoice paymentTypeId=%s into invoice payment",
+                    customer_payment_type_id,
+                )
+            elif (
+                ctx
+                and _prompt_mentions_bank_reconciliation_payments(ctx)
+                and customer_payment_type_id
+                and supplier_payment_type_id
+                and current_payment_type_id == supplier_payment_type_id
+                and current_payment_type_id != customer_payment_type_id
+            ):
+                params["paymentTypeId"] = customer_payment_type_id
+                logger.info(
+                    "Replaced outgoing supplier paymentTypeId=%s with incoming customer paymentTypeId=%s on invoice payment during bank reconciliation",
+                    supplier_payment_type_id,
+                    customer_payment_type_id,
+                )
         if method == "PUT" and re.fullmatch(r"/supplierInvoice/\d+/:addPayment", path):
             if "paymentType" not in params and "paymentTypeId" in params:
                 params["paymentType"] = params.pop("paymentTypeId")
@@ -5742,6 +5814,37 @@ async def _execute(
             if "amount" not in params and "paidAmount" in params:
                 params["amount"] = params.pop("paidAmount")
                 logger.info(f"Normalized supplier invoice addPayment paidAmount -> amount ({params['amount']})")
+            customer_payment_type_id = (
+                str(ctx.last_customer_payment_type_id)
+                if ctx and ctx.last_customer_payment_type_id is not None
+                else ""
+            )
+            supplier_payment_type_id = (
+                str(ctx.last_supplier_payment_type_id)
+                if ctx and ctx.last_supplier_payment_type_id is not None
+                else ""
+            )
+            current_payment_type = str(params.get("paymentType") or "")
+            if not current_payment_type and supplier_payment_type_id:
+                params["paymentType"] = supplier_payment_type_id
+                logger.info(
+                    "Auto-injected supplier invoice paymentType=%s into supplier addPayment",
+                    supplier_payment_type_id,
+                )
+            elif (
+                ctx
+                and _prompt_mentions_bank_reconciliation_payments(ctx)
+                and supplier_payment_type_id
+                and customer_payment_type_id
+                and current_payment_type == customer_payment_type_id
+                and current_payment_type != supplier_payment_type_id
+            ):
+                params["paymentType"] = supplier_payment_type_id
+                logger.info(
+                    "Replaced incoming customer paymentType=%s with outgoing supplier paymentType=%s on supplier addPayment during bank reconciliation",
+                    customer_payment_type_id,
+                    supplier_payment_type_id,
+                )
             if "paymentType" not in params:
                 params["paymentType"] = 0
                 params.setdefault("useDefaultPaymentType", True)

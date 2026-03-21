@@ -312,15 +312,22 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
             )
     if _prompt_likely_requires_bank_reconciliation_payments(prompt):
         customer_payment_hint = (
-            f"Use customer paymentType id={ctx.last_payment_type_id}. "
-            if ctx.last_payment_type_id is not None
+            f"Use customer paymentType id={ctx.last_customer_payment_type_id} on PUT /invoice/{{invoice_id}}/:payment. "
+            if getattr(ctx, "last_customer_payment_type_id", None) is not None
             else "Use GET /invoice/paymentType for incoming customer payments. "
+        )
+        supplier_payment_hint = (
+            f"Use supplier paymentType id={ctx.last_supplier_payment_type_id} on PUT /supplierInvoice/{{invoice_id}}/:addPayment. "
+            if getattr(ctx, "last_supplier_payment_type_id", None) is not None
+            else "Use GET /ledger/paymentTypeOut for outgoing supplier payments. "
         )
         return (
             "The task is not complete yet. Reconcile the attached bank-statement rows by executing payment writes, not just invoice lookups. "
             "Register incoming payments on matching customer invoices with PUT /invoice/{invoice_id}/:payment, "
             "and register outgoing payments on matching supplier invoices with PUT /supplierInvoice/{invoice_id}/:addPayment. "
             + customer_payment_hint
+            + supplier_payment_hint
+            + "Do not reuse the outgoing supplier payment type on customer invoice payments, or the incoming customer payment type on supplier invoice payments. "
             + "Handle partial payments by paying only the transaction amount from each attached row. "
             "Reply only with DONE when both customer and supplier payment registrations are finished."
         )

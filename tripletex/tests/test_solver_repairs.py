@@ -567,6 +567,21 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_build_incomplete_task_reminder_for_bank_reconciliation_mentions_separate_payment_types(self):
+        prompt = (
+            "Reconcile the bank statement against open invoices in Tripletex. "
+            "Match incoming payments to customer invoices and outgoing payments to supplier invoices. "
+            "Handle partial payments correctly."
+        )
+        reminder = _build_incomplete_task_reminder(
+            prompt,
+            EntityContext(last_customer_payment_type_id=11, last_supplier_payment_type_id=22),
+        )
+
+        self.assertIn("customer paymentType id=11", reminder)
+        self.assertIn("supplier paymentType id=22", reminder)
+        self.assertIn("Do not reuse the outgoing supplier payment type on customer invoice payments", reminder)
+
     def test_should_not_retry_text_only_response_after_two_reminders(self):
         self.assertFalse(
             _should_retry_text_only_response(
