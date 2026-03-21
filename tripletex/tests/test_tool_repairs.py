@@ -2979,6 +2979,38 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(client.calls[0][2]["travelDetails"]["isCompensationFromRates"])
 
+    async def test_create_travel_expense_shifts_undated_weekend_window_to_next_working_days(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_expense",
+            {
+                "employee": {"id": 42},
+                "title": "Conference Bergen",
+                "departureDate": "2026-03-21",
+                "returnDate": "2026-03-22",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                prompt_text="Register a travel expense for Conference Bergen. The trip lasted 2 days with per diem.",
+            ),
+        )
+
+        self.assertEqual(client.calls, [("POST", "/travelExpense", {
+            "employee": {"id": 42},
+            "title": "Conference Bergen",
+            "travelDetails": {
+                "departureDate": "2026-03-23",
+                "returnDate": "2026-03-24",
+                "destination": "Bergen",
+                "purpose": "Conference Bergen",
+                "isDayTrip": False,
+                "isCompensationFromRates": True,
+                "isForeignTravel": False,
+            },
+        })])
+
     async def test_create_per_diem_infers_no_and_resolves_rate_category_from_dates(self):
         client = FakeTripletexClient(
             get_responses={
@@ -3204,6 +3236,74 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "comments": "Bilhete de avião",
             "amountCurrencyIncVat": 7600,
             "date": "2026-03-17",
+        }))
+
+    async def test_create_travel_cost_aligns_undated_flight_date_to_normalized_departure(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_cost",
+            {
+                "comments": "Flight ticket",
+                "amountCurrencyIncVat": 6400,
+                "date": "2026-03-21",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_id=555,
+                last_payment_type_id=9,
+                last_travel_expense_departure_date="2026-03-23",
+                last_travel_expense_return_date="2026-03-24",
+                last_cost_categories=[
+                    {"id": 11, "displayName": "Flight"},
+                    {"id": 12, "displayName": "Taxi"},
+                ],
+                prompt_text="Register a travel expense for Conference Bergen. The trip lasted 2 days with per diem.",
+            ),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/cost", {
+            "travelExpense": {"id": 555},
+            "costCategory": {"id": 11},
+            "paymentType": {"id": 9},
+            "comments": "Flight ticket",
+            "amountCurrencyIncVat": 6400,
+            "date": "2026-03-23",
+        }))
+
+    async def test_create_travel_cost_aligns_undated_taxi_date_to_normalized_return(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_cost",
+            {
+                "comments": "Taxi",
+                "amountCurrencyIncVat": 600,
+                "date": "2026-03-22",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_id=555,
+                last_payment_type_id=9,
+                last_travel_expense_departure_date="2026-03-23",
+                last_travel_expense_return_date="2026-03-24",
+                last_cost_categories=[
+                    {"id": 11, "displayName": "Flight"},
+                    {"id": 12, "displayName": "Taxi"},
+                ],
+                prompt_text="Register a travel expense for Conference Bergen. The trip lasted 2 days with per diem.",
+            ),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/cost", {
+            "travelExpense": {"id": 555},
+            "costCategory": {"id": 12},
+            "paymentType": {"id": 9},
+            "comments": "Taxi",
+            "amountCurrencyIncVat": 600,
+            "date": "2026-03-24",
         }))
 
     async def test_create_travel_cost_adjusts_second_taxi_to_return_date_and_removes_redundant_rate(self):

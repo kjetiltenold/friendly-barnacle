@@ -170,6 +170,7 @@ Recipes:
   - set `isCompensationFromRates=true` when the task includes per diem, daily allowance, Tagegeld, `ajudas de custo`, or equivalent
   - set `isForeignTravel=false` for Norwegian domestic trips
   - set `isDayTrip=false` for multi-day trips
+- If the prompt does not specify travel dates, prefer the next reasonable working-day window rather than inventing a weekend departure just because today is Saturday or Sunday.
 - Per diem body fields:
   - travelExpense
   - rateCategory
@@ -192,6 +193,7 @@ Recipes:
 - Use comments, not description.
 - Use amountCurrencyIncVat, not rate.
 - If the task omits explicit expense dates, use the departure date for airfare and the return date for taxi unless the prompt says otherwise.
+- If the prompt omits travel dates, treat model-invented travel-cost dates as derived guesses and align airfare to the travel departure date and taxi to the travel return date.
 
 11. Timesheet plus project invoice
 - Flow:

@@ -1609,6 +1609,25 @@ def _iso_date_plus_days(value: str | None, days: int) -> str | None:
     return (parsed + datetime.timedelta(days=days)).isoformat()
 
 
+def _normalize_undated_travel_window(
+    departure_date: str | None,
+    return_date: str | None,
+    ctx: EntityContext | None,
+) -> tuple[str | None, str | None]:
+    if ctx is None or _prompt_has_explicit_calendar_date(ctx):
+        return departure_date, return_date
+    departure = _parse_iso_date(departure_date)
+    return_parsed = _parse_iso_date(return_date)
+    if departure is None or return_parsed is None or return_parsed < departure:
+        return departure_date, return_date
+    if departure.weekday() < 5:
+        return departure_date, return_date
+    normalized_departure = _next_working_day(departure)
+    shift_days = (normalized_departure - departure).days
+    normalized_return = return_parsed + datetime.timedelta(days=shift_days)
+    return normalized_departure.isoformat(), normalized_return.isoformat()
+
+
 def _date_within_category(target: datetime.date | None, from_date: str | None, to_date: str | None) -> bool:
     if target is None:
         return True
@@ -3433,6 +3452,28 @@ async def _execute(
             logger.info("Auto-inferred travel expense purpose from title")
         departure_date = travel_details.get("departureDate")
         return_date = travel_details.get("returnDate")
+        original_departure_date = departure_date
+        original_return_date = return_date
+        normalized_departure_date, normalized_return_date = _normalize_undated_travel_window(
+            departure_date,
+            return_date,
+            ctx,
+        )
+        if (
+            normalized_departure_date != departure_date
+            or normalized_return_date != return_date
+        ):
+            travel_details["departureDate"] = normalized_departure_date
+            travel_details["returnDate"] = normalized_return_date
+            departure_date = normalized_departure_date
+            return_date = normalized_return_date
+            logger.info(
+                "Shifted undated travel expense window from departure=%s return=%s to next working window departure=%s return=%s",
+                original_departure_date,
+                original_return_date,
+                normalized_departure_date,
+                normalized_return_date,
+            )
         departure_parsed = _parse_iso_date(departure_date)
         return_parsed = _parse_iso_date(return_date)
         if (
@@ -3554,6 +3595,20 @@ async def _execute(
                 "Auto-inferred travel cost date=%s from comments=%r",
                 inferred_date,
                 args.get("comments"),
+            )
+        elif (
+            inferred_date
+            and not _prompt_has_explicit_calendar_date(ctx)
+            and args.get("date") not in (None, "", inferred_date)
+            and _classify_travel_cost_kind(args.get("comments")) in {"flight", "taxi"}
+        ):
+            previous_date = args.get("date")
+            args["date"] = inferred_date
+            logger.info(
+                "Aligned undated %s travel cost date from %s to %s based on normalized travel expense window",
+                _classify_travel_cost_kind(args.get("comments")),
+                previous_date,
+                inferred_date,
             )
         elif (
             inferred_date
