@@ -445,6 +445,65 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "vatType": {"id": 0},
         }))
 
+    async def test_create_product_corrects_zero_vat_fee_product_after_create_when_put_response_is_stale(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/vatType",
+                    (("fields", "id,number,name,percentage"), ("percentage", "0")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 7, "number": 7, "name": "Ingen mva", "percentage": 0.0},
+                        {"id": 0, "number": 0, "name": "Outgoing no VAT", "percentage": 0.0},
+                    ],
+                },
+                (
+                    "/product",
+                    (("fields", "id,name,number"), ("productNumber", "MAHNGEBUEHR-60")),
+                ): {"fullResultSize": 0, "values": []},
+            },
+            post_responses={
+                "/product": {
+                    "value": {
+                        "id": 84415595,
+                        "name": "Mahngebuhr",
+                        "number": "MAHNGEBUEHR-60",
+                        "vatType": {"id": 3},
+                    }
+                }
+            },
+            put_responses={
+                "/product/84415595": {
+                    "value": {
+                        "id": 84415595,
+                        "name": "Mahngebuhr",
+                        "number": "MAHNGEBUEHR-60",
+                        "vatType": {"id": 3},
+                    }
+                }
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_product",
+            {
+                "name": "Mahngebuhr",
+                "number": "MAHNGEBUEHR-60",
+                "priceExcludingVatCurrency": 60,
+                "vatPercentage": 0,
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["value"]["vatType"]["id"], 0)
+        self.assertIn(
+            ("PUT", "/product/84415595", {"id": 84415595, "vatType": {"id": 0}}, None),
+            client.calls,
+        )
+
     async def test_search_entity_blocks_unfiltered_searches(self):
         client = FakeTripletexClient()
 
@@ -1432,6 +1491,62 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [("GET", "/invoice", {"invoiceDateTo": "2026-03-21", "isPaid": "false", "fields": "id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer", "invoiceDateFrom": "2000-01-01"})],
+        )
+
+    async def test_tripletex_api_call_drops_invalid_invoice_fields_and_normalizes_sorting(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice",
+                    (
+                        ("fields", "id,invoiceNumber,invoiceDate,invoiceDueDate,customer,amount,amountOutstanding"),
+                        ("invoiceDateFrom", "2025-01-01"),
+                        ("invoiceDateTo", "2026-03-22"),
+                        ("sorting", "-invoiceDueDate"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [
+                        {
+                            "id": 2147592359,
+                            "invoiceNumber": 4,
+                            "invoiceDate": "2026-02-01",
+                            "invoiceDueDate": "2026-03-10",
+                            "customer": {"id": 108349797},
+                            "amount": 12000,
+                            "amountOutstanding": 7000,
+                        }
+                    ],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/invoice?invoiceDateFrom=2025-01-01&invoiceDateTo=2026-03-22&fields=id,invoiceNumber,invoiceDate,dueDate,customer,amountGross,amountRemainder,isPaid,order&sorting=-dueDate",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["amountOutstanding"], 7000)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "GET",
+                    "/invoice",
+                    {
+                        "invoiceDateFrom": "2025-01-01",
+                        "invoiceDateTo": "2026-03-22",
+                        "fields": "id,invoiceNumber,invoiceDate,invoiceDueDate,customer,amount,amountOutstanding",
+                        "sorting": "-invoiceDueDate",
+                    },
+                )
+            ],
         )
 
     async def test_tripletex_api_call_injects_supplier_invoice_dates(self):

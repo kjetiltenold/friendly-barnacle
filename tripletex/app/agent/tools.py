@@ -779,6 +779,30 @@ def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
     return ",".join(rewritten)
 
 
+def _rewrite_sorting_filter(sorting: str, replacements: dict[str, str]) -> str:
+    """Rewrite invalid sorting aliases while preserving order and sign."""
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for raw_part in sorting.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        prefix = ""
+        key = part
+        if part[0] in "+-":
+            prefix = part[0]
+            key = part[1:]
+        normalized = replacements.get(key, key)
+        if not normalized:
+            continue
+        rewritten_part = f"{prefix}{normalized}"
+        if rewritten_part in seen:
+            continue
+        seen.add(rewritten_part)
+        rewritten.append(rewritten_part)
+    return ",".join(rewritten)
+
+
 def _extend_fields_filter(fields: str, extra_fields: list[str]) -> str:
     """Append extra fields to a fields filter if they are missing."""
     base_fields = _rewrite_fields_filter(fields, {})
@@ -2243,18 +2267,22 @@ async def _execute(
         vat_percentage = args.pop("vatPercentage", None)
         if vat_percentage is None:
             vat_percentage = args.pop("vatRate", None)
+        requested_vat_type_id = _extract_reference_id(args.get("vatType"))
         if "vatType" not in args and vat_percentage not in (None, ""):
             resolved_vat_type = await _resolve_vat_type(client, ctx, vat_percentage, direction="outgoing")
             if resolved_vat_type is not None:
                 args["vatType"] = resolved_vat_type
+                requested_vat_type_id = resolved_vat_type["id"]
                 logger.info(f"Resolved product vatType from {vat_percentage}% to id={resolved_vat_type['id']}")
         elif "vatType" not in args and ctx and ctx.last_vat_type_id:
             args["vatType"] = {"id": ctx.last_vat_type_id}
+            requested_vat_type_id = ctx.last_vat_type_id
             logger.info(f"Auto-injected last vatType id={ctx.last_vat_type_id} into product")
         elif "vatType" not in args and _looks_like_fee_text(args.get("name"), args.get("number")):
             resolved_vat_type = await _resolve_vat_type(client, ctx, 0, direction="outgoing")
             if resolved_vat_type is not None:
                 args["vatType"] = resolved_vat_type
+                requested_vat_type_id = resolved_vat_type["id"]
                 logger.info(f"Resolved zero-VAT fee product to vatType id={resolved_vat_type['id']}")
         # Search first if product number given — avoids 422 error on conflict
         if product_number:
@@ -2269,7 +2297,30 @@ async def _execute(
             except Exception:
                 pass
         try:
-            return await client.post("/product", json=args)
+            result = await client.post("/product", json=args)
+            value = dict(result.get("value", {}))
+            product_id = value.get("id")
+            actual_vat_type_id = _extract_reference_id(value.get("vatType"))
+            if (
+                requested_vat_type_id == 0
+                and product_id is not None
+                and actual_vat_type_id not in (None, requested_vat_type_id)
+            ):
+                try:
+                    logger.info(f"Correcting created product id={product_id} vatType after create")
+                    corrected = await client.put(
+                        f"/product/{product_id}",
+                        json={"id": product_id, "vatType": {"id": requested_vat_type_id}},
+                    )
+                    corrected_value = dict(corrected.get("value", {}))
+                    corrected_value.setdefault("id", product_id)
+                    corrected_value["vatType"] = {"id": requested_vat_type_id}
+                    return {"value": corrected_value}
+                except Exception as update_error:
+                    logger.warning(f"Product post-create vatType correction failed for id={product_id}: {update_error}")
+                    value["vatType"] = {"id": requested_vat_type_id}
+                    return {"value": value}
+            return result
         except Exception as e:
             if product_number and _is_duplicate_error(e, "nummeret er i bruk", "already exists"):
                 result = await client.get("/product", params={"productNumber": product_number, "fields": "id,name,number"})
@@ -3072,11 +3123,23 @@ async def _execute(
                     "amountTotal": "amount",
                     "amountRemainder": "amountOutstanding",
                     "amountGross": "amount",
+                    "isPaid": "",
+                    "order": "",
                 },
             )
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized invoice fields filter to {rewritten_fields}")
+        if path == "/invoice" and isinstance(params.get("sorting"), str):
+            rewritten_sorting = _rewrite_sorting_filter(
+                params["sorting"],
+                {
+                    "dueDate": "invoiceDueDate",
+                },
+            )
+            if rewritten_sorting != params["sorting"]:
+                params["sorting"] = rewritten_sorting
+                logger.info(f"Normalized invoice sorting to {rewritten_sorting}")
         if path == "/product" and "number" in params and "productNumber" not in params:
             number_value = params.get("number")
             if isinstance(number_value, str) and not re.fullmatch(r"\s*\d+(?:\s*,\s*\d+)*\s*", number_value):
