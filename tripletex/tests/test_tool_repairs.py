@@ -2822,7 +2822,6 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "overnightAccommodation": "HOTEL",
             "count": 5,
             "rate": 800,
-            "countryCode": "NO",
         }), client.calls)
 
     async def test_create_travel_expense_auto_populates_domestic_rate_based_details(self):
@@ -2947,7 +2946,6 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         }))
         self.assertEqual(client.calls[-1], ("POST", "/travelExpense/perDiemCompensation", {
             "travelExpense": {"id": 555},
-            "countryCode": "NO",
             "rateCategory": {"id": 740},
             "location": "Tromsø",
             "overnightAccommodation": "HOTEL",
@@ -3017,7 +3015,6 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.calls[0], ("POST", "/travelExpense/perDiemCompensation", {
             "travelExpense": {"id": 555},
-            "countryCode": "NO",
             "rateCategory": {"id": 2},
             "location": "Tromsø",
             "overnightAccommodation": "HOTEL",
@@ -3034,7 +3031,6 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         }))
         self.assertEqual(client.calls[-1], ("POST", "/travelExpense/perDiemCompensation", {
             "travelExpense": {"id": 555},
-            "countryCode": "NO",
             "rateCategory": {"id": 740},
             "location": "Tromsø",
             "overnightAccommodation": "HOTEL",
@@ -3043,18 +3039,8 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         }))
 
 
-    async def test_create_per_diem_retries_without_country_code_after_domestic_country_validation_error(self):
-        client = FakeTripletexClient(
-            post_errors={
-                "/travelExpense/perDiemCompensation": [
-                    self._http_status_error(
-                        "/travelExpense/perDiemCompensation",
-                        "422 unknown: Country not enabled for travel expense.",
-                    ),
-                    None,
-                ],
-            },
-        )
+    async def test_create_per_diem_omits_explicit_domestic_country_code_before_first_post(self):
+        client = FakeTripletexClient()
 
         await _execute(
             client,
@@ -3076,23 +3062,14 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.assertEqual(client.calls[0], ("POST", "/travelExpense/perDiemCompensation", {
-            "travelExpense": {"id": 555},
-            "countryCode": "NO",
-            "rateCategory": {"id": 740},
-            "location": "Oslo",
-            "overnightAccommodation": "HOTEL",
-            "count": 5,
-            "rate": 800,
-        }))
-        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/perDiemCompensation", {
+        self.assertEqual(client.calls, [("POST", "/travelExpense/perDiemCompensation", {
             "travelExpense": {"id": 555},
             "rateCategory": {"id": 740},
             "location": "Oslo",
             "overnightAccommodation": "HOTEL",
             "count": 5,
             "rate": 800,
-        }))
+        })])
 
     async def test_create_travel_cost_resolves_flight_category_and_infers_departure_date(self):
         client = FakeTripletexClient()

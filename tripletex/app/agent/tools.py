@@ -3292,7 +3292,11 @@ async def _execute(
             args["travelExpense"] = {"id": ctx.last_travel_expense_id}
             logger.info(f"Auto-injected travel expense id={ctx.last_travel_expense_id} into per diem compensation")
         inferred_country = _infer_per_diem_country_code(args, ctx)
-        if "countryCode" not in args and inferred_country:
+        explicit_country = str(args.get("countryCode") or "").strip().upper()
+        if explicit_country == "NO" and inferred_country == "NO":
+            args.pop("countryCode", None)
+            logger.info("Omitted optional domestic countryCode=NO from per diem payload")
+        elif "countryCode" not in args and inferred_country and inferred_country != "NO":
             args["countryCode"] = inferred_country
             logger.info(f"Inferred per diem countryCode={inferred_country} from location/prompt")
         if "rateCategory" not in args:

@@ -175,6 +175,7 @@ Recipes:
   - overnightAccommodation
   - count
   - rate
+- `countryCode` is optional for per diem; for Norwegian domestic trips, use Norway context for rate-category selection but prefer omitting `countryCode=NO` from the POST payload.
 - If Tripletex rejects a domestic per diem with `Country not enabled for travel expense`, retry once without the optional `countryCode` field.
 - For Norwegian domestic travel locations such as Tromsø, Oslo, Bergen, or Trondheim, set `countryCode=NO`.
 - Do not blindly reuse the first `/travelExpense/rateCategory` result. Choose a per-diem rate category that matches the travel date range and the domestic/overnight context.

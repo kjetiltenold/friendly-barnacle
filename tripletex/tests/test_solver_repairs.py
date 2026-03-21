@@ -317,7 +317,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         prompt = get_system_prompt("2026-03-21")
 
         self.assertIn("For Norwegian domestic travel locations such as Tromsø", prompt)
-        self.assertIn("set `countryCode=NO`", prompt)
+        self.assertIn("prefer omitting `countryCode=NO`", prompt)
         self.assertIn("set `isCompensationFromRates=true`", prompt)
         self.assertIn("`ajudas de custo`", prompt)
         self.assertIn("retry once without the optional `countryCode` field", prompt)
