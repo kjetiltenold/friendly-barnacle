@@ -1203,6 +1203,41 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "isPrioritizeAmountsIncludingVat": False,
         }))
 
+    async def test_create_order_normalizes_portuguese_fee_line_to_zero_vat(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/vatType",
+                    (("fields", "id,number,name,percentage"), ("percentage", "0")),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 0, "number": 0, "name": "Outgoing no VAT", "percentage": 0.0}],
+                },
+            }
+        )
+
+        await _execute(
+            client,
+            "create_order",
+            {
+                "customer": {"id": 108348803},
+                "orderDate": "2026-03-21",
+                "deliveryDate": "2026-03-21",
+                "orderLines": [
+                    {
+                        "product": {"id": 84415532},
+                        "description": "Taxa de lembrete",
+                        "count": 1,
+                        "unitPriceExcludingVatCurrency": 35,
+                    }
+                ],
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls[-1][2]["orderLines"][0]["vatType"], {"id": 0})
+
     async def test_tripletex_api_call_normalizes_vattype_fields(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1261,6 +1296,51 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.calls,
             [("GET", "/invoice", {"isPaid": "false", "fields": "id,invoiceNumber,invoiceDueDate,amountOutstanding,amount", "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2100-01-01"})],
+        )
+
+    async def test_tripletex_api_call_normalizes_invoice_amount_due_and_tracks_customer_context(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice",
+                    (
+                        ("fields", "id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer"),
+                        ("invoiceDateFrom", "2000-01-01"),
+                        ("invoiceDateTo", "2026-03-21"),
+                        ("isPaid", "false"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [
+                        {
+                            "id": 2147591804,
+                            "invoiceNumber": 2,
+                            "invoiceDate": "2026-02-01",
+                            "invoiceDueDate": "2026-03-01",
+                            "amountOutstanding": 5000,
+                            "customer": {"id": 108348803},
+                        }
+                    ],
+                }
+            }
+        )
+        ctx = EntityContext()
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/invoice?invoiceDateTo=2026-03-21&isPaid=false&fields=id,invoiceNumber,invoiceDate,dueDate,amountDue,customer"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["values"][0]["amountOutstanding"], 5000)
+        self.assertEqual(ctx.last_invoice_id, 2147591804)
+        self.assertEqual(ctx.last_customer_id, 108348803)
+        self.assertEqual(ctx.last_sales_customer_id, 108348803)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/invoice", {"invoiceDateTo": "2026-03-21", "isPaid": "false", "fields": "id,invoiceNumber,invoiceDate,invoiceDueDate,amountOutstanding,customer", "invoiceDateFrom": "2000-01-01"})],
         )
 
     async def test_tripletex_api_call_injects_supplier_invoice_dates(self):

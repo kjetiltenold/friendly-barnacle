@@ -244,6 +244,13 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         employee_id = employee.get("id")
         if employee_id is not None:
             ctx.last_employee_id = employee_id
+    elif path == "/invoice" or re.fullmatch(r"/invoice/\d+", path):
+        ctx.last_invoice_id = first_id
+        customer = first.get("customer") or {}
+        customer_id = customer.get("id")
+        if customer_id is not None:
+            ctx.last_customer_id = customer_id
+            ctx.last_sales_customer_id = customer_id
     elif path == "/project" or re.fullmatch(r"/project/\d+", path):
         ctx.last_project_id = first_id
         start_date = first.get("startDate")
@@ -1009,6 +1016,9 @@ def _looks_like_fee_text(*parts) -> bool:
         "dunning",
         "reminder fee",
         "late fee",
+        "lembrete",
+        "taxa de lembrete",
+        "taxa lembrete",
         "purre",
         "purring",
         "inkasso",
@@ -2695,6 +2705,7 @@ async def _execute(
                 params["fields"],
                 {
                     "dueDate": "invoiceDueDate",
+                    "amountDue": "amountOutstanding",
                     "amountTotal": "amount",
                     "amountRemainder": "amountOutstanding",
                     "amountGross": "amount",
