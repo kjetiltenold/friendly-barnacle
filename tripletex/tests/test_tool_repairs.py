@@ -1613,6 +1613,40 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 999)
         self.assertEqual(client.calls[1][2]["postings"][0]["customer"], {"id": 108297625})
 
+    async def test_create_voucher_retries_with_customer_on_credit_receivable_posting(self):
+        client = FakeTripletexClient(
+            post_errors={
+                "/ledger/voucher": [
+                    Exception("422 Validation failed: Kunde mangler."),
+                    None,
+                ]
+            }
+        )
+        ctx = EntityContext(last_customer_id=108342671)
+        ctx.account_cache = {
+            8160: {"id": 8160, "number": 8160, "name": "Valutatap"},
+            1500: {"id": 1500, "number": 1500, "name": "Kundefordringer"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Valutatap",
+                "postings": [
+                    {"account": {"id": 8160}, "amountGross": 8977.17},
+                    {"account": {"id": 1500}, "amountGross": -8977.17},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertNotIn("customer", client.calls[1][2]["postings"][0])
+        self.assertEqual(client.calls[1][2]["postings"][1]["customer"], {"id": 108342671})
+
     async def test_create_voucher_allows_supplier_invoice_auto_vat_balance(self):
         client = FakeTripletexClient()
         ctx = EntityContext()

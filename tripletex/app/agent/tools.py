@@ -1548,10 +1548,11 @@ async def _upsert_standard_time(
     from_date: str,
     hours_per_day: float,
 ) -> dict:
+    target_hours = round(_coerce_number(hours_per_day), 2)
     payload = {
         "employee": {"id": employee_id},
         "fromDate": from_date,
-        "hoursPerDay": hours_per_day,
+        "hoursPerDay": target_hours,
     }
     try:
         result = await client.get("/employee/standardTime", params={
@@ -1561,6 +1562,12 @@ async def _upsert_standard_time(
         })
         for standard_time in result.get("values", []):
             if standard_time.get("fromDate") == from_date and standard_time.get("id") is not None:
+                existing_hours = round(_coerce_number(standard_time.get("hoursPerDay")), 2)
+                if existing_hours == target_hours:
+                    logger.info(
+                        f"Standard time already matches {target_hours} hours/day from {from_date} for employee {employee_id}"
+                    )
+                    return {"value": standard_time}
                 standard_time_id = standard_time["id"]
                 return await client.put(f"/employee/standardTime/{standard_time_id}", json={"id": standard_time_id, **payload})
     except Exception as e:
@@ -2329,11 +2336,26 @@ async def _execute(
                         retried = True
                         logger.info(f"Auto-injected supplier id={ctx.last_customer_id} into voucher posting retry")
             if "kunde mangler" in error_text and ctx and ctx.last_customer_id:
+                injected_customer = False
+                for posting in retry_args.get("postings", []):
+                    account = _get_cached_account(ctx, posting) if isinstance(posting, dict) else {}
+                    if (
+                        isinstance(posting, dict)
+                        and str((account or {}).get("number")) == "1500"
+                        and "customer" not in posting
+                    ):
+                        posting["customer"] = {"id": ctx.last_customer_id}
+                        retried = True
+                        injected_customer = True
+                        logger.info(
+                            f"Auto-injected customer id={ctx.last_customer_id} into receivables voucher posting retry"
+                        )
                 for posting in retry_args.get("postings", []):
                     if (
                         isinstance(posting, dict)
                         and posting.get("amountGross", 0) > 0
                         and "customer" not in posting
+                        and not injected_customer
                     ):
                         posting["customer"] = {"id": ctx.last_customer_id}
                         retried = True

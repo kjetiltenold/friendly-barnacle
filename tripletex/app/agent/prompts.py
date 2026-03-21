@@ -95,6 +95,7 @@ Recipes:
 - If you use unitPriceExcludingVatCurrency on the order lines, the order should use isPrioritizeAmountsIncludingVat=false.
 - If you use unitPriceIncludingVatCurrency on the order lines, the order should use isPrioritizeAmountsIncludingVat=true.
 - If the task does not specify a VAT rate, 25 percent is the normal default.
+- Exception: if the task is primarily about a foreign-currency invoice, payment registration, and exchange-rate gain or loss, and it gives only a single invoice amount in EUR, USD, or another currency without any VAT details, do not invent 25 percent VAT. Treat the stated foreign-currency amount as the receivable amount and use 0 percent / no-VAT handling unless the prompt explicitly gives a VAT rate.
 - For 15 percent, 12 percent, 0 percent, or special VAT cases, call GET /ledger/vatType first and pick the matching type. For customer invoices and orders, prefer outgoing VAT types. For supplier vouchers and purchase-side postings, prefer incoming VAT types.
 - In GET /ledger/vatType field filters, use percentage, not rate.
 - Do not create an invoice by description-only order lines when a product should exist.
@@ -107,6 +108,7 @@ Recipes:
   - paymentDate
   - paymentTypeId
   - paidAmount
+- For foreign-currency settlement tasks, register the payment first, then book the exchange gain or loss in a separate voucher. For exchange loss / disagio, debit the exchange-loss account such as `8160` and credit accounts receivable `1500`, and put the customer reference on the `1500` posting.
 - For dunning, reminder, or late-fee tasks such as Mahngebühr, purregebyr, or late fee:
   - Use 0 percent VAT on the fee product and sales order line.
   - Put the customer reference on the accounts-receivable voucher posting.
