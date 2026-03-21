@@ -221,10 +221,11 @@ Recipes:
   - Postage, porto: 6940
   - Telephone, telefon: 6900
   - Advertising, reklame: 7330
+- For transport tickets such as tog, buss, taxi, ferge, flytog, or flight receipts, do not blindly assume 25 percent VAT. Use the expense account lookup as the authority: if the account returns vatLocked or a specific vatType/legalVatTypes, follow that instead of guessing.
 - A receipt (kvittering) is normally already paid. Credit the bank account 1920, not accounts payable 2400. Do not use supplier postings unless the task explicitly says supplier invoice, leverandorfaktura, or payable.
 - For ordinary receipts or kvittering tasks, do not create free accounting dimensions unless the prompt explicitly asks for them.
 - If the prompt specifies a department, find or create the Tripletex department and put it on posting.department.
-- If account lookup shows vatLocked=true or VAT code 0 / no VAT handling, omit vatType on that posting.
+- If account lookup shows vatLocked=true or VAT code 0 / no VAT handling, omit vatType on that posting. If the account lookup returns a default vatType, prefer that over a guessed VAT type on receipt vouchers.
 - Representation and business lunch expenses may be non-deductible for VAT. Follow the account's VAT lock instead of forcing 25 percent input VAT.
 
 16. Salary or payroll
@@ -259,10 +260,9 @@ Recipes:
   3. create_project_activity to link each activity to its project
 
 18. Delete travel expense
-- Find the employee with search_entity or create_employee.
-- Search travel expenses: search_entity with entity_type="travelExpense" and params including employeeId.
-- Delete with delete_entity using entity_type="travelExpense" and entity_id from the search result.
-- If the prompt names a specific travel expense title, filter the results by title before deleting.
+- Use delete_travel_expense.
+- Prefer travel_expense_id when the task gives a specific report ID.
+- Otherwise provide employee_email, and include title when the employee may have more than one travel expense report.
 
 19. Update employee
 - Search by email with search_entity or create_employee (which reuses if found).
@@ -281,7 +281,7 @@ Recipes:
 
 22. Delete or correct entries
 - To delete: search for the entity, then use delete_entity with entity_type and entity_id.
-- To reverse a voucher: find the voucher via search_entity or tripletex_api_call GET /ledger/voucher, then call tripletex_api_call PUT /ledger/voucher/{{voucher_id}}/:reverse with query param date.
+- To reverse a voucher: use reverse_voucher with voucher_id and date.
 - To correct: reverse the incorrect voucher, then create a new correct voucher with create_voucher.
 
 Error prevention:

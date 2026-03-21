@@ -47,8 +47,9 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
         text = page.get_text()
         if text.strip():
             text_parts.append(text)
-        else:
-            # Scanned page — render as image for Claude vision
+        if _should_render_pdf_page_as_image(text):
+            # Render weak-text or scanned pages as images too so the model can
+            # recover dates, totals, and structured fields from the visual layout.
             pix = page.get_pixmap(dpi=200)
             img_bytes = pix.tobytes("png")
             blocks.append({
@@ -68,3 +69,15 @@ def _process_pdf(raw: bytes, filename: str) -> list[dict]:
 
     doc.close()
     return blocks
+
+
+def _should_render_pdf_page_as_image(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if "\ufffd" in stripped:
+        return True
+    if len(stripped) < 500:
+        return True
+    non_empty_lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    return len(non_empty_lines) < 4

@@ -1,0 +1,136 @@
+import json
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.agent.solver import _compress_messages, _execute_tool_calls, _prime_context
+from app.agent.tools import EntityContext
+
+
+class FakeTripletexClient:
+    def __init__(self, get_responses=None):
+        self.get_responses = get_responses or {}
+        self.calls = []
+
+    async def get(self, path, params=None):
+        self.calls.append(("GET", path, params))
+        key = (path, tuple(sorted((params or {}).items())))
+        return self.get_responses.get(key, {"fullResultSize": 0, "values": []})
+
+
+def _tool_call(tool_call_id: str, name: str, arguments: dict):
+    return SimpleNamespace(
+        id=tool_call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prime_context_prefetches_department_read_only(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/department",
+                    (("count", 1), ("fields", "id,name")),
+                ): {"fullResultSize": 1, "values": [{"id": 55, "name": "Salg"}]},
+            }
+        )
+        ctx = EntityContext()
+
+        await _prime_context(client, ctx)
+
+        self.assertEqual(ctx.last_department_id, 55)
+        self.assertEqual(
+            client.calls,
+            [("GET", "/department", {"fields": "id,name", "count": 1})],
+        )
+
+    async def test_execute_tool_calls_runs_in_order_with_shared_context(self):
+        ctx = EntityContext()
+        observed_customer_ids = []
+
+        async def fake_dispatch_tool(tx, name, args_json, endpoint_search=None, ctx=None):
+            if name == "create_customer":
+                ctx.last_customer_id = 123
+                return json.dumps({"value": {"id": 123}})
+            if name == "create_order":
+                observed_customer_ids.append(ctx.last_customer_id)
+                return json.dumps({"value": {"id": 456, "customer": {"id": ctx.last_customer_id}}})
+            raise AssertionError(f"Unexpected tool {name}")
+
+        tool_calls = [
+            _tool_call("tc1", "create_customer", {"name": "Acme"}),
+            _tool_call("tc2", "create_order", {"orderDate": "2026-03-21"}),
+        ]
+
+        with patch("app.agent.solver.dispatch_tool", side_effect=fake_dispatch_tool):
+            messages = await _execute_tool_calls(FakeTripletexClient(), tool_calls, None, ctx)
+
+        self.assertEqual(observed_customer_ids, [123])
+        self.assertEqual(
+            messages,
+            [
+                {"role": "tool", "tool_call_id": "tc1", "content": json.dumps({"value": {"id": 123}})},
+                {"role": "tool", "tool_call_id": "tc2", "content": json.dumps({"value": {"id": 456, "customer": {"id": 123}}})},
+            ],
+        )
+
+    def test_compress_messages_keeps_lookup_payloads(self):
+        lookup_payload = json.dumps(
+            {
+                "values": [
+                    {
+                        "id": 10,
+                        "number": 7350,
+                        "name": "Representasjon",
+                        "vatLocked": True,
+                        "requiresDepartment": False,
+                        "isApplicableForSupplierInvoice": True,
+                    }
+                ],
+                "fullResultSize": 1,
+            },
+            ensure_ascii=False,
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "tool_call_id": "t1", "content": lookup_payload + (" " * 220)},
+            {"role": "assistant", "content": "next"},
+        ]
+
+        _compress_messages(messages, keep_recent=1)
+
+        self.assertIn('"vatLocked": true', messages[1]["content"])
+        self.assertIn('"requiresDepartment": false', messages[1]["content"])
+
+    def test_compress_messages_preserves_useful_nested_ids(self):
+        create_payload = json.dumps(
+            {
+                "value": {
+                    "id": 18619016,
+                    "firstName": "Marit",
+                    "lastName": "Lunde",
+                    "email": "marit.lunde@example.org",
+                    "department": {"id": 927020, "name": "Utvikling", "displayName": "Utvikling"},
+                    "employments": [{"id": 2813211, "startDate": "2026-07-25"}],
+                    "comments": "x" * 300,
+                }
+            },
+            ensure_ascii=False,
+        )
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "tool_call_id": "t1", "content": create_payload},
+            {"role": "assistant", "content": "next"},
+        ]
+
+        _compress_messages(messages, keep_recent=1)
+
+        compressed = json.loads(messages[1]["content"])
+        self.assertEqual(compressed["value"]["id"], 18619016)
+        self.assertEqual(compressed["value"]["department"]["id"], 927020)
+        self.assertEqual(compressed["value"]["employments"][0]["id"], 2813211)
+
+
+if __name__ == "__main__":
+    unittest.main()

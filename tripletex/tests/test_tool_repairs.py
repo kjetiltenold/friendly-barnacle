@@ -655,7 +655,10 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             get_responses={
                 (
                     "/ledger/account",
-                    (("fields", "id,number,name,vatType,vatLocked,requiresDepartment,isApplicableForSupplierInvoice"), ("number", "7350")),
+                    (
+                        ("fields", "id,number,name,vatType,legalVatTypes,vatLocked,requiresDepartment,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "7350"),
+                    ),
                 ): {
                     "fullResultSize": 1,
                     "values": [{"id": 10, "number": 7350, "name": "Representasjon", "vatLocked": True}],
@@ -674,7 +677,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["values"][0]["vatLocked"])
         self.assertEqual(
             client.calls,
-            [("GET", "/ledger/account", {"number": "7350", "fields": "id,number,name,vatType,vatLocked,requiresDepartment,isApplicableForSupplierInvoice"})],
+            [("GET", "/ledger/account", {"number": "7350", "fields": "id,number,name,vatType,legalVatTypes,vatLocked,requiresDepartment,isApplicableForSupplierInvoice,isBankAccount"})],
         )
 
     async def test_tripletex_api_call_blocks_session_endpoints(self):
@@ -840,6 +843,65 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.calls[-1], ("DELETE", "/travelExpense/777"))
 
+    async def test_delete_travel_expense_by_email_and_title(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee",
+                    (("count", 1), ("email", "charles@example.org"), ("fields", "id")),
+                ): {"fullResultSize": 1, "values": [{"id": 42}]},
+                (
+                    "/travelExpense",
+                    (("count", 100), ("employeeId", 42), ("fields", "id,title")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 777, "title": "Client visit"},
+                        {"id": 778, "title": "Conference"},
+                    ],
+                },
+            }
+        )
+
+        await _execute(
+            client,
+            "delete_travel_expense",
+            {"employee_email": "charles@example.org", "title": "Conference"},
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(client.calls[-1], ("DELETE", "/travelExpense/778"))
+
+    async def test_delete_travel_expense_requires_title_when_multiple_exist(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee",
+                    (("count", 1), ("email", "charles@example.org"), ("fields", "id")),
+                ): {"fullResultSize": 1, "values": [{"id": 42}]},
+                (
+                    "/travelExpense",
+                    (("count", 100), ("employeeId", 42), ("fields", "id,title")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 777, "title": "Client visit"},
+                        {"id": 778, "title": "Conference"},
+                    ],
+                },
+            }
+        )
+
+        with self.assertRaises(ValueError):
+            await _execute(
+                client,
+                "delete_travel_expense",
+                {"employee_email": "charles@example.org"},
+                endpoint_search=None,
+                ctx=EntityContext(),
+            )
+
     async def test_delete_travel_expense_by_id(self):
         client = FakeTripletexClient()
 
@@ -935,6 +997,124 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.vat_type_cache[(25, "outgoing")], 3)
         self.assertEqual(ctx.vat_type_cache[(25, "incoming")], 50)
         self.assertEqual(ctx.vat_type_cache[(15, "outgoing")], 5)
+
+    def test_account_cache_populated_from_lookup(self):
+        from app.agent.tools import _track_lookup_context
+
+        ctx = EntityContext()
+        _track_lookup_context(ctx, "/ledger/account", {
+            "values": [
+                {
+                    "id": 364015653,
+                    "number": 7140,
+                    "name": "Reisekostnad",
+                    "vatType": {"id": 61},
+                    "legalVatTypes": [{"id": 61}, {"id": 62}],
+                    "vatLocked": False,
+                },
+                {
+                    "id": 364015350,
+                    "number": 1920,
+                    "name": "Bank",
+                    "isBankAccount": True,
+                },
+            ],
+        })
+
+        self.assertEqual(ctx.last_account_id, 364015653)
+        self.assertEqual(ctx.account_cache[364015653]["number"], 7140)
+        self.assertTrue(ctx.account_cache[364015350]["isBankAccount"])
+
+    async def test_create_voucher_receipt_uses_account_default_vat_type(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_department_id=916856,
+            account_cache={
+                364015653: {
+                    "id": 364015653,
+                    "number": 7140,
+                    "name": "Reisekostnad",
+                    "vatType": {"id": 61},
+                    "legalVatTypes": [{"id": 61}, {"id": 62}],
+                    "vatLocked": False,
+                },
+                364015350: {
+                    "id": 364015350,
+                    "number": 1920,
+                    "name": "Bank",
+                    "isBankAccount": True,
+                },
+            },
+        )
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-04-13",
+                "description": "NSB kvittering - Togbillett",
+                "postings": [
+                    {
+                        "account": {"id": 364015653},
+                        "amountGross": 14100,
+                        "description": "Togbillett",
+                        "department": {"id": 916856},
+                        "vatType": {"id": 50},
+                    },
+                    {
+                        "account": {"id": 364015350},
+                        "amountGross": -14100,
+                        "description": "Betalt med bedriftskort",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertEqual(body["postings"][0]["vatType"], {"id": 61})
+
+    async def test_create_voucher_removes_locked_vat_type_before_post(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            account_cache={
+                362775685: {
+                    "id": 362775685,
+                    "number": 7350,
+                    "name": "Representasjon",
+                    "vatType": {"id": 0},
+                    "legalVatTypes": [],
+                    "vatLocked": True,
+                },
+                362775433: {
+                    "id": 362775433,
+                    "number": 1920,
+                    "name": "Bank",
+                    "isBankAccount": True,
+                },
+            },
+        )
+
+        await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-09",
+                "description": "Receipt",
+                "postings": [
+                    {"account": {"id": 362775685}, "amountGross": 13200, "vatType": {"id": 1}},
+                    {"account": {"id": 362775433}, "amountGross": -13200},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ("POST", "/ledger/voucher"))
+        self.assertNotIn("vatType", body["postings"][0])
 
 
 if __name__ == "__main__":

@@ -69,6 +69,7 @@ class EntityContext:
     last_voucher_id: int | None = None
     last_vat_type_id: int | None = None
     last_account_id: int | None = None
+    account_cache: dict[int, dict] | None = None
     vat_type_cache: dict | None = None  # Maps (percentage, direction_hint) -> vat_type_id
     next_project_activity_pair_index: int = 0
 
@@ -79,6 +80,8 @@ class EntityContext:
             self.project_ids = []
         if self.activity_ids is None:
             self.activity_ids = []
+        if self.account_cache is None:
+            self.account_cache = {}
 
     def track(self, name: str, result: dict) -> None:
         """Extract and store the entity ID from a creation response."""
@@ -197,6 +200,13 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
                     ctx.vat_type_cache[(pct, direction)] = vt_id
     elif path.startswith("/ledger/account"):
         ctx.last_account_id = first_id
+        accounts = values if values else [first]
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            account_id = account.get("id")
+            if account_id is not None:
+                ctx.account_cache[account_id] = account
 
 
 def _tool(name: str, description: str, parameters: dict) -> dict:
@@ -613,11 +623,12 @@ BASE_TOOL_DEFINITIONS.extend([
         },
         "required": ["period_a_from", "period_a_to", "period_b_from", "period_b_to"],
     }),
-    _tool("delete_travel_expense", "Delete a travel expense report. Searches by employee email if travel_expense_id is not given.", {
+    _tool("delete_travel_expense", "Delete a travel expense report. Searches by employee email if travel_expense_id is not given. If multiple reports exist, provide title to disambiguate.", {
         "type": "object",
         "properties": {
             "travel_expense_id": {"type": "integer", "description": "ID of the travel expense to delete. If omitted, the tool searches by employee_email."},
             "employee_email": {"type": "string", "description": "Employee email to find travel expenses for deletion."},
+            "title": {"type": "string", "description": "Optional travel expense title to choose the correct report when an employee has multiple reports."},
         },
     }),
     _tool("reverse_voucher", "Reverse a voucher in the ledger. Creates a reversal entry on the given date.", {
@@ -754,6 +765,29 @@ def _normalize_identifier(value: str | None) -> str | None:
         return None
     normalized = re.sub(r"\D+", "", str(value))
     return normalized or None
+
+
+def _get_cached_account(ctx: EntityContext | None, posting: dict | None) -> dict | None:
+    if ctx is None or not ctx.account_cache or not isinstance(posting, dict):
+        return None
+    account_id = _extract_reference_id(posting.get("account"))
+    if account_id is None:
+        return None
+    return ctx.account_cache.get(account_id)
+
+
+def _looks_like_paid_receipt_voucher(ctx: EntityContext | None, postings: list[dict] | None) -> bool:
+    if ctx is None or not isinstance(postings, list):
+        return False
+    for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+        if _coerce_number(posting.get("amountGross")) >= 0:
+            continue
+        account = _get_cached_account(ctx, posting) or {}
+        if str(account.get("number")) == "1920" or account.get("isBankAccount") is True:
+            return True
+    return False
 
 
 async def dispatch_tool(
@@ -1605,10 +1639,46 @@ async def _execute(
 
     if name == "create_voucher":
         if "postings" in args and isinstance(args["postings"], list):
+            is_paid_receipt = _looks_like_paid_receipt_voucher(ctx, args["postings"])
             for i, posting in enumerate(args["postings"]):
                 if isinstance(posting, dict):
                     posting.pop("guiRow", None)
                     posting["row"] = i + 1
+                    account = _get_cached_account(ctx, posting) or {}
+                    account_vat_id = _extract_reference_id(account.get("vatType"))
+                    legal_vat_ids = {
+                        vat_id
+                        for vat_id in (
+                            _extract_reference_id(vat)
+                            for vat in (account.get("legalVatTypes") or [])
+                        )
+                        if vat_id is not None
+                    }
+                    current_vat_id = _extract_reference_id(posting.get("vatType"))
+                    if account.get("vatLocked") or account_vat_id == 0:
+                        if posting.pop("vatType", None) is not None:
+                            logger.info("Removed vatType from voucher posting because the account is VAT-locked")
+                    elif (
+                        is_paid_receipt
+                        and posting.get("amountGross", 0) > 0
+                        and account_vat_id is not None
+                        and current_vat_id != account_vat_id
+                    ):
+                        posting["vatType"] = {"id": account_vat_id}
+                        logger.info(
+                            f"Normalized receipt voucher vatType to account default id={account_vat_id}"
+                        )
+                    elif current_vat_id is not None and legal_vat_ids and current_vat_id not in legal_vat_ids:
+                        if account_vat_id is not None:
+                            posting["vatType"] = {"id": account_vat_id}
+                            logger.info(
+                                f"Replaced invalid voucher vatType id={current_vat_id} with account-supported id={account_vat_id}"
+                            )
+                        else:
+                            posting.pop("vatType", None)
+                            logger.info(
+                                f"Removed invalid voucher vatType id={current_vat_id} because the account has no default VAT type"
+                            )
                     if (
                         ctx
                         and ctx.last_department_id
@@ -1776,7 +1846,34 @@ async def _execute(
             te_values = te_result.get("values", [])
             if not te_values:
                 raise ValueError(f"No travel expenses found for employee {email}")
-            te_id = te_values[0]["id"]
+            title = str(args.get("title", "")).strip().lower()
+            if title:
+                exact_matches = [
+                    te for te in te_values
+                    if str(te.get("title", "")).strip().lower() == title
+                ]
+                if len(exact_matches) == 1:
+                    te_id = exact_matches[0]["id"]
+                elif len(exact_matches) > 1:
+                    raise ValueError(f"Multiple travel expenses match title '{args['title']}' for employee {email}; use travel_expense_id")
+                else:
+                    partial_matches = [
+                        te for te in te_values
+                        if title in str(te.get("title", "")).strip().lower()
+                    ]
+                    if len(partial_matches) == 1:
+                        te_id = partial_matches[0]["id"]
+                    elif len(partial_matches) > 1:
+                        raise ValueError(f"Multiple travel expenses partially match title '{args['title']}' for employee {email}; use travel_expense_id")
+                    else:
+                        raise ValueError(f"No travel expense with title '{args['title']}' found for employee {email}")
+            elif len(te_values) == 1:
+                te_id = te_values[0]["id"]
+            else:
+                titles = [str(te.get("title", "")) for te in te_values[:5]]
+                raise ValueError(
+                    f"Multiple travel expenses found for employee {email}; provide title or travel_expense_id. Candidates: {titles}"
+                )
         return await client.delete(f"/travelExpense/{te_id}")
 
     if name == "reverse_voucher":
@@ -1813,7 +1910,14 @@ async def _execute(
         if path.startswith("/ledger/account") and isinstance(params.get("fields"), str):
             enriched_fields = _extend_fields_filter(
                 params["fields"],
-                ["vatType", "vatLocked", "requiresDepartment", "isApplicableForSupplierInvoice"],
+                [
+                    "vatType",
+                    "legalVatTypes",
+                    "vatLocked",
+                    "requiresDepartment",
+                    "isApplicableForSupplierInvoice",
+                    "isBankAccount",
+                ],
             )
             if enriched_fields != params["fields"]:
                 params["fields"] = enriched_fields
