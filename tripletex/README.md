@@ -19,7 +19,7 @@ Required:
 Optional:
 
 - `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1`
-- `MODEL_NAME` defaults to `gpt-4o`
+- `MODEL_NAME` defaults to `gpt-5.4`
 - `LOG_LEVEL` defaults to `INFO`
 - `MAX_AGENT_ITERATIONS` defaults to `15`
 - `SOFT_TIMEOUT_SECONDS` defaults to `270`
