@@ -73,6 +73,8 @@ class EntityContext:
     invoice_payment_action_count: int = 0
     customer_invoice_payment_action_count: int = 0
     supplier_invoice_payment_action_count: int = 0
+    reverse_voucher_action_count: int = 0
+    last_reversed_voucher_id: int | None = None
     last_hourly_rate_id: int | None = None
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
@@ -188,9 +190,11 @@ class EntityContext:
                         request_has_occupation_code = True
                         break
             response_has_occupation_code = _extract_reference_id(value.get("occupationCode")) is not None
-            self.last_employment_details_had_occupation_code = (
-                request_has_occupation_code or response_has_occupation_code
-            )
+            self.last_employment_details_had_occupation_code = response_has_occupation_code
+            if request_has_occupation_code and not response_has_occupation_code:
+                logger.info(
+                    "Employment details response is missing occupationCode after requested occupation-code input; retry may be required"
+                )
             logger.info(
                 "EntityContext: last_employment_details_had_occupation_code = %s",
                 self.last_employment_details_had_occupation_code,
@@ -923,6 +927,8 @@ def _normalize_ledger_voucher_fields_filter(fields: str) -> str:
                 if not child:
                     continue
                 normalized_child = posting_replacements.get(child, child)
+                if normalized_child == "invoice" or normalized_child.startswith("invoice("):
+                    continue
                 if normalized_child in inner_seen:
                     continue
                 inner_seen.add(normalized_child)
@@ -930,6 +936,44 @@ def _normalize_ledger_voucher_fields_filter(fields: str) -> str:
             part = f"postings({','.join(rewritten_inner)})"
         else:
             part = top_level_replacements.get(part, part)
+        if part in seen:
+            continue
+        seen.add(part)
+        rewritten.append(part)
+    return ",".join(rewritten)
+
+
+def _normalize_invoice_fields_filter(fields: str) -> str:
+    """Normalize common invalid invoice fields to schema-valid InvoiceDTO fields."""
+    replacements = {
+        "dueDate": "invoiceDueDate",
+        "amountDue": "amountOutstanding",
+        "amountTotal": "amount",
+        "amountRemainder": "amountOutstanding",
+        "amountRemaining": "amountOutstanding",
+        "amountGross": "amount",
+        "isPaid": "",
+        "order": "",
+    }
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for raw_part in _split_filter_parts(fields):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "." in part and "(" not in part and part.count(".") == 1:
+            parent, child = part.split(".", 1)
+            part = f"{parent}({child})"
+        part = replacements.get(part, part)
+        if not part:
+            continue
+        if (
+            part == "order"
+            or part.startswith("order(")
+            or part == "invoiceLines"
+            or part.startswith("invoiceLines(")
+        ):
+            continue
         if part in seen:
             continue
         seen.add(part)
@@ -2058,7 +2102,11 @@ def _prompt_is_contract_or_onboarding_task(ctx: EntityContext | None) -> bool:
             "joboffer",
             "offerletter",
             "tilbudsbrev",
+            "tilbodsbrev",
             "onboarding",
+            "contratdetravail",
+            "lettredoffre",
+            "creezlemploye",
             "contratodetrabajo",
             "cartadeoferta",
             "completelaincorporacion",
@@ -2840,6 +2888,23 @@ def _pick_occupation_code(values: list[dict], raw_code: str | int | None) -> dic
         return exact_matches[0]
     if len(prefix_matches) == 1:
         return prefix_matches[0]
+    if prefix_matches:
+        prefix_matches.sort(
+            key=lambda item: (
+                len(_normalize_code_text(item.get("code"))),
+                _normalize_code_text(item.get("code")),
+                int(item.get("id") or 0),
+            )
+        )
+        chosen = prefix_matches[0]
+        logger.info(
+            "Resolved occupation code %s from best prefix occupationCode match id=%s code=%s among %s candidates",
+            raw_code,
+            chosen.get("id"),
+            chosen.get("code"),
+            len(prefix_matches),
+        )
+        return chosen
     return None
 
 
@@ -4929,7 +4994,12 @@ async def _execute(
     if name == "reverse_voucher":
         voucher_id = args["voucher_id"]
         date = args["date"]
-        return await client.put(f"/ledger/voucher/{voucher_id}/:reverse", params={"date": date})
+        result = await client.put(f"/ledger/voucher/{voucher_id}/:reverse", params={"date": date})
+        if ctx is not None:
+            ctx.reverse_voucher_action_count += 1
+            ctx.last_reversed_voucher_id = voucher_id
+            logger.info(f"Tracked reverse voucher action for voucher id={voucher_id}")
+        return result
 
     if name == "tripletex_api_call":
         method = args["method"]
@@ -4995,19 +5065,7 @@ async def _execute(
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized ledger/voucher fields filter to {rewritten_fields}")
         if path == "/invoice" and isinstance(params.get("fields"), str):
-            rewritten_fields = _rewrite_fields_filter(
-                params["fields"],
-                {
-                    "dueDate": "invoiceDueDate",
-                    "amountDue": "amountOutstanding",
-                    "amountTotal": "amount",
-                    "amountRemainder": "amountOutstanding",
-                    "amountRemaining": "amountOutstanding",
-                    "amountGross": "amount",
-                    "isPaid": "",
-                    "order": "",
-                },
-            )
+            rewritten_fields = _normalize_invoice_fields_filter(params["fields"])
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized invoice fields filter to {rewritten_fields}")

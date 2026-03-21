@@ -99,6 +99,36 @@ def _prompt_likely_requires_invoice_payment(prompt: str) -> bool:
     )
 
 
+def _prompt_likely_requires_invoice_payment_reversal(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    invoice_markers = (
+        "invoice",
+        "fatura",
+        "factura",
+        "facture",
+        "faktura",
+        "rechnung",
+    )
+    reversal_markers = (
+        "reverse the payment",
+        "reverse payment",
+        "payment was returned by the bank",
+        "returned by the bank",
+        "returned payment",
+        "bank return",
+        "payment returned",
+        "reverser betalingen",
+        "reverser betalinga",
+        "returnert av banken",
+        "tilbakefort",
+        "returbetaling",
+        "returned bank transfer",
+    )
+    return any(marker in normalized for marker in invoice_markers) and any(
+        marker in normalized for marker in reversal_markers
+    )
+
+
 def _prompt_likely_requires_bank_reconciliation_payments(prompt: str) -> bool:
     normalized = _normalize_text(prompt)
     statement_markers = (
@@ -157,6 +187,27 @@ def _prompt_likely_requires_contract_onboarding_completion(prompt: str) -> bool:
     return any(marker in normalized for marker in onboarding_markers)
 
 
+def _prompt_likely_requires_contract_standard_time(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    standard_time_markers = (
+        "onboarding",
+        "offer letter",
+        "offerletter",
+        "job offer",
+        "joboffer",
+        "tilbudsbrev",
+        "tilbodsbrev",
+        "standard time",
+        "standard working hours",
+        "working hours",
+        "arbeidstid",
+        "heures de travail",
+        "horario de trabajo",
+        "horas de trabajo",
+    )
+    return any(marker in normalized for marker in standard_time_markers)
+
+
 def _should_retry_text_only_response(
     assistant_text: str,
     prompt: str,
@@ -178,11 +229,16 @@ def _should_retry_text_only_response(
             getattr(ctx, "customer_invoice_payment_action_count", 0) == 0
             or getattr(ctx, "supplier_invoice_payment_action_count", 0) == 0
         )
+    if _prompt_likely_requires_invoice_payment_reversal(prompt):
+        return getattr(ctx, "reverse_voucher_action_count", 0) == 0
     if _prompt_likely_requires_invoice_payment(prompt):
         return getattr(ctx, "invoice_payment_action_count", 0) == 0
     if _prompt_likely_requires_contract_onboarding_completion(prompt):
         missing_employment_details = getattr(ctx, "last_employment_details_id", None) is None
-        missing_standard_time = getattr(ctx, "last_standard_time_id", None) is None
+        missing_standard_time = (
+            _prompt_likely_requires_contract_standard_time(prompt)
+            and getattr(ctx, "last_standard_time_id", None) is None
+        )
         missing_occupation_code = not getattr(
             ctx,
             "last_employment_details_had_occupation_code",
@@ -229,6 +285,19 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
             + "Handle partial payments by paying only the transaction amount from each attached row. "
             "Reply only with DONE when both customer and supplier payment registrations are finished."
         )
+    if _prompt_likely_requires_invoice_payment_reversal(prompt):
+        reversed_hint = (
+            f"You already reversed voucher id={ctx.last_reversed_voucher_id}. "
+            if ctx.last_reversed_voucher_id is not None
+            else ""
+        )
+        return (
+            "The task is not complete yet. This is a returned-payment reversal task, not a new payment registration. "
+            + reversed_hint
+            + "Identify the voucher that registered the original invoice payment and use reverse_voucher on that voucher. "
+            "Do not register a new negative invoice payment with PUT /invoice/{invoice_id}/:payment. "
+            "Reply only with DONE when the payment voucher reversal is finished."
+        )
     if _prompt_likely_requires_invoice_payment(prompt):
         payment_type_hint = (
             f"Use paymentType id={ctx.last_payment_type_id}. "
@@ -257,7 +326,7 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
             missing_actions.append(
                 "update or recreate create_employment_details so it includes occupationCodeCode or occupationCodeName copied literally from the attachment"
             )
-        if ctx.last_standard_time_id is None:
+        if _prompt_likely_requires_contract_standard_time(prompt) and ctx.last_standard_time_id is None:
             missing_actions.append(
                 "call create_standard_time with the attachment's literal standard working hours"
             )
@@ -267,7 +336,7 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
         return (
             "The onboarding task is not complete yet. Re-inspect the attached contract or offer letter. "
             + missing_text
-            + ". Reply only with DONE when the employee is created, employment details are written, standard time is configured, and employment details include an occupation code."
+            + ". Reply only with DONE when the employee is created, employment details are written, and the required contract fields are registered, including an occupation code."
         )
     return (
         "The task is not complete yet. Execute all requested Tripletex create, update, delete, "

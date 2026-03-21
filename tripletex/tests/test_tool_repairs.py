@@ -163,6 +163,43 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "employments": [{"startDate": "2026-07-11"}],
         })])
 
+    async def test_create_employee_strips_placeholder_email_for_french_contract_task_without_prompt_email(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_employee",
+            {
+                "firstName": "Camille",
+                "lastName": "Moreau",
+                "email": "camille.moreau@example.org",
+                "userType": "STANDARD",
+                "dateOfBirth": "1984-01-12",
+                "nationalIdentityNumber": "12018486901",
+                "startDate": "2026-04-23",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_department_id=951042,
+                prompt_text=(
+                    "Vous avez recu un contrat de travail pour un nouvel employe. "
+                    "Creez l'employe dans Tripletex avec tous les details du contrat : "
+                    "numero d'identite nationale, date de naissance, departement, code de profession, "
+                    "salaire, pourcentage d'emploi et date de debut."
+                ),
+            ),
+        )
+
+        self.assertEqual(client.calls, [("POST", "/employee", {
+            "firstName": "Camille",
+            "lastName": "Moreau",
+            "userType": "NO_ACCESS",
+            "dateOfBirth": "1984-01-12",
+            "nationalIdentityNumber": "12018486901",
+            "department": {"id": 951042},
+            "employments": [{"startDate": "2026-04-23"}],
+        })])
+
     async def test_create_employee_defaults_to_no_access_and_skips_prefetched_department_for_generic_new_employee_prompt(self):
         client = FakeTripletexClient()
 
@@ -1139,6 +1176,29 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.last_employment_id, 2829000)
         self.assertTrue(ctx.last_employment_details_had_occupation_code)
 
+    def test_entity_context_tracks_failed_employment_details_occupation_code_resolution_as_missing(self):
+        ctx = EntityContext()
+
+        ctx.track(
+            "create_employment_details",
+            {
+                "value": {
+                    "id": 3729001,
+                    "employment": {"id": 2829001},
+                    "occupationCode": None,
+                }
+            },
+            {
+                "employmentId": 2829001,
+                "date": "2026-06-06",
+                "occupationCodeCode": "3323",
+            },
+        )
+
+        self.assertEqual(ctx.last_employment_details_id, 3729001)
+        self.assertEqual(ctx.last_employment_id, 2829001)
+        self.assertFalse(ctx.last_employment_details_had_occupation_code)
+
     async def test_create_employment_details_fallback_resolves_prefixed_occupation_code(self):
         client = FakeTripletexClient(
             get_responses={
@@ -1247,6 +1307,59 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 "workingHoursScheme": "NOT_SHIFT",
                 "occupationCode": {"id": 1991},
                 "percentageOfFullTimeEquivalent": 100.0,
+                "annualSalary": 500000.0,
+            }),
+            client.calls,
+        )
+
+    async def test_create_employment_details_fallback_resolves_best_prefixed_occupation_code_when_multiple_candidates_match(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/occupationCode",
+                    (("code", "3323"), ("count", 20), ("fields", "id,nameNO,code")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/employment/occupationCode",
+                    (("count", 1000), ("fields", "id,nameNO,code")),
+                ): {
+                    "fullResultSize": 3,
+                    "values": [
+                        {"id": 991, "code": "3323.01", "nameNO": "Kontormedarbeider"},
+                        {"id": 992, "code": "3323.10", "nameNO": "Lagerkoordinator"},
+                        {"id": 993, "code": "4110", "nameNO": "Kontorassistent"},
+                    ],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2813403"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employmentId": 2813403,
+                "date": "2026-07-08",
+                "annualSalary": 500000,
+                "percentageOfFullTimeEquivalent": 80,
+                "occupationCodeCode": "3323",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertIn(
+            ("POST", "/employee/employment/details", {
+                "employment": {"id": 2813403},
+                "date": "2026-07-08",
+                "employmentType": "ORDINARY",
+                "remunerationType": "MONTHLY_WAGE",
+                "workingHoursScheme": "NOT_SHIFT",
+                "occupationCode": {"id": 991},
+                "percentageOfFullTimeEquivalent": 80.0,
                 "annualSalary": 500000.0,
             }),
             client.calls,
@@ -2458,6 +2571,96 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                         "paymentDate": "2026-03-21",
                         "paymentTypeId": "3",
                         "paidAmount": "44100",
+                    },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_normalizes_invoice_fields_filter_by_removing_unsupported_order_and_invoice_lines(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/invoice",
+                    (
+                        ("customerId", "108319825"),
+                        ("fields", "id,invoiceNumber,invoiceDate,amountOutstanding,customer(name),voucher(number)"),
+                        ("invoiceDateFrom", "2026-01-01"),
+                        ("invoiceDateTo", "2026-12-31"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 2147569018, "invoiceNumber": "1001"}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/invoice?customerId=108319825&invoiceDateFrom=2026-01-01&invoiceDateTo=2026-12-31&fields=id,invoiceNumber,invoiceDate,amountOutstanding,customer(name),voucher(number),order(orderLines(description)),invoiceLines(product(name),description)",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 2147569018)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "GET",
+                    "/invoice",
+                    {
+                        "customerId": "108319825",
+                        "invoiceDateFrom": "2026-01-01",
+                        "invoiceDateTo": "2026-12-31",
+                        "fields": "id,invoiceNumber,invoiceDate,amountOutstanding,customer(name),voucher(number)",
+                    },
+                )
+            ],
+        )
+
+    async def test_tripletex_api_call_normalizes_ledger_voucher_fields_filter_by_removing_posting_invoice_field(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/voucher",
+                    (
+                        ("dateFrom", "2026-03-01"),
+                        ("dateTo", "2026-04-01"),
+                        ("fields", "id,number,description,date,postings(voucher(number),account(number,name),amountGross,customer(id,name))"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 608888217, "number": 123}],
+                }
+            }
+        )
+
+        result = await _execute(
+            client,
+            "tripletex_api_call",
+            {
+                "method": "GET",
+                "path": "/ledger/voucher?dateFrom=2026-03-01&dateTo=2026-04-01&fields=id,number,description,date,postings(voucher(number),account(number,name),amountGross,customer(id,name),invoice(id,invoiceNumber))",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertEqual(result["values"][0]["id"], 608888217)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "GET",
+                    "/ledger/voucher",
+                    {
+                        "dateFrom": "2026-03-01",
+                        "dateTo": "2026-04-01",
+                        "fields": "id,number,description,date,postings(voucher(number),account(number,name),amountGross,customer(id,name))",
                     },
                 )
             ],
@@ -4193,19 +4396,22 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reverse_voucher(self):
         client = FakeTripletexClient()
+        ctx = EntityContext()
 
         await _execute(
             client,
             "reverse_voucher",
             {"voucher_id": 555, "date": "2026-03-21"},
             endpoint_search=None,
-            ctx=EntityContext(),
+            ctx=ctx,
         )
 
         self.assertEqual(
             client.calls,
             [("PUT", "/ledger/voucher/555/:reverse", None, {"date": "2026-03-21"})],
         )
+        self.assertEqual(ctx.reverse_voucher_action_count, 1)
+        self.assertEqual(ctx.last_reversed_voucher_id, 555)
 
     async def test_create_voucher_rejects_unbalanced_postings(self):
         client = FakeTripletexClient()

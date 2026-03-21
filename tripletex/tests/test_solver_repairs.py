@@ -392,7 +392,29 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         reminder = _build_incomplete_task_reminder(prompt, ctx)
 
         self.assertIn("occupationCodeCode or occupationCodeName", reminder)
-        self.assertIn("standard time is configured", reminder)
+        self.assertIn("required contract fields are registered", reminder)
+
+    def test_should_not_retry_text_only_response_for_contract_create_when_standard_time_was_not_requested(self):
+        prompt = (
+            "Vous avez recu un contrat de travail. Creez l'employe dans Tripletex avec tous les details du contrat : "
+            "numero d'identite nationale, date de naissance, departement, code de profession, salaire, "
+            "pourcentage d'emploi et date de debut."
+        )
+        ctx = EntityContext(
+            last_employment_details_id=3729075,
+            last_employment_details_had_occupation_code=True,
+            last_standard_time_id=None,
+        )
+
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                2,
+                0,
+                ctx,
+            )
+        )
 
     def test_should_retry_text_only_response_when_invoice_payment_not_registered_yet(self):
         self.assertTrue(
@@ -413,6 +435,34 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
                 1,
                 0,
                 EntityContext(invoice_payment_action_count=1),
+            )
+        )
+
+    def test_should_retry_text_only_response_when_invoice_payment_reversal_not_registered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Betalinga frå Vestfjord AS for fakturaen vart returnert av banken. "
+                    "Reverser betalinga slik at fakturaen igjen viser utestaande belop."
+                ),
+                1,
+                0,
+                EntityContext(),
+            )
+        )
+
+    def test_should_not_retry_text_only_response_when_invoice_payment_reversal_was_registered(self):
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    "Betalinga frå Vestfjord AS for fakturaen vart returnert av banken. "
+                    "Reverser betalinga slik at fakturaen igjen viser utestaande belop."
+                ),
+                1,
+                0,
+                EntityContext(reverse_voucher_action_count=1, last_reversed_voucher_id=608888217),
             )
         )
 
