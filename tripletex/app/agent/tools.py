@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+import unicodedata
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
@@ -969,6 +970,24 @@ def _normalize_code_text(value: str | int | None) -> str:
     return re.sub(r"[^0-9A-Za-z]+", "", str(value)).upper()
 
 
+def _normalize_occupation_name(value: str | None) -> str:
+    if value in (None, ""):
+        return ""
+    text = str(value).strip().lower()
+    text = (
+        text.replace("æ", "ae")
+        .replace("ø", "o")
+        .replace("å", "a")
+        .replace("ä", "a")
+        .replace("ö", "o")
+        .replace("ü", "u")
+        .replace("ß", "ss")
+    )
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
 def _normalize_percentage(value) -> float | None:
     if value in (None, ""):
         return None
@@ -1531,10 +1550,19 @@ async def _resolve_occupation_code(client: TripletexClient, args: dict):
                 "count": 20,
             })
             values = result.get("values", [])
-            normalized_name = str(occupation_code_name).strip().lower()
+            normalized_name = _normalize_occupation_name(occupation_code_name)
             for item in values:
-                if str(item.get("nameNO", "")).strip().lower() == normalized_name and item.get("id") is not None:
+                if _normalize_occupation_name(item.get("nameNO")) == normalized_name and item.get("id") is not None:
                     return {"id": item["id"]}
+            if not values:
+                fallback_result = await client.get("/employee/employment/occupationCode", params={
+                    "fields": "id,nameNO,code",
+                    "count": 500,
+                })
+                fallback_values = fallback_result.get("values", [])
+                for item in fallback_values:
+                    if _normalize_occupation_name(item.get("nameNO")) == normalized_name and item.get("id") is not None:
+                        return {"id": item["id"]}
             if values and values[0].get("id") is not None:
                 return {"id": values[0]["id"]}
         except Exception as e:

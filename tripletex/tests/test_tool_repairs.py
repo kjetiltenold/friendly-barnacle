@@ -920,6 +920,62 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
         )
 
+    async def test_create_employment_details_fallback_resolves_transliterated_occupation_name(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/employee/employment/occupationCode",
+                    (("count", 20), ("fields", "id,nameNO,code"), ("nameNO", "HR-radgiver")),
+                ): {"fullResultSize": 0, "values": []},
+                (
+                    "/employee/employment/occupationCode",
+                    (("count", 500), ("fields", "id,nameNO,code")),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 4679, "code": "1234", "nameNO": "HR-rådgiver"},
+                        {"id": 4680, "code": "1235", "nameNO": "Regnskapsmedarbeider"},
+                    ],
+                },
+                (
+                    "/employee/employment/details",
+                    (("count", 100), ("employmentId", "2815260"), ("fields", "id,date,annualSalary,percentageOfFullTimeEquivalent,workingHoursScheme")),
+                ): {"fullResultSize": 0, "values": []},
+            }
+        )
+
+        await _execute(
+            client,
+            "create_employment_details",
+            {
+                "employmentId": 2815260,
+                "date": "2026-04-12",
+                "annualSalary": 560000,
+                "percentageOfFullTimeEquivalent": 100,
+                "employmentType": "ORDINARY",
+                "employmentForm": "PERMANENT",
+                "workingHoursScheme": "NOT_SHIFT",
+                "occupationCodeName": "HR-radgiver",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(),
+        )
+
+        self.assertIn(
+            ("POST", "/employee/employment/details", {
+                "employment": {"id": 2815260},
+                "date": "2026-04-12",
+                "employmentType": "ORDINARY",
+                "employmentForm": "PERMANENT",
+                "remunerationType": "MONTHLY_WAGE",
+                "workingHoursScheme": "NOT_SHIFT",
+                "occupationCode": {"id": 4679},
+                "percentageOfFullTimeEquivalent": 100.0,
+                "annualSalary": 560000.0,
+            }),
+            client.calls,
+        )
+
     async def test_tripletex_api_call_normalizes_raw_employment_details_post(self):
         client = FakeTripletexClient(
             get_responses={
