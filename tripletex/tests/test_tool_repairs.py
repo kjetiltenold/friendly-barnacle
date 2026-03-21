@@ -2682,6 +2682,40 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls[-1][2]["postings"][1]["amountGross"], -63300)
         self.assertEqual(client.calls[-1][2]["postings"][1]["amountGrossCurrency"], -63300)
 
+    async def test_create_voucher_normalizes_french_year_end_prepaid_reversal_to_prompt_total(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Effectuez la clôture annuelle simplifiée pour 2025. "
+                "Extournez les charges constatées d'avance (total 23750 NOK au compte 1700)."
+            ),
+        )
+        ctx.account_cache = {
+            1: {"id": 1, "number": 6300, "name": "Leie lokale"},
+            2: {"id": 2, "number": 1700, "name": "Forskuddsbetalte kostnader"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2025-12-31",
+                "description": "Extourne charges constatées d'avance 2025",
+                "postings": [
+                    {"account": {"id": 1}, "amountGross": 1979.13, "amountGrossCurrency": 1979.13},
+                    {"account": {"id": 2}, "amountGross": -1979.13, "amountGrossCurrency": -1979.13},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGross"], 23750)
+        self.assertEqual(client.calls[-1][2]["postings"][0]["amountGrossCurrency"], 23750)
+        self.assertEqual(client.calls[-1][2]["postings"][1]["amountGross"], -23750)
+        self.assertEqual(client.calls[-1][2]["postings"][1]["amountGrossCurrency"], -23750)
+
     async def test_create_voucher_splits_month_end_closing_and_normalizes_requested_accounts(self):
         client = FakeTripletexClient()
         ctx = EntityContext(last_department_id=931987)

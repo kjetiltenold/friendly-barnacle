@@ -938,7 +938,7 @@ def _extract_prompt_year_end_prepaid_amount(ctx: EntityContext | None, account_n
     amount_pattern = r"(\d[\d\s.,]*)"
     account_pattern = re.escape(str(account_number))
     patterns = (
-        rf"total\s+{amount_pattern}\s*(?:nok|kr)?\s+(?:na|no|on|i|in)\s+(?:conta|konto|account)\s+{account_pattern}\b",
+        rf"total\s+{amount_pattern}\s*(?:nok|kr)?\s+(?:na|no|on|i|in|au|sur)\s+(?:conta|konto|account|compte)\s+{account_pattern}\b",
         rf"{account_pattern}\b.*?\btotal\s+{amount_pattern}\s*(?:nok|kr)?",
         rf"{account_pattern}\b.*?{amount_pattern}\s*(?:nok|kr)?",
     )
@@ -959,8 +959,20 @@ def _normalize_year_end_prepaid_reversal_postings(
 ) -> None:
     if ctx is None or not isinstance(postings, list) or len(postings) != 2:
         return
-    normalized_description = str(description or "").lower()
-    if not any(token in normalized_description for token in ("prepaid", "forskudds", "tilbakeforing", "reversal")):
+    normalized_description = _normalize_prompt_text(description)
+    if not any(
+        token in normalized_description
+        for token in (
+            "prepaid",
+            "forskudds",
+            "tilbakeforing",
+            "reversal",
+            "extourne",
+            "cca",
+            "chargeconstateedavance",
+            "chargesconstateesdavance",
+        )
+    ):
         return
     target_amount = _extract_prompt_year_end_prepaid_amount(ctx, "1700")
     if target_amount in (None, 0):
