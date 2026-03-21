@@ -3467,6 +3467,26 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(client.calls[0][2]["travelDetails"]["isCompensationFromRates"])
 
+    async def test_create_travel_expense_sets_is_compensation_from_rates_for_spanish_dietas_prompt(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_expense",
+            {
+                "employee": {"id": 42},
+                "title": "Visita cliente Oslo",
+                "departureDate": "2026-03-23",
+                "returnDate": "2026-03-24",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                prompt_text="Registre una nota de gastos de viaje para Visita cliente Oslo. El viaje duró 2 días con dietas (tarifa diaria 800 NOK).",
+            ),
+        )
+
+        self.assertTrue(client.calls[0][2]["travelDetails"]["isCompensationFromRates"])
+
     async def test_create_travel_expense_shifts_undated_weekend_window_to_next_working_days(self):
         client = FakeTripletexClient()
 
@@ -3724,6 +3744,37 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "comments": "Bilhete de avião",
             "amountCurrencyIncVat": 7600,
             "date": "2026-03-17",
+        }))
+
+    async def test_create_travel_cost_resolves_spanish_flight_category(self):
+        client = FakeTripletexClient()
+
+        await _execute(
+            client,
+            "create_travel_cost",
+            {
+                "comments": "Billete de avión",
+                "amountCurrencyIncVat": 3700,
+                "date": "2026-03-23",
+            },
+            endpoint_search=None,
+            ctx=EntityContext(
+                last_travel_expense_id=555,
+                last_payment_type_id=9,
+                last_cost_categories=[
+                    {"id": 11, "displayName": "Flyreise"},
+                    {"id": 12, "displayName": "Taxi"},
+                ],
+            ),
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/cost", {
+            "travelExpense": {"id": 555},
+            "costCategory": {"id": 11},
+            "paymentType": {"id": 9},
+            "comments": "Billete de avión",
+            "amountCurrencyIncVat": 3700,
+            "date": "2026-03-23",
         }))
 
     async def test_create_travel_cost_aligns_undated_flight_date_to_normalized_departure(self):
