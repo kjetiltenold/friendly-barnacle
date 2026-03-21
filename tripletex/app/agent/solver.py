@@ -61,7 +61,7 @@ def _prompt_likely_requires_writes(prompt: str) -> bool:
         "creez",
         "erstell",
     )
-    return any(marker in normalized for marker in write_markers)
+    return any(marker in normalized for marker in write_markers) or _prompt_likely_requires_invoice_payment(prompt)
 
 
 def _prompt_likely_requires_invoice_payment(prompt: str) -> bool:
@@ -84,6 +84,10 @@ def _prompt_likely_requires_invoice_payment(prompt: str) -> bool:
         "paiement",
         "payer",
         "zahlung",
+        "zahlungen",
+        "teilzahlung",
+        "teilzahlungen",
+        "zahlung",
         "bezahlen",
         "registe o pagamento",
         "registrer betaling",
@@ -92,6 +96,44 @@ def _prompt_likely_requires_invoice_payment(prompt: str) -> bool:
     )
     return any(marker in normalized for marker in invoice_markers) and any(
         marker in normalized for marker in payment_markers
+    )
+
+
+def _prompt_likely_requires_bank_reconciliation_payments(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    statement_markers = (
+        "bank statement",
+        "kontoauszug",
+        "bankutskrift",
+        "csv",
+        "reconcile",
+        "avstemm",
+        "gleichen sie",
+        "gleichen sie den kontoauszug",
+        "abgleichen",
+    )
+    customer_markers = (
+        "customer invoice",
+        "kundenrechnung",
+        "kundenrechnungen",
+        "incoming payment",
+        "eingehende zahlung",
+        "eingehende zahlungen",
+        "incoming payments",
+    )
+    supplier_markers = (
+        "supplier invoice",
+        "lieferantenrechnung",
+        "lieferantenrechnungen",
+        "outgoing payment",
+        "ausgehende zahlung",
+        "ausgehende zahlungen",
+        "outgoing payments",
+    )
+    return (
+        any(marker in normalized for marker in statement_markers)
+        and any(marker in normalized for marker in customer_markers)
+        and any(marker in normalized for marker in supplier_markers)
     )
 
 
@@ -111,6 +153,11 @@ def _should_retry_text_only_response(
         return False
     if write_call_count == 0:
         return True
+    if _prompt_likely_requires_bank_reconciliation_payments(prompt):
+        return (
+            getattr(ctx, "customer_invoice_payment_action_count", 0) == 0
+            or getattr(ctx, "supplier_invoice_payment_action_count", 0) == 0
+        )
     if _prompt_likely_requires_invoice_payment(prompt):
         return getattr(ctx, "invoice_payment_action_count", 0) == 0
     return False
@@ -132,6 +179,20 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
                 "create_project with isInternal=true for each account name, create_activity with the same name, "
                 "and create_project_activity to link each activity to its project. Reply only with DONE when the writes are finished."
             )
+    if _prompt_likely_requires_bank_reconciliation_payments(prompt):
+        customer_payment_hint = (
+            f"Use customer paymentType id={ctx.last_payment_type_id}. "
+            if ctx.last_payment_type_id is not None
+            else "Use GET /invoice/paymentType for incoming customer payments. "
+        )
+        return (
+            "The task is not complete yet. Reconcile the attached bank-statement rows by executing payment writes, not just invoice lookups. "
+            "Register incoming payments on matching customer invoices with PUT /invoice/{invoice_id}/:payment, "
+            "and register outgoing payments on matching supplier invoices with PUT /supplierInvoice/{invoice_id}/:addPayment. "
+            + customer_payment_hint
+            + "Handle partial payments by paying only the transaction amount from each attached row. "
+            "Reply only with DONE when both customer and supplier payment registrations are finished."
+        )
     if _prompt_likely_requires_invoice_payment(prompt):
         payment_type_hint = (
             f"Use paymentType id={ctx.last_payment_type_id}. "

@@ -70,6 +70,8 @@ class EntityContext:
     last_cost_categories: list[dict] | None = None
     last_payment_type_id: int | None = None
     invoice_payment_action_count: int = 0
+    customer_invoice_payment_action_count: int = 0
+    supplier_invoice_payment_action_count: int = 0
     last_hourly_rate_id: int | None = None
     last_dimension_index: int | None = None
     last_dimension_value_id: int | None = None
@@ -4977,11 +4979,13 @@ async def _execute(
             if ctx and re.fullmatch(r"/invoice/\d+/:payment", path):
                 invoice_id = int(path.split("/")[2])
                 ctx.invoice_payment_action_count += 1
+                ctx.customer_invoice_payment_action_count += 1
                 ctx.last_invoice_id = invoice_id
                 logger.info(f"Tracked customer invoice payment action for invoice id={invoice_id}")
             elif ctx and re.fullmatch(r"/supplierInvoice/\d+/:addPayment", path):
                 invoice_id = int(path.split("/")[2])
                 ctx.invoice_payment_action_count += 1
+                ctx.supplier_invoice_payment_action_count += 1
                 logger.info(f"Tracked supplier invoice payment action for invoice id={invoice_id}")
             return result
         if method == "DELETE":

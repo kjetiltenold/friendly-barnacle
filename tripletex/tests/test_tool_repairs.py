@@ -2275,12 +2275,14 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTripletexClient()
 
+        ctx = EntityContext(prompt_text="Maneja los pagos parciales correctamente.")
+
         await _execute(
             client,
             "tripletex_api_call",
             {"method": "PUT", "path": "/supplierInvoice/77/:addPayment?paymentDate=2026-01-18&paymentTypeId=13&paidAmount=3650.00"},
             endpoint_search=None,
-            ctx=EntityContext(prompt_text="Maneja los pagos parciales correctamente."),
+            ctx=ctx,
         )
 
         self.assertEqual(
@@ -2299,6 +2301,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+        self.assertEqual(ctx.supplier_invoice_payment_action_count, 1)
 
     async def test_tripletex_api_call_tracks_customer_invoice_payment_action(self):
         client = FakeTripletexClient(
@@ -2322,6 +2325,7 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["value"]["id"], 2147596454)
         self.assertEqual(ctx.last_invoice_id, 2147596454)
         self.assertEqual(ctx.invoice_payment_action_count, 1)
+        self.assertEqual(ctx.customer_invoice_payment_action_count, 1)
         self.assertEqual(
             client.calls,
             [

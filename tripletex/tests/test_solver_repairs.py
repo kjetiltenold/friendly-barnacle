@@ -354,6 +354,40 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_prompt_likely_requires_writes_for_german_bank_reconciliation_payments(self):
+        self.assertTrue(
+            _prompt_likely_requires_writes(
+                "Gleichen Sie den Kontoauszug mit den offenen Rechnungen ab. "
+                "Ordnen Sie eingehende Zahlungen Kundenrechnungen und ausgehende Zahlungen Lieferantenrechnungen zu. "
+                "Behandeln Sie Teilzahlungen korrekt."
+            )
+        )
+
+    def test_should_retry_text_only_response_for_bank_reconciliation_until_both_payment_directions_written(self):
+        prompt = (
+            "Gleichen Sie den Kontoauszug mit den offenen Rechnungen ab. "
+            "Ordnen Sie eingehende Zahlungen Kundenrechnungen und ausgehende Zahlungen Lieferantenrechnungen zu. "
+            "Behandeln Sie Teilzahlungen korrekt."
+        )
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                1,
+                0,
+                EntityContext(customer_invoice_payment_action_count=1, supplier_invoice_payment_action_count=0),
+            )
+        )
+        self.assertFalse(
+            _should_retry_text_only_response(
+                "DONE",
+                prompt,
+                2,
+                0,
+                EntityContext(customer_invoice_payment_action_count=1, supplier_invoice_payment_action_count=1),
+            )
+        )
+
     def test_should_not_retry_text_only_response_after_two_reminders(self):
         self.assertFalse(
             _should_retry_text_only_response(
