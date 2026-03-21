@@ -13,7 +13,7 @@ if __package__ in {None, ""}:
 
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import iterate_in_threadpool
 
 from app.models import SolveRequest, SolveResponse
@@ -142,6 +142,16 @@ async def log_solve_requests(request: Request, call_next):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    return {"service": "Tripletex Agent", "status": "ok"}
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
 
 
 @app.post("/solve", response_model=SolveResponse)

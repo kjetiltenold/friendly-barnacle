@@ -206,6 +206,8 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("debiting the input VAT account such as `2710` and crediting the original expense account", prompt)
         self.assertIn("Do not credit bank `1920`", prompt)
+        self.assertIn("correct only the difference between the wrong amount and the intended amount", prompt)
+        self.assertIn("correct exactly those stated errors", prompt)
 
     def test_system_prompt_includes_foreign_currency_invoice_guidance(self):
         prompt = get_system_prompt("2026-03-21")
