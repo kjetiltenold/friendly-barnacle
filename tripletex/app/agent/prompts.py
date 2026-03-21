@@ -48,6 +48,7 @@ Response formats:
 - Use response["value"]["id"] for chaining.
 
 Use today's date when the prompt does not specify one: {today}
+- Exception: for travel-expense tasks without explicit travel dates, prefer the next reasonable working-day window after {today} instead of inventing a weekend trip just because {today} falls on Saturday or Sunday.
 
 Recipes:
 

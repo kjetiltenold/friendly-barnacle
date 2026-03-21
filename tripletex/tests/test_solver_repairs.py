@@ -317,6 +317,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
     def test_system_prompt_includes_travel_per_diem_country_and_rate_category_guidance(self):
         prompt = get_system_prompt("2026-03-21")
 
+        self.assertIn("for travel-expense tasks without explicit travel dates, prefer the next reasonable working-day window after 2026-03-21", prompt)
         self.assertIn("For Norwegian domestic travel locations such as Tromsø", prompt)
         self.assertIn("prefer omitting `countryCode=NO`", prompt)
         self.assertIn("set `isCompensationFromRates=true`", prompt)
