@@ -1652,7 +1652,49 @@ def _validate_ledger_error_correction_postings(
     )
     if not suspicious_numbers:
         return None
-    if any(token in normalized_description for token in ("duplicatevoucher", "pieceendouble", "duplicertbilag", "duplikatbilag", "doppelterbeleg", "lançamentoduplicado", "asientoduplicado")):
+    duplicate_tokens = (
+        "duplicatevoucher",
+        "pieceendouble",
+        "duplicertbilag",
+        "duplikatbilag",
+        "doppelterbeleg",
+        "lançamentoduplicado",
+        "asientoduplicado",
+    )
+    wrong_account_tokens = (
+        "wrongaccount",
+        "incorrectaccount",
+        "mauvaiscompte",
+        "compteincorrect",
+        "feilkonto",
+        "feilkonti",
+        "falscheskonto",
+        "contaerrada",
+        "cuentaequivocada",
+    )
+    missing_vat_tokens = (
+        "missinginputvat",
+        "missingvat",
+        "tvamanquante",
+        "lignetvamanquante",
+        "manglandemva",
+        "manglandemvalinje",
+        "fehlendemwast",
+        "ivafaltante",
+        "ivatfaltante",
+    )
+    wrong_amount_tokens = (
+        "overstatedamount",
+        "incorrectamount",
+        "wrongamount",
+        "montantincorrect",
+        "mauvaismontant",
+        "feilbelop",
+        "falscherbetrag",
+        "valorincorreto",
+        "importeincorrecto",
+    )
+    if any(token in normalized_description for token in duplicate_tokens):
         logger.warning(
             "Blocked duplicate-voucher correction using guessed balancing account(s): %s",
             ", ".join(suspicious_numbers),
@@ -1664,20 +1706,29 @@ def _validate_ledger_error_correction_postings(
                 "balancing line on guessed bank/liability accounts such as 1920, 2400, 2050, or 2990."
             )
         }
-    if any(
-        token in normalized_description
-        for token in (
-            "overstatedamount",
-            "incorrectamount",
-            "wrongamount",
-            "montantincorrect",
-            "mauvaismontant",
-            "feilbelop",
-            "falscherbetrag",
-            "valorincorreto",
-            "importeincorrecto",
+    if any(token in normalized_description for token in wrong_account_tokens):
+        logger.warning(
+            "Blocked wrong-account correction using guessed balancing account(s): %s",
+            ", ".join(suspicious_numbers),
         )
-    ):
+        return {
+            "error": (
+                "Wrong-account corrections must move the amount between the stated wrong and correct accounts. "
+                "Do not guess bank/liability balancing accounts such as 1920, 2400, 2050, or 2990."
+            )
+        }
+    if any(token in normalized_description for token in missing_vat_tokens):
+        logger.warning(
+            "Blocked missing-VAT correction using guessed balancing account(s): %s",
+            ", ".join(suspicious_numbers),
+        )
+        return {
+            "error": (
+                "Missing input-VAT corrections must debit the input VAT account such as 2710 and credit the "
+                "original expense account. Do not guess bank/liability accounts such as 1920, 2400, 2050, or 2990."
+            )
+        }
+    if any(token in normalized_description for token in wrong_amount_tokens):
         logger.warning(
             "Blocked wrong-amount correction using guessed balancing account(s): %s",
             ", ".join(suspicious_numbers),

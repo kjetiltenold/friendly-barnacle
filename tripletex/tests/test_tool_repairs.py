@@ -4983,6 +4983,74 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("original voucher's counterpart account", result["error"])
         self.assertEqual(client.calls, [])
 
+    async def test_create_voucher_blocks_wrong_account_correction_with_guessed_bank_balancing_account_for_french_ledger_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Nous avons decouvert des erreurs dans le grand livre de janvier et fevrier 2026. "
+                "Verifiez toutes les pieces et trouvez les 4 erreurs : une ecriture sur le mauvais compte "
+                "(compte 6540 utilise au lieu de 6860, montant 4800 NOK)."
+            ),
+            account_cache={
+                466919138: {"id": 466919138, "number": 6540, "name": "Inventar"},
+                466919151: {"id": 466919151, "number": 6860, "name": "Motekostnad"},
+                466918873: {"id": 466918873, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Correction mauvais compte 6540 vers 6860",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466919151}, "amountGross": 4800, "amountGrossCurrency": 4800},
+                    {"account": {"id": 466918873}, "amountGross": -4800, "amountGrossCurrency": -4800},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("move the amount between the stated wrong and correct accounts", result["error"])
+        self.assertEqual(client.calls, [])
+
+    async def test_create_voucher_blocks_missing_vat_correction_with_guessed_bank_balancing_account_for_french_ledger_prompt(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text=(
+                "Nous avons decouvert des erreurs dans le grand livre de janvier et fevrier 2026. "
+                "Verifiez toutes les pieces et trouvez les 4 erreurs : une ligne de TVA manquante "
+                "(compte 4500, montant HT 14500 NOK, TVA manquante sur compte 2710)."
+            ),
+            account_cache={
+                466919054: {"id": 466919054, "number": 4500, "name": "Fremmedytelse"},
+                466918954: {"id": 466918954, "number": 2710, "name": "Inngaende mva"},
+                466918873: {"id": 466918873, "number": 1920, "name": "Bank", "isBankAccount": True},
+            },
+        )
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-21",
+                "description": "Correction ligne TVA manquante sur compte 4500",
+                "year": 2026,
+                "postings": [
+                    {"account": {"id": 466918954}, "amountGross": 3625, "amountGrossCurrency": 3625},
+                    {"account": {"id": 466918873}, "amountGross": -3625, "amountGrossCurrency": -3625},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertIn("debit the input VAT account such as 2710", result["error"])
+        self.assertEqual(client.calls, [])
+
     async def test_create_voucher_blocks_duplicate_correction_with_guessed_bank_balancing_account_for_nynorsk_ledger_prompt(self):
         client = FakeTripletexClient()
         ctx = EntityContext(
