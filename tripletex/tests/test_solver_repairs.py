@@ -731,7 +731,7 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         prompt = get_system_prompt("2026-03-21")
 
         self.assertIn("GET /ledger/paymentTypeOut", prompt)
-        self.assertIn("PUT /supplierInvoice/{invoice_id}/:addPayment with paymentDate, paymentType, and amount", prompt)
+        self.assertIn("PUT /supplierInvoice/{invoice_id}/:addPayment with paymentDate, paymentType (not paymentTypeId), amount (not paidAmount), and partialPayment=true", prompt)
         self.assertIn("amountOutstanding, not amountRemaining", prompt)
         self.assertIn("On supplier-invoice fields filters, prefer amount", prompt)
         self.assertIn("customer(name) or supplier(name)", prompt)

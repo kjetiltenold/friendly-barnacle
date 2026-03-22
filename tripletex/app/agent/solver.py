@@ -376,26 +376,49 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
                 "and create_project_activity to link each activity to its project. Reply only with DONE when the writes are finished."
             )
     if _prompt_likely_requires_bank_reconciliation_payments(prompt):
+        customer_done = getattr(ctx, "customer_invoice_payment_action_count", 0) > 0
+        supplier_done = getattr(ctx, "supplier_invoice_payment_action_count", 0) > 0
         customer_payment_hint = (
             f"Use customer paymentType id={ctx.last_customer_payment_type_id} on PUT /invoice/{{invoice_id}}/:payment. "
             if getattr(ctx, "last_customer_payment_type_id", None) is not None
             else "Use GET /invoice/paymentType for incoming customer payments. "
         )
         supplier_payment_hint = (
-            f"Use supplier paymentType id={ctx.last_supplier_payment_type_id} on PUT /supplierInvoice/{{invoice_id}}/:addPayment. "
+            f"Use supplier paymentType id={ctx.last_supplier_payment_type_id} on PUT /supplierInvoice/{{invoice_id}}/:addPayment with paymentDate, paymentType, amount, and partialPayment=true. "
             if getattr(ctx, "last_supplier_payment_type_id", None) is not None
-            else "Use GET /ledger/paymentTypeOut for outgoing supplier payments. "
+            else "First GET /ledger/paymentTypeOut for outgoing supplier payment types. "
         )
-        return (
-            "The task is not complete yet. Reconcile the attached bank-statement rows by executing payment writes, not just invoice lookups. "
-            "Register incoming payments on matching customer invoices with PUT /invoice/{invoice_id}/:payment, "
-            "and register outgoing payments on matching supplier invoices with PUT /supplierInvoice/{invoice_id}/:addPayment. "
-            + customer_payment_hint
-            + supplier_payment_hint
-            + "Do not reuse the outgoing supplier payment type on customer invoice payments, or the incoming customer payment type on supplier invoice payments. "
-            + "Handle partial payments by paying only the transaction amount from each attached row. "
-            "Reply only with DONE when both customer and supplier payment registrations are finished."
-        )
+        if customer_done and not supplier_done:
+            return (
+                "Customer invoice payments are already registered — do NOT re-register them. "
+                "The task is not complete because supplier invoice payments are still missing. "
+                "Now search for supplier invoices with GET /supplierInvoice (use fields: id,invoiceNumber,invoiceDate,amount,supplier(name)). "
+                "Then match outgoing bank-statement rows to supplier invoices by amount/name/date and register each payment with "
+                "PUT /supplierInvoice/{invoice_id}/:addPayment using paymentDate, paymentType, amount, and partialPayment=true. "
+                + supplier_payment_hint
+                + "Handle partial payments by paying only the transaction amount from each attached row. "
+                "Reply only with DONE when all supplier payment registrations are finished."
+            )
+        elif supplier_done and not customer_done:
+            return (
+                "Supplier invoice payments are already registered — do NOT re-register them. "
+                "The task is not complete because customer invoice payments are still missing. "
+                "Search for customer invoices and register incoming payments with PUT /invoice/{invoice_id}/:payment. "
+                + customer_payment_hint
+                + "Handle partial payments by paying only the transaction amount from each attached row. "
+                "Reply only with DONE when all customer payment registrations are finished."
+            )
+        else:
+            return (
+                "The task is not complete yet. Reconcile the attached bank-statement rows by executing payment writes, not just invoice lookups. "
+                "Register incoming payments on matching customer invoices with PUT /invoice/{invoice_id}/:payment, "
+                "and register outgoing payments on matching supplier invoices with PUT /supplierInvoice/{invoice_id}/:addPayment. "
+                + customer_payment_hint
+                + supplier_payment_hint
+                + "Do not reuse the outgoing supplier payment type on customer invoice payments, or the incoming customer payment type on supplier invoice payments. "
+                + "Handle partial payments by paying only the transaction amount from each attached row. "
+                "Reply only with DONE when both customer and supplier payment registrations are finished."
+            )
     if _prompt_likely_requires_travel_expense_completion(prompt):
         travel_expense_hint = (
             f"Use travelExpense id={ctx.last_travel_expense_id}. "
@@ -646,6 +669,28 @@ async def _prime_context(tx: TripletexClient, ctx: EntityContext) -> None:
             logger.warning("Stopping before agent loop due to invalid or expired Tripletex proxy token during department prefetch")
             raise TerminalTripletexProxyTokenError(str(e)) from e
         logger.info(f"Department prefetch skipped: {e}")
+
+    # Pre-fetch payment types for bank reconciliation tasks
+    if _prompt_likely_requires_bank_reconciliation_payments(
+        getattr(ctx, "prompt_text", "") or ""
+    ):
+        try:
+            cust_result = await tx.get("/invoice/paymentType")
+            cust_values = cust_result.get("values", [])
+            if cust_values:
+                ctx.last_customer_payment_type_id = cust_values[0].get("id")
+                ctx.last_payment_type_id = cust_values[0].get("id")
+                logger.info(f"Prefetched customer payment type id={ctx.last_customer_payment_type_id}")
+        except Exception as e:
+            logger.info(f"Customer payment type prefetch skipped: {e}")
+        try:
+            supp_result = await tx.get("/ledger/paymentTypeOut")
+            supp_values = supp_result.get("values", [])
+            if supp_values:
+                ctx.last_supplier_payment_type_id = supp_values[0].get("id")
+                logger.info(f"Prefetched supplier payment type id={ctx.last_supplier_payment_type_id}")
+        except Exception as e:
+            logger.info(f"Supplier payment type prefetch skipped: {e}")
 
 
 async def _execute_tool_calls(

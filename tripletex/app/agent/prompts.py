@@ -354,17 +354,21 @@ Recipes:
 23. Bank statement reconciliation
 - If a CSV or text bank statement is attached, read the attachment first and treat it as the source of truth.
 - Do not call /bank/statement as a substitute for the attached file.
-- Extract one transaction row at a time: booking date, amount, payer/payee, reference, and direction.
-- Match incoming payments to open customer invoices by amount, customer name/reference, and payment date.
-- Match outgoing payments to supplier invoices by amount, supplier name/reference, and payment date.
-- Customer invoice payments use PUT /invoice/{{invoice_id}}/:payment with paymentDate, paymentTypeId, and paidAmount.
-- For customer payment types, use GET /invoice/paymentType.
-- For supplier payment types, use GET /ledger/paymentTypeOut. Do not call a made-up /supplierInvoice/paymentType endpoint.
-- Supplier invoice payments use PUT /supplierInvoice/{{invoice_id}}/:addPayment with paymentDate, paymentType, and amount.
-- For supplier partial payments, set partialPayment=true.
+- Extract one transaction row at a time: booking date, amount, payer/payee, reference, and direction (positive = incoming, negative = outgoing).
+- Positive amounts are incoming customer payments. Negative amounts are outgoing supplier payments.
+- You MUST register BOTH customer and supplier payments — the task is incomplete if either side is missing.
+- Workflow:
+  1. Parse the CSV attachment: extract date, amount, reference/name for each row.
+  2. Search customer invoices: for each incoming (positive) row, search by customer name to find matching invoices.
+  3. Register customer payments: PUT /invoice/{{invoice_id}}/:payment with paymentDate, paymentTypeId, and paidAmount.
+  4. Search supplier invoices: GET /supplierInvoice with invoiceDateFrom, invoiceDateTo. Safe fields: id, invoiceNumber, invoiceDate, amount, supplier(name). Do NOT use fields isClosed, amountPaid, amountOutstanding, or amountCurrency — they do not exist on SupplierInvoiceDTO. Do NOT duplicate nested fields like supplier(name),supplier(id) — use a single supplier(...) with all sub-fields.
+  5. Register supplier payments: PUT /supplierInvoice/{{invoice_id}}/:addPayment with paymentDate, paymentType (not paymentTypeId), amount (not paidAmount), and partialPayment=true.
+- Customer payment types: GET /invoice/paymentType. Use the returned id as paymentTypeId on customer invoice payments.
+- Supplier payment types: GET /ledger/paymentTypeOut. Use the returned id as paymentType on supplier invoice payments. Do NOT call /supplierInvoice/paymentType — it does not exist.
+- IMPORTANT: Customer and supplier payment types are different IDs — do NOT use the customer payment type id for supplier payments or vice versa.
 - Handle partial payments by paying only the transaction amount from the attached row, not the full outstanding invoice amount.
-- For raw supplier-invoice searches, prefer safe fields like `id`, `invoiceNumber`, `invoiceDate`, `amount`, and `supplier(name)`. Do not assume supplier invoices support the same `amountOutstanding` field filter as customer invoices.
 - Do not register payments for invoices that are not represented by an attachment row.
+- Never register the same invoice payment twice.
 
 24. Simplified year-end closing
 - For annual depreciation tasks, use the exact accounts named in the prompt.

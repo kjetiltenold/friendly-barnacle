@@ -896,6 +896,40 @@ def _rewrite_fields_filter(fields: str, replacements: dict[str, str]) -> str:
     return ",".join(rewritten)
 
 
+def _merge_nested_fields(fields: str) -> str:
+    """Merge duplicate parent fields: supplier(name),supplier(id) → supplier(name,id)."""
+    parts = _split_filter_parts(fields)
+    parent_children: dict[str, list[str]] = {}
+    plain: list[str] = []
+    order: list[str] = []
+    for raw_part in parts:
+        part = raw_part.strip()
+        if not part:
+            continue
+        m = re.match(r"^(\w+)\((.+)\)$", part)
+        if m:
+            parent, children = m.group(1), m.group(2)
+            if parent not in parent_children:
+                parent_children[parent] = []
+                order.append(f"_PARENT_{parent}")
+            for child in children.split(","):
+                child = child.strip()
+                if child and child not in parent_children[parent]:
+                    parent_children[parent].append(child)
+        else:
+            plain.append(part)
+            order.append(part)
+    result: list[str] = []
+    for item in order:
+        if item.startswith("_PARENT_"):
+            parent = item[8:]
+            children = parent_children[parent]
+            result.append(f"{parent}({','.join(children)})")
+        else:
+            result.append(item)
+    return ",".join(result)
+
+
 def _rewrite_sorting_filter(sorting: str, replacements: dict[str, str]) -> str:
     """Rewrite invalid sorting aliases while preserving order and sign."""
     rewritten: list[str] = []
@@ -6464,8 +6498,14 @@ async def _execute(
                     "amountRemaining": "amount",
                     "amountOutstanding": "amount",
                     "amountGross": "amount",
+                    "isClosed": "",
+                    "amountPaid": "",
+                    "amountCurrency": "",
+                    "status": "",
                 },
             )
+            # Merge duplicate parent fields: supplier(name),supplier(id) → supplier(name,id)
+            rewritten_fields = _merge_nested_fields(rewritten_fields)
             if rewritten_fields != params["fields"]:
                 params["fields"] = rewritten_fields
                 logger.info(f"Normalized supplierInvoice fields filter to {rewritten_fields}")
