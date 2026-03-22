@@ -5230,10 +5230,19 @@ async def _execute(
             raise
 
     if name == "create_activity":
-        if not args.get("activityType"):
+        requires_project_linked_activity = _prompt_likely_requires_project_linked_activity(ctx)
+        desired_activity_type = str(args.get("activityType") or "").strip().upper()
+        if requires_project_linked_activity and desired_activity_type != "PROJECT_GENERAL_ACTIVITY":
+            if desired_activity_type:
+                logger.info(
+                    "Normalized create_activity activityType=%s -> PROJECT_GENERAL_ACTIVITY for project-linked task",
+                    desired_activity_type,
+                )
+            args["activityType"] = "PROJECT_GENERAL_ACTIVITY"
+        elif not args.get("activityType"):
             args["activityType"] = (
                 "PROJECT_GENERAL_ACTIVITY"
-                if _prompt_likely_requires_project_linked_activity(ctx)
+                if requires_project_linked_activity
                 else "GENERAL_ACTIVITY"
             )
             logger.info(f"Defaulted create_activity activityType={args['activityType']}")

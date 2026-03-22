@@ -1640,6 +1640,52 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ("POST", "/activity", {"name": "Analyse", "activityType": "PROJECT_GENERAL_ACTIVITY"}),
         )
 
+    async def test_create_activity_normalizes_general_activity_to_project_general_for_project_task(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text="Total costs increased. Create an internal project for each account and also create an activity for each project."
+        )
+
+        await _execute(
+            client,
+            "create_activity",
+            {"name": "Largest Increase Expense Account 1", "activityType": "GENERAL_ACTIVITY"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            (
+                "POST",
+                "/activity",
+                {"name": "Largest Increase Expense Account 1", "activityType": "PROJECT_GENERAL_ACTIVITY"},
+            ),
+        )
+
+    async def test_create_activity_normalizes_project_specific_activity_to_project_general_for_project_task(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text="Total costs increased. Create an internal project for each account and also create an activity for each project."
+        )
+
+        await _execute(
+            client,
+            "create_activity",
+            {"name": "Largest Increase Expense Account 1", "activityType": "PROJECT_SPECIFIC_ACTIVITY"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            (
+                "POST",
+                "/activity",
+                {"name": "Largest Increase Expense Account 1", "activityType": "PROJECT_GENERAL_ACTIVITY"},
+            ),
+        )
+
     async def test_create_project_activity_pairs_multiple_projects_and_activities(self):
         client = FakeTripletexClient()
         ctx = EntityContext(project_ids=[101, 102], activity_ids=[201, 202])
