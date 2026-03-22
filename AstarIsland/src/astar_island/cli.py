@@ -18,6 +18,7 @@ from .api import AstarIslandClient, AstarIslandApiError
 from .baseline import ModelParameters, build_all_predictions
 from .cache import CacheStore
 from .config import AppConfig
+from .historical import estimate_historical_prediction_pseudocounts_for_round
 from .planner import determine_stage, plan_query_batch, run_iterative_autopilot
 
 
@@ -88,7 +89,21 @@ def command_build(args: argparse.Namespace) -> int:
     cache.save_round_detail(detail)
     observations = cache.load_observations(round_id)
     model_params = load_model_parameters(cache)
-    predictions = build_all_predictions(detail, observations, params=model_params)
+    historical_prior = cache.load_historical_signal_prior()
+    predictions = build_all_predictions(
+        detail,
+        observations,
+        params=model_params,
+        historical_pseudocounts_by_seed=(
+            estimate_historical_prediction_pseudocounts_for_round(
+                detail,
+                historical_prior,
+                weight=model_params.historical_weight,
+            )
+            if historical_prior is not None
+            else None
+        ),
+    )
 
     for seed_index, preview in predictions.items():
         if args.seed is not None and seed_index != args.seed:
@@ -192,7 +207,20 @@ def command_autoquery(args: argparse.Namespace) -> int:
 
     if args.build:
         updated_observations = cache.load_observations(round_id)
-        predictions = build_all_predictions(detail, updated_observations, params=model_params)
+        predictions = build_all_predictions(
+            detail,
+            updated_observations,
+            params=model_params,
+            historical_pseudocounts_by_seed=(
+                estimate_historical_prediction_pseudocounts_for_round(
+                    detail,
+                    historical_prior,
+                    weight=model_params.historical_weight,
+                )
+                if historical_prior is not None
+                else None
+            ),
+        )
         for seed_index, preview in predictions.items():
             path = cache.save_prediction(round_id, seed_index, preview.prediction.tolist())
             print(f"Updated prediction for seed {seed_index} -> {path}")

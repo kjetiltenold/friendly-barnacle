@@ -11,6 +11,222 @@
   },
   "rounds": [
     {
+      "round_id": "b3a0be6b-b48b-419d-916a-b7a77fa58c4d",
+      "round_number": 21,
+      "average_model_score": 77.33219440626401,
+      "average_submitted_score": 77.33219440626401,
+      "average_official_score": 77.33219999999999,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 8,
+          "weighted_kl": 0.08493313975148035,
+          "model_score": 77.50719468794966,
+          "submitted_weighted_kl": 0.08493313975148035,
+          "submitted_score": 77.50719468794966,
+          "official_score": 77.5072
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 11,
+          "weighted_kl": 0.09348844604190061,
+          "model_score": 75.5432128281893,
+          "submitted_weighted_kl": 0.09348844604190061,
+          "submitted_score": 75.5432128281893,
+          "official_score": 75.5432
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 9,
+          "weighted_kl": 0.07709782540311631,
+          "model_score": 79.35065565639061,
+          "submitted_weighted_kl": 0.07709782540311631,
+          "submitted_score": 79.35065565639061,
+          "official_score": 79.3507
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 10,
+          "weighted_kl": 0.08622349682643601,
+          "model_score": 77.20773879836189,
+          "submitted_weighted_kl": 0.08622349682643601,
+          "submitted_score": 77.20773879836189,
+          "official_score": 77.2077
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 12,
+          "weighted_kl": 0.08689582010137342,
+          "model_score": 77.05217006042861,
+          "submitted_weighted_kl": 0.08689582010137342,
+          "submitted_score": 77.05217006042861,
+          "official_score": 77.0522
+        }
+      ]
+    },
+    {
+      "round_id": "597e60cf-d1a1-4627-ac4d-2a61da68b6df",
+      "round_number": 19,
+      "average_model_score": 80.50280321559197,
+      "average_submitted_score": 80.50280321559197,
+      "average_official_score": 80.50280000000001,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 10,
+          "weighted_kl": 0.06681001534893967,
+          "model_score": 81.837873685123,
+          "submitted_weighted_kl": 0.06681001534893967,
+          "submitted_score": 81.837873685123,
+          "official_score": 81.8379
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 10,
+          "weighted_kl": 0.07378865748133444,
+          "model_score": 80.14233277600566,
+          "submitted_weighted_kl": 0.07378865748133444,
+          "submitted_score": 80.14233277600566,
+          "official_score": 80.1423
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 11,
+          "weighted_kl": 0.07615891853870002,
+          "model_score": 79.57447935869838,
+          "submitted_weighted_kl": 0.07615891853870002,
+          "submitted_score": 79.57447935869838,
+          "official_score": 79.5745
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 11,
+          "weighted_kl": 0.07448208733699668,
+          "model_score": 79.97578680923839,
+          "submitted_weighted_kl": 0.07448208733699668,
+          "submitted_score": 79.97578680923839,
+          "official_score": 79.9758
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 8,
+          "weighted_kl": 0.07030807308484117,
+          "model_score": 80.98354344889442,
+          "submitted_weighted_kl": 0.07030807308484117,
+          "submitted_score": 80.98354344889442,
+          "official_score": 80.9835
+        }
+      ]
+    },
+    {
+      "round_id": "b0f9d1bf-4b71-4e6e-816c-19c718d29056",
+      "round_number": 18,
+      "average_model_score": 72.55803575728707,
+      "average_submitted_score": 72.55803575728707,
+      "average_official_score": 72.55804,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 11,
+          "weighted_kl": 0.10646907816507221,
+          "model_score": 72.65796007732469,
+          "submitted_weighted_kl": 0.10646907816507221,
+          "submitted_score": 72.65796007732469,
+          "official_score": 72.658
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 9,
+          "weighted_kl": 0.10899090076232106,
+          "model_score": 72.11034272323653,
+          "submitted_weighted_kl": 0.10899090076232106,
+          "submitted_score": 72.11034272323653,
+          "official_score": 72.1103
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 11,
+          "weighted_kl": 0.10605740076657465,
+          "model_score": 72.74775043285584,
+          "submitted_weighted_kl": 0.10605740076657465,
+          "submitted_score": 72.74775043285584,
+          "official_score": 72.7478
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 8,
+          "weighted_kl": 0.10628252626851327,
+          "model_score": 72.6986348989683,
+          "submitted_weighted_kl": 0.10628252626851327,
+          "submitted_score": 72.6986348989683,
+          "official_score": 72.6986
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 11,
+          "weighted_kl": 0.10684763848398528,
+          "model_score": 72.57549065405001,
+          "submitted_weighted_kl": 0.10684763848398528,
+          "submitted_score": 72.57549065405001,
+          "official_score": 72.5755
+        }
+      ]
+    },
+    {
+      "round_id": "3eb0c25d-28fa-48ca-b8e1-fc249e3918e9",
+      "round_number": 17,
+      "average_model_score": 73.33769215520456,
+      "average_submitted_score": 73.33769215520456,
+      "average_official_score": 73.3377,
+      "seeds": [
+        {
+          "seed_index": 0,
+          "observation_count": 12,
+          "weighted_kl": 0.10680141567991058,
+          "model_score": 72.5855552799121,
+          "submitted_weighted_kl": 0.10680141567991058,
+          "submitted_score": 72.5855552799121,
+          "official_score": 72.5856
+        },
+        {
+          "seed_index": 1,
+          "observation_count": 10,
+          "weighted_kl": 0.1048651142705522,
+          "model_score": 73.00842483415931,
+          "submitted_weighted_kl": 0.1048651142705522,
+          "submitted_score": 73.00842483415931,
+          "official_score": 73.0084
+        },
+        {
+          "seed_index": 2,
+          "observation_count": 8,
+          "weighted_kl": 0.09293696338581907,
+          "model_score": 75.6682985885766,
+          "submitted_weighted_kl": 0.09293696338581907,
+          "submitted_score": 75.6682985885766,
+          "official_score": 75.6683
+        },
+        {
+          "seed_index": 3,
+          "observation_count": 11,
+          "weighted_kl": 0.10827320863155629,
+          "model_score": 72.26576906214173,
+          "submitted_weighted_kl": 0.10827320863155629,
+          "submitted_score": 72.26576906214173,
+          "official_score": 72.2658
+        },
+        {
+          "seed_index": 4,
+          "observation_count": 9,
+          "weighted_kl": 0.10417190572217652,
+          "model_score": 73.16041301123308,
+          "submitted_weighted_kl": 0.10417190572217652,
+          "submitted_score": 73.16041301123308,
+          "official_score": 73.1604
+        }
+      ]
+    },
+    {
       "round_id": "8f664aed-8839-4c85-bed0-77a2cac7c6f5",
       "round_number": 16,
       "average_model_score": 72.19831368619381,
@@ -552,193 +768,193 @@
     }
   ],
   "preflight": {
-    "before_score": 73.95211089043002,
-    "after_score": 73.95211089043002,
+    "before_score": 74.51798817418913,
+    "after_score": 74.51798817418913,
     "improved": true,
     "history": [
       {
         "pass": 0,
         "parameter": "prior_weight",
         "value": 1.5,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "prior_weight",
         "value": 2.0,
-        "score": 73.76902759082127
+        "score": 74.31351310254895
       },
       {
         "pass": 0,
         "parameter": "prior_weight",
         "value": 2.5,
-        "score": 73.56904503106213
+        "score": 74.09297308894625
       },
       {
         "pass": 0,
         "parameter": "prior_weight",
         "value": 3.0,
-        "score": 73.35631444023697
+        "score": 73.86042339389621
       },
       {
         "pass": 0,
         "parameter": "prior_weight",
         "value": 3.5,
-        "score": 73.1340090844143
+        "score": 73.61896789565262
       },
       {
         "pass": 0,
         "parameter": "exact_weight",
         "value": 4.5,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "exact_weight",
         "value": 6.0,
-        "score": 71.36684290614298
+        "score": 71.97007659947697
       },
       {
         "pass": 0,
         "parameter": "exact_weight",
         "value": 7.5,
-        "score": 68.84891871486849
+        "score": 69.49013995845237
       },
       {
         "pass": 0,
         "parameter": "exact_weight",
         "value": 9.0,
-        "score": 66.45507885315408
+        "score": 67.13291599440386
       },
       {
         "pass": 0,
         "parameter": "spatial_weight",
         "value": 0.5,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "spatial_weight",
         "value": 0.75,
-        "score": 73.83067301690866
+        "score": 74.39158382870613
       },
       {
         "pass": 0,
         "parameter": "spatial_weight",
         "value": 1.0,
-        "score": 73.69225649602335
+        "score": 74.2494521284235
       },
       {
         "pass": 0,
         "parameter": "spatial_weight",
         "value": 1.25,
-        "score": 73.54046772059338
+        "score": 74.09497802049135
       },
       {
         "pass": 0,
         "parameter": "spatial_weight",
         "value": 1.5,
-        "score": 73.37814632660971
+        "score": 73.93082667516539
       },
       {
         "pass": 0,
         "parameter": "global_scale",
         "value": 0.5,
-        "score": 73.78302434182575
+        "score": 74.41587162665675
       },
       {
         "pass": 0,
         "parameter": "global_scale",
         "value": 1.0,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "global_scale",
         "value": 1.5,
-        "score": 73.88362454793655
+        "score": 74.39038942802172
       },
       {
         "pass": 0,
         "parameter": "code_scale",
         "value": 0.5,
-        "score": 73.2000140231527
+        "score": 73.7484492937742
       },
       {
         "pass": 0,
         "parameter": "code_scale",
         "value": 0.9,
-        "score": 73.59501801948454
+        "score": 74.15265022216671
       },
       {
         "pass": 0,
         "parameter": "code_scale",
         "value": 1.3,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "frontier_scale",
         "value": 0.7,
-        "score": 72.18405495108965
+        "score": 72.76036946067387
       },
       {
         "pass": 0,
         "parameter": "frontier_scale",
         "value": 1.1,
-        "score": 73.12795556629341
+        "score": 73.6979956432364
       },
       {
         "pass": 0,
         "parameter": "frontier_scale",
         "value": 1.5,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "context_scale",
         "value": 0.8,
-        "score": 72.28830417060394
+        "score": 72.81086316918382
       },
       {
         "pass": 0,
         "parameter": "context_scale",
         "value": 1.2,
-        "score": 73.19444275696075
+        "score": 73.73921856721678
       },
       {
         "pass": 0,
         "parameter": "context_scale",
         "value": 1.6,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       },
       {
         "pass": 0,
         "parameter": "region_scale",
         "value": 0.5,
-        "score": 72.79477328758001
+        "score": 73.36336403606644
       },
       {
         "pass": 0,
         "parameter": "region_scale",
         "value": 0.9,
-        "score": 73.41047524525163
+        "score": 73.97701061872314
       },
       {
         "pass": 0,
         "parameter": "region_scale",
         "value": 1.3,
-        "score": 73.95211089043002
+        "score": 74.51798817418913
       }
     ],
     "synced_rounds": [
       {
-        "round_id": "8f664aed-8839-4c85-bed0-77a2cac7c6f5",
-        "round_number": 16,
+        "round_id": "b3a0be6b-b48b-419d-916a-b7a77fa58c4d",
+        "round_number": 21,
         "seeds_count": 5,
         "synced_seed_count": 5
       }
     ],
-    "case_count": 10
+    "case_count": 14
   }
 }

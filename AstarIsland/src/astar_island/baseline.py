@@ -50,6 +50,7 @@ class SeedFeatureMaps:
 @dataclass(slots=True)
 class ModelParameters:
     prior_weight: float = 2.5
+    historical_weight: float = 1.4
     exact_weight: float = 6.0
     spatial_weight: float = 1.0
     global_scale: float = 1.0
@@ -579,6 +580,7 @@ def build_seed_prediction(
     tables: LearnedTables | None = None,
     params: ModelParameters | None = None,
     latent_profile: RoundLatentProfile | None = None,
+    historical_pseudocounts: tuple[FloatGrid, FloatGrid] | None = None,
 ) -> PredictionPreview:
     model_params = params or ModelParameters()
     feature_maps_lookup = feature_maps_by_seed or build_feature_maps_for_round(detail)
@@ -609,9 +611,15 @@ def build_seed_prediction(
     learned_tables = tables or build_feature_model(detail, observations, feature_maps_lookup)
     feature_counts, feature_support = feature_pseudocounts_for_seed(feature_maps, learned_tables, model_params)
     spatial_counts, spatial_support = spatial_pseudocounts(exact_counts, sample_counts, feature_maps)
+    if historical_pseudocounts is None:
+        historical_counts = np.zeros_like(exact_counts)
+        historical_support = np.zeros((detail.map_height, detail.map_width), dtype=float)
+    else:
+        historical_counts, historical_support = historical_pseudocounts
 
     posterior = normalize_probabilities(
         (prior * model_params.prior_weight)
+        + historical_counts
         + feature_counts
         + (spatial_counts * model_params.spatial_weight)
         + (exact_counts * model_params.exact_weight)
@@ -620,7 +628,12 @@ def build_seed_prediction(
     dynamic_grid = posterior[..., 1] + posterior[..., 2] + posterior[..., 3] + (0.35 * posterior[..., 4])
     argmax_grid = np.argmax(posterior, axis=-1)
     confidence_grid = np.max(posterior, axis=-1)
-    support_grid = feature_support + (spatial_support * model_params.spatial_weight) + (sample_counts * model_params.exact_weight)
+    support_grid = (
+        historical_support
+        + feature_support
+        + (spatial_support * model_params.spatial_weight)
+        + (sample_counts * model_params.exact_weight)
+    )
 
     return PredictionPreview(
         prediction=posterior,
@@ -639,6 +652,7 @@ def build_all_predictions(
     observations: list[SimulationResult],
     *,
     params: ModelParameters | None = None,
+    historical_pseudocounts_by_seed: dict[int, tuple[FloatGrid, FloatGrid]] | None = None,
 ) -> dict[int, PredictionPreview]:
     model_params = params or ModelParameters()
     feature_maps_by_seed = build_feature_maps_for_round(detail)
@@ -656,6 +670,9 @@ def build_all_predictions(
             tables=tables,
             params=model_params,
             latent_profile=latent_profile,
+            historical_pseudocounts=None
+            if historical_pseudocounts_by_seed is None
+            else historical_pseudocounts_by_seed.get(seed_index),
         )
 
     return predictions

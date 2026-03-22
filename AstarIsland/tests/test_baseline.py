@@ -14,7 +14,10 @@ from astar_island.baseline import (
     normalize_probabilities,
 )
 from astar_island.cache import CacheStore
-from astar_island.historical import build_historical_signal_prior
+from astar_island.historical import (
+    build_historical_signal_prior,
+    estimate_historical_prediction_pseudocounts_for_round,
+)
 from astar_island.planner import determine_stage, plan_query_batch, run_iterative_autopilot
 from astar_island.types import InitialState, RoundAnalysis, RoundDetail, Settlement, SimulationResult, Viewport
 
@@ -105,6 +108,38 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(preview.support_grid.shape, (4, 4))
         self.assertEqual(preview.sample_count_grid.shape, (4, 4))
         self.assertGreater(float(preview.sample_count_grid[1, 1]), 0.0)
+
+    def test_historical_supervised_prior_can_shift_predictions(self) -> None:
+        detail = make_round_detail()
+        target = np.full((4, 4, 6), [0.95, 0.01, 0.01, 0.01, 0.01, 0.01], dtype=float)
+        target[1, 2] = np.array([0.10, 0.15, 0.55, 0.10, 0.05, 0.05], dtype=float)
+        prior = build_historical_signal_prior(
+            [
+                (
+                    detail,
+                    {
+                        0: RoundAnalysis(
+                            prediction=target.tolist(),
+                            ground_truth=target.tolist(),
+                            score=100.0,
+                            width=4,
+                            height=4,
+                            initial_grid=detail.initial_states[0].grid,
+                        )
+                    },
+                )
+            ]
+        )
+        historical_pseudocounts = estimate_historical_prediction_pseudocounts_for_round(detail, prior, weight=1.4)
+
+        without_history = build_all_predictions(detail, [])
+        with_history = build_all_predictions(
+            detail,
+            [],
+            historical_pseudocounts_by_seed=historical_pseudocounts,
+        )
+
+        self.assertGreater(with_history[0].prediction[1, 2, 2], without_history[0].prediction[1, 2, 2])
 
     def test_latent_profile_reflects_observed_ruin_pressure(self) -> None:
         detail = make_round_detail()

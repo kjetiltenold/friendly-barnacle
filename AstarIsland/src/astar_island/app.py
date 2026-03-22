@@ -13,6 +13,7 @@ try:
     from .baseline import ModelParameters, build_all_predictions, infer_round_latent_profile, overlay_initial_settlements
     from .cache import CacheStore
     from .config import AppConfig
+    from .historical import estimate_historical_prediction_pseudocounts_for_round
     from .planner import PlannedQuery, determine_stage, execute_query_plan, plan_query_batch, run_iterative_autopilot
     from .visuals import confidence_to_image, grid_to_image, mask_to_image
 except ImportError:
@@ -22,6 +23,7 @@ except ImportError:
     from astar_island.baseline import ModelParameters, build_all_predictions, infer_round_latent_profile, overlay_initial_settlements
     from astar_island.cache import CacheStore
     from astar_island.config import AppConfig
+    from astar_island.historical import estimate_historical_prediction_pseudocounts_for_round
     from astar_island.planner import PlannedQuery, determine_stage, execute_query_plan, plan_query_batch, run_iterative_autopilot
     from astar_island.visuals import confidence_to_image, grid_to_image, mask_to_image
 
@@ -131,6 +133,15 @@ def main() -> None:
     can_query = bool(client.config.access_token) and (remaining_budget is None or remaining_budget > 0)
     model_params = active_model_parameters(cache)
     historical_prior = cache.load_historical_signal_prior()
+    historical_pseudocounts = (
+        estimate_historical_prediction_pseudocounts_for_round(
+            detail,
+            historical_prior,
+            weight=model_params.historical_weight,
+        )
+        if historical_prior is not None
+        else None
+    )
     observations = cache.load_observations(detail.id)
     latent_profile = infer_round_latent_profile(detail, observations)
     st.sidebar.caption(
@@ -148,7 +159,12 @@ def main() -> None:
         existing_queries=len(observations),
         requested_queries=max(1, remaining_budget or 1),
     )
-    predictions = build_all_predictions(detail, observations, params=model_params)
+    predictions = build_all_predictions(
+        detail,
+        observations,
+        params=model_params,
+        historical_pseudocounts_by_seed=historical_pseudocounts,
+    )
     preview = predictions[seed_index]
     plan_state_key = f"query-plan-{detail.id}"
 
@@ -306,6 +322,15 @@ def main() -> None:
                             detail,
                             cache.load_observations(detail.id),
                             params=current_params,
+                            historical_pseudocounts_by_seed=(
+                                estimate_historical_prediction_pseudocounts_for_round(
+                                    detail,
+                                    current_prior,
+                                    weight=current_params.historical_weight,
+                                )
+                                if current_prior is not None
+                                else None
+                            ),
                         )
                         cache_predictions(cache, detail.id, updated_predictions)
                         if auto_submit_after_run:
@@ -352,6 +377,15 @@ def main() -> None:
                             detail,
                             cache.load_observations(detail.id),
                             params=current_params,
+                            historical_pseudocounts_by_seed=(
+                                estimate_historical_prediction_pseudocounts_for_round(
+                                    detail,
+                                    current_prior,
+                                    weight=current_params.historical_weight,
+                                )
+                                if current_prior is not None
+                                else None
+                            ),
                         )
                         cache_predictions(cache, detail.id, updated_predictions)
                         if auto_submit_after_run:
@@ -376,6 +410,7 @@ def main() -> None:
                             detail,
                             cache.load_observations(detail.id),
                             params=model_params,
+                            historical_pseudocounts_by_seed=historical_pseudocounts,
                         )
                         cache_predictions(cache, detail.id, updated_predictions)
                         if auto_submit_after_run:

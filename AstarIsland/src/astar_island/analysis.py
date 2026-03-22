@@ -7,7 +7,11 @@ import numpy as np
 from .api import AstarIslandClient
 from .baseline import MIN_PROBABILITY_FLOOR, ModelParameters, build_all_predictions
 from .cache import CacheStore
-from .historical import build_historical_signal_prior
+from .historical import (
+    HistoricalSignalPrior,
+    build_historical_signal_prior,
+    estimate_historical_prediction_pseudocounts_for_round,
+)
 from .types import RoundAnalysis, RoundDetail, SimulationResult
 
 
@@ -70,8 +74,25 @@ def prediction_score(ground_truth: np.ndarray, prediction: np.ndarray) -> tuple[
     return weighted_kl, float(score)
 
 
-def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluation:
-    predictions = build_all_predictions(case.detail, case.observations, params=params)
+def evaluate_case(
+    case: EvaluationCase,
+    params: ModelParameters,
+    *,
+    historical_prior: HistoricalSignalPrior | None = None,
+) -> RoundEvaluation:
+    historical_pseudocounts_by_seed = None
+    if historical_prior is not None:
+        historical_pseudocounts_by_seed = estimate_historical_prediction_pseudocounts_for_round(
+            case.detail,
+            historical_prior,
+            weight=params.historical_weight,
+        )
+    predictions = build_all_predictions(
+        case.detail,
+        case.observations,
+        params=params,
+        historical_pseudocounts_by_seed=historical_pseudocounts_by_seed,
+    )
     seed_evaluations: list[SeedEvaluation] = []
 
     for seed_index in sorted(case.analyses):
@@ -112,7 +133,12 @@ def evaluate_case(case: EvaluationCase, params: ModelParameters) -> RoundEvaluat
 
 
 def evaluate_cases(cases: list[EvaluationCase], params: ModelParameters) -> list[RoundEvaluation]:
-    return [evaluate_case(case, params) for case in cases]
+    historical_prior = (
+        build_historical_signal_prior([(case.detail, case.analyses) for case in cases])
+        if cases
+        else None
+    )
+    return [evaluate_case(case, params, historical_prior=historical_prior) for case in cases]
 
 
 def mean_model_score(cases: list[EvaluationCase], params: ModelParameters) -> float:
@@ -130,6 +156,7 @@ def mean_model_score(cases: list[EvaluationCase], params: ModelParameters) -> fl
 def default_search_space() -> dict[str, list[float]]:
     return {
         "prior_weight": [1.5, 2.0, 2.5, 3.0, 3.5],
+        "historical_weight": [0.8, 1.1, 1.4, 1.8],
         "exact_weight": [4.5, 6.0, 7.5, 9.0],
         "spatial_weight": [0.5, 0.75, 1.0, 1.25, 1.5],
         "global_scale": [0.5, 1.0, 1.5],

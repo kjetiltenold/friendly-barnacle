@@ -9,7 +9,11 @@ import numpy as np
 from .api import AstarIslandClient
 from .baseline import ModelParameters, PredictionPreview, build_all_predictions
 from .cache import CacheStore
-from .historical import HistoricalSignalPrior, estimate_historical_signal_for_round
+from .historical import (
+    HistoricalSignalPrior,
+    estimate_historical_prediction_pseudocounts_for_round,
+    estimate_historical_signal_for_round,
+)
 from .types import RoundDetail, SimulationResult
 
 PlannerStage = Literal["explore", "infer", "exploit"]
@@ -209,7 +213,21 @@ def plan_query_batch(
 
     profile = STAGE_PROFILES[stage]
     candidate_seeds = seed_indices or list(range(detail.seeds_count))
-    predictions = build_all_predictions(detail, observations, params=params)
+    historical_prediction_pseudocounts = (
+        estimate_historical_prediction_pseudocounts_for_round(
+            detail,
+            historical_prior,
+            weight=(params.historical_weight if params is not None else 1.4),
+        )
+        if historical_prior is not None
+        else None
+    )
+    predictions = build_all_predictions(
+        detail,
+        observations,
+        params=params,
+        historical_pseudocounts_by_seed=historical_prediction_pseudocounts,
+    )
     historical_signals = (
         estimate_historical_signal_for_round(detail, historical_prior)
         if historical_prior is not None
