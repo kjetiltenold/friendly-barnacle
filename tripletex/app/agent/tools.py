@@ -2380,6 +2380,38 @@ async def _ensure_project_activity_link(
         )
 
 
+async def _ensure_top_expense_project_activity_link(
+    client: TripletexClient,
+    ctx: EntityContext | None,
+    project_id: int | None,
+    activity_id: int | None,
+) -> None:
+    if (
+        ctx is None
+        or project_id is None
+        or activity_id is None
+        or not _top_expense_account_names(ctx)
+        or (project_id, activity_id) in ctx.linked_project_activity_pairs
+    ):
+        return
+    payload = {"project": {"id": project_id}, "activity": {"id": activity_id}}
+    try:
+        logger.info(
+            "Auto-linking project id=%s and activity id=%s for top-expense follow-up",
+            project_id,
+            activity_id,
+        )
+        result = await client.post("/project/projectActivity", json=payload)
+        ctx.track("create_project_activity", result, payload)
+    except Exception as exc:
+        logger.warning(
+            "Top-expense project/activity auto-link failed for project id=%s activity id=%s: %s",
+            project_id,
+            activity_id,
+            exc,
+        )
+
+
 def _normalize_prompt_text(value: str | None) -> str:
     if value in (None, ""):
         return ""
@@ -2434,6 +2466,60 @@ def _prompt_likely_requires_project_linked_activity(ctx: EntityContext | None) -
     return any(marker in normalized for marker in project_markers) and any(
         marker in normalized for marker in activity_markers
     )
+
+
+def _top_expense_account_names(ctx: EntityContext | None) -> list[str]:
+    if ctx is None or not isinstance(ctx.last_top_expense_analysis, dict):
+        return []
+    names: list[str] = []
+    for item in ctx.last_top_expense_analysis.get("topAccounts") or []:
+        if not isinstance(item, dict):
+            continue
+        account = item.get("account") or {}
+        name = str(account.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _extract_top_expense_placeholder_index(name: str | None) -> int | None:
+    normalized = _normalize_prompt_text(name)
+    if not normalized:
+        return None
+    match = re.search(r"(\d+)$", normalized)
+    if not match:
+        return None
+    placeholder_markers = (
+        "largestincreaseexpenseaccount",
+        "expenseaccount",
+        "unknownexpenseaccount",
+        "ukjentkostnadskonto",
+        "kostnadskonto",
+    )
+    if not any(marker in normalized for marker in placeholder_markers):
+        return None
+    index = int(match.group(1)) - 1
+    return index if index >= 0 else None
+
+
+def _normalize_top_expense_followup_name(
+    name: str | None,
+    ctx: EntityContext | None,
+    *,
+    fallback_index: int | None = None,
+) -> str | None:
+    account_names = _top_expense_account_names(ctx)
+    if not account_names:
+        return name
+    index = _extract_top_expense_placeholder_index(name)
+    if index is None:
+        raw_name = str(name or "").strip()
+        if raw_name:
+            return raw_name
+        index = fallback_index
+    if index is None or index < 0 or index >= len(account_names):
+        return name
+    return account_names[index]
 
 
 def _prompt_likely_requires_project_lifecycle_activity(ctx: EntityContext | None) -> bool:
@@ -5176,6 +5262,19 @@ async def _execute(
             raise
 
     if name == "create_project":
+        original_project_name = args.get("name")
+        normalized_project_name = _normalize_top_expense_followup_name(
+            original_project_name,
+            ctx,
+            fallback_index=len((ctx.project_ids if ctx else []) or []),
+        )
+        if normalized_project_name and normalized_project_name != original_project_name:
+            args["name"] = normalized_project_name
+            logger.info(
+                "Normalized top-expense project name %s -> %s from analysis result",
+                original_project_name,
+                normalized_project_name,
+            )
         if "fixedprice" not in args and args.get("fixedPrice") not in (None, ""):
             args["fixedprice"] = _coerce_number(args.pop("fixedPrice"))
             logger.info(f"Normalized create_project fixedPrice -> fixedprice ({args['fixedprice']})")
@@ -5230,7 +5329,22 @@ async def _execute(
             raise
 
     if name == "create_activity":
-        requires_project_linked_activity = _prompt_likely_requires_project_linked_activity(ctx)
+        original_activity_name = args.get("name")
+        normalized_activity_name = _normalize_top_expense_followup_name(
+            original_activity_name,
+            ctx,
+            fallback_index=len((ctx.activity_ids if ctx else []) or []),
+        )
+        if normalized_activity_name and normalized_activity_name != original_activity_name:
+            args["name"] = normalized_activity_name
+            logger.info(
+                "Normalized top-expense activity name %s -> %s from analysis result",
+                original_activity_name,
+                normalized_activity_name,
+            )
+        requires_project_linked_activity = (
+            _prompt_likely_requires_project_linked_activity(ctx) or bool(_top_expense_account_names(ctx))
+        )
         desired_activity_type = str(args.get("activityType") or "").strip().upper()
         if requires_project_linked_activity and desired_activity_type != "PROJECT_GENERAL_ACTIVITY":
             if desired_activity_type:
@@ -5268,7 +5382,14 @@ async def _execute(
                         return {"value": activity}
             except Exception:
                 pass
-        return await client.post("/activity", json=args)
+        result = await client.post("/activity", json=args)
+        await _ensure_top_expense_project_activity_link(
+            client,
+            ctx,
+            getattr(ctx, "last_project_id", None),
+            _extract_reference_id((result.get("value") or {}).get("id")) or _extract_reference_id(result.get("value")),
+        )
+        return result
 
     if name == "create_department":
         department_name = args.get("name")
@@ -5651,6 +5772,23 @@ async def _execute(
             if budget_amount is not None:
                 args["budgetFeeCurrency"] = round(budget_amount, 2)
                 logger.info(f"Auto-injected budgetFeeCurrency={args['budgetFeeCurrency']} into project activity from prompt budget")
+        project_id = _extract_reference_id(args.get("project"))
+        activity_id = _extract_reference_id(args.get("activity"))
+        if (
+            ctx is not None
+            and project_id is not None
+            and activity_id is not None
+            and (project_id, activity_id) in ctx.linked_project_activity_pairs
+        ):
+            logger.info(
+                "Skipping duplicate project/activity link for project id=%s activity id=%s",
+                project_id,
+                activity_id,
+            )
+            return {
+                "value": {"project": {"id": project_id}, "activity": {"id": activity_id}},
+                "_skip_track": True,
+            }
         return await client.post("/project/projectActivity", json=args)
 
     if name == "create_timesheet_entry":

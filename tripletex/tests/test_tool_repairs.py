@@ -1686,6 +1686,78 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_create_project_uses_top_expense_account_name_for_placeholder_name(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text="Total costs increased. Create an internal project for each account and also create an activity for each project.",
+            last_top_expense_analysis={
+                "topAccounts": [
+                    {"account": {"name": "Payroll"}},
+                    {"account": {"name": "Tools"}},
+                    {"account": {"name": "Mileage"}},
+                ]
+            },
+        )
+
+        await _execute(
+            client,
+            "create_project",
+            {"name": "Ukjent kostnadskonto 1", "isInternal": True},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(client.calls[-1][0:2], ("POST", "/project"))
+        self.assertEqual(client.calls[-1][2]["name"], "Payroll")
+
+    async def test_create_activity_uses_top_expense_account_name_and_auto_links_to_latest_project(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            prompt_text="Totalkostnadene auka. Opprett eit internt prosjekt for kvar konto og ein aktivitet for kvart prosjekt.",
+            last_project_id=402070691,
+            last_top_expense_analysis={
+                "topAccounts": [
+                    {"account": {"name": "Payroll"}},
+                    {"account": {"name": "Tools"}},
+                    {"account": {"name": "Mileage"}},
+                ]
+            },
+        )
+
+        await _execute(
+            client,
+            "create_activity",
+            {"name": "Ukjent kostnadskonto 1", "activityType": "PROJECT_GENERAL_ACTIVITY"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(
+            client.calls[1],
+            ("POST", "/activity", {"name": "Payroll", "activityType": "PROJECT_GENERAL_ACTIVITY"}),
+        )
+        self.assertEqual(
+            client.calls[2],
+            ("POST", "/project/projectActivity", {"project": {"id": 402070691}, "activity": {"id": 999}}),
+        )
+        self.assertIn((402070691, 999), ctx.linked_project_activity_pairs)
+
+    async def test_create_project_activity_skips_duplicate_link_pair(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(linked_project_activity_pairs={(402070691, 6143069)})
+
+        result = await _execute(
+            client,
+            "create_project_activity",
+            {"project": {"id": 402070691}, "activity": {"id": 6143069}},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["project"]["id"], 402070691)
+        self.assertEqual(result["value"]["activity"]["id"], 6143069)
+        self.assertEqual(client.calls, [])
+
     async def test_create_project_activity_pairs_multiple_projects_and_activities(self):
         client = FakeTripletexClient()
         ctx = EntityContext(project_ids=[101, 102], activity_ids=[201, 202])
