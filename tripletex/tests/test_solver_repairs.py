@@ -575,6 +575,37 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("create_salary_transaction again", reminder)
         self.assertIn("employment is linked to a division/business", reminder)
 
+    def test_should_retry_text_only_response_when_travel_expense_not_delivered_yet(self):
+        self.assertTrue(
+            _should_retry_text_only_response(
+                "DONE",
+                (
+                    'Registrer ei reiserekning for Åse Haugen (ase.haugen@example.org) for "Kundebesøk Oslo". '
+                    "Reisa varte 4 dagar med diett (dagssats 800 kr). Utlegg: flybillett 3600 kr og taxi 250 kr."
+                ),
+                4,
+                0,
+                EntityContext(
+                    last_travel_expense_id=11152455,
+                    travel_per_diem_action_count=1,
+                    travel_cost_action_count=2,
+                ),
+            )
+        )
+
+    def test_build_incomplete_task_reminder_for_travel_expense_mentions_deliver_and_payment_type(self):
+        reminder = _build_incomplete_task_reminder(
+            (
+                'Registrer ei reiserekning for Åse Haugen (ase.haugen@example.org) for "Kundebesøk Oslo". '
+                "Reisa varte 4 dagar med diett (dagssats 800 kr). Utlegg: flybillett 3600 kr og taxi 250 kr."
+            ),
+            EntityContext(last_travel_expense_id=11152455, last_travel_payment_type_id=39395833),
+        )
+
+        self.assertIn("PUT /travelExpense/:deliver", reminder)
+        self.assertIn("travelExpense id=11152455", reminder)
+        self.assertIn("travel paymentType id=39395833", reminder)
+
     def test_should_not_retry_text_only_response_when_invoice_payment_reversal_was_registered(self):
         self.assertFalse(
             _should_retry_text_only_response(
@@ -717,6 +748,8 @@ class SolverRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("retry once without the optional `countryCode` field", prompt)
         self.assertIn("Do not blindly reuse the first `/travelExpense/rateCategory` result", prompt)
         self.assertIn("use the departure date for airfare and the return date for taxi", prompt)
+        self.assertIn("PUT /travelExpense/:deliver", prompt)
+        self.assertIn("employee-paid/private reimbursement paymentType", prompt)
 
     def test_system_prompt_includes_literal_contract_field_guidance(self):
         prompt = get_system_prompt("2026-03-21")

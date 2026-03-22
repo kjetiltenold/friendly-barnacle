@@ -171,6 +171,42 @@ def _prompt_likely_requires_bank_reconciliation_payments(prompt: str) -> bool:
     )
 
 
+def _prompt_likely_requires_travel_expense_completion(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    travel_markers = (
+        "travel expense",
+        "travel report",
+        "reiseregning",
+        "reiserekning",
+        "reisekostnad",
+        "reisekostnader",
+        "travelexpense",
+        "travel cost",
+        "note de frais",
+        "despesa de viagem",
+        "gasto de viaje",
+    )
+    return any(marker in normalized for marker in travel_markers)
+
+
+def _prompt_mentions_travel_per_diem(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    markers = (
+        "per diem",
+        "daily allowance",
+        "tagegeld",
+        "tagessatz",
+        "diett",
+        "dagsats",
+        "dieta",
+        "dietas",
+        "ajudas de custo",
+        "indemnites journalieres",
+        "indemnite journaliere",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _prompt_likely_requires_contract_onboarding_completion(prompt: str) -> bool:
     normalized = _normalize_text(prompt)
     onboarding_markers = (
@@ -291,6 +327,16 @@ def _should_retry_text_only_response(
         if getattr(ctx, "salary_transaction_action_count", 0) == 0:
             logger.info("Payroll task missing successful salary transaction; continuing before DONE")
             return True
+    if _prompt_likely_requires_travel_expense_completion(prompt):
+        if getattr(ctx, "last_travel_expense_id", None) is None:
+            logger.info("Travel-expense task missing travel expense creation; continuing before DONE")
+            return True
+        if _prompt_mentions_travel_per_diem(prompt) and getattr(ctx, "travel_per_diem_action_count", 0) == 0:
+            logger.info("Travel-expense task missing per diem compensation; continuing before DONE")
+            return True
+        if getattr(ctx, "travel_delivery_action_count", 0) == 0:
+            logger.info("Travel-expense task missing delivery action; continuing before DONE")
+            return True
     if ctx is not None and isinstance(ctx.last_top_expense_analysis, dict):
         required_followup_writes = len(ctx.last_top_expense_analysis.get("topAccounts") or [])
         if required_followup_writes > 0:
@@ -349,6 +395,30 @@ def _build_incomplete_task_reminder(prompt: str, ctx: EntityContext) -> str:
             + "Do not reuse the outgoing supplier payment type on customer invoice payments, or the incoming customer payment type on supplier invoice payments. "
             + "Handle partial payments by paying only the transaction amount from each attached row. "
             "Reply only with DONE when both customer and supplier payment registrations are finished."
+        )
+    if _prompt_likely_requires_travel_expense_completion(prompt):
+        travel_expense_hint = (
+            f"Use travelExpense id={ctx.last_travel_expense_id}. "
+            if getattr(ctx, "last_travel_expense_id", None) is not None
+            else "Create the travel expense first. "
+        )
+        payment_type_hint = (
+            f"Use travel paymentType id={ctx.last_travel_payment_type_id} on travel cost rows when the prompt describes ordinary employee out-of-pocket expenses. "
+            if getattr(ctx, "last_travel_payment_type_id", None) is not None
+            else "Use GET /travelExpense/paymentType and prefer an employee-paid/private reimbursement type unless the prompt explicitly says company card. "
+        )
+        per_diem_hint = (
+            "The prompt includes per diem, so create_per_diem_compensation before stopping. "
+            if _prompt_mentions_travel_per_diem(prompt)
+            else ""
+        )
+        return (
+            "The travel-expense task is not complete yet. "
+            + travel_expense_hint
+            + per_diem_hint
+            + payment_type_hint
+            + "After creating the travel expense lines, submit it with PUT /travelExpense/:deliver using query param id={travel_expense_id}. "
+            "Reply only with DONE when the travel expense has been delivered."
         )
     if _prompt_likely_requires_invoice_payment_reversal(prompt):
         reversed_hint = (

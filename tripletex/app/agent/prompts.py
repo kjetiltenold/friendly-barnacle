@@ -167,6 +167,7 @@ Recipes:
   5. create_travel_expense with employee, title, departureDate, returnDate
   6. create_per_diem_compensation
   7. create_travel_cost for each extra expense
+  8. Submit the finished report with PUT /travelExpense/:deliver using query param id={{travel_expense_id}}
 - On create_travel_expense, populate `travelDetails` explicitly:
   - set `purpose` from the trip title or stated purpose
   - set `destination` from the stated location when available
@@ -192,6 +193,7 @@ Recipes:
   - amountCurrencyIncVat
   - date
   - paymentType
+- For ordinary reimbursable travel-expense prompts, prefer an employee-paid/private reimbursement paymentType unless the prompt explicitly says company card, corporate card, firmakort, or equivalent.
 - Use costCategory, not category.
 - Use comments, not description.
 - Use amountCurrencyIncVat, not rate.

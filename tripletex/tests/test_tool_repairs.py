@@ -1,9 +1,10 @@
 import datetime
+import json
 import unittest
 import httpx
 from unittest.mock import ANY
 
-from app.agent.tools import EntityContext, _execute
+from app.agent.tools import EntityContext, _execute, dispatch_tool
 
 
 class FakeTripletexClient:
@@ -4939,6 +4940,124 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
             "count": 5,
             "rate": 800,
         })])
+
+    async def test_dispatch_tool_tracks_travel_per_diem_and_cost_without_response_ids(self):
+        client = FakeTripletexClient(
+            post_responses={
+                "/travelExpense/perDiemCompensation": {"value": {"url": "https://example.invalid/travelExpense/perDiemCompensation/1"}},
+                "/travelExpense/cost": {"value": {"url": "https://example.invalid/travelExpense/cost/2"}},
+            }
+        )
+        ctx = EntityContext(
+            last_travel_expense_id=555,
+            last_rate_category_id=740,
+            last_cost_category_id=12,
+            last_travel_payment_type_id=9,
+        )
+
+        await dispatch_tool(
+            client,
+            "create_per_diem_compensation",
+            json.dumps(
+                {
+                    "location": "Oslo",
+                    "overnightAccommodation": "HOTEL",
+                    "count": 4,
+                    "rate": 800,
+                }
+            ),
+            endpoint_search=None,
+            ctx=ctx,
+        )
+        await dispatch_tool(
+            client,
+            "create_travel_cost",
+            json.dumps(
+                {
+                    "comments": "Taxi",
+                    "amountCurrencyIncVat": 250,
+                    "date": "2026-03-26",
+                }
+            ),
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(ctx.travel_per_diem_action_count, 1)
+        self.assertEqual(ctx.travel_cost_action_count, 1)
+
+    async def test_create_travel_cost_prefers_employee_paid_travel_payment_type_for_generic_travel_report(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/travelExpense/paymentType",
+                    (),
+                ): {
+                    "fullResultSize": 2,
+                    "values": [
+                        {"id": 1, "description": "Firmakort"},
+                        {"id": 2, "description": "Privat utlegg"},
+                    ],
+                },
+            }
+        )
+        ctx = EntityContext(
+            last_travel_expense_id=555,
+            last_travel_expense_departure_date="2026-03-23",
+            last_travel_expense_return_date="2026-03-26",
+            last_cost_categories=[
+                {"id": 11, "displayName": "Flyreise"},
+                {"id": 12, "displayName": "Taxi"},
+            ],
+            prompt_text=(
+                'Registrer ei reiserekning for Åse Haugen for "Kundebesøk Oslo". '
+                "Reisa varte 4 dagar med diett. Utlegg: taxi 250 kr."
+            ),
+        )
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "GET", "path": "/travelExpense/paymentType"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+        await _execute(
+            client,
+            "create_travel_cost",
+            {
+                "comments": "Taxi",
+                "amountCurrencyIncVat": 250,
+                "date": "2026-03-26",
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(client.calls[-1], ("POST", "/travelExpense/cost", {
+            "travelExpense": {"id": 555},
+            "costCategory": {"id": 12},
+            "paymentType": {"id": 2},
+            "comments": "Taxi",
+            "amountCurrencyIncVat": 250,
+            "date": "2026-03-26",
+        }))
+
+    async def test_tripletex_api_call_normalizes_travel_expense_deliver_action_and_tracks_it(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(last_travel_expense_id=555)
+
+        await _execute(
+            client,
+            "tripletex_api_call",
+            {"method": "PUT", "path": "/travelExpense/555/:deliver"},
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(client.calls, [("PUT", "/travelExpense/:deliver", None, {"id": "555"})])
+        self.assertEqual(ctx.travel_delivery_action_count, 1)
+        self.assertEqual(ctx.last_travel_expense_id, 555)
 
     async def test_create_travel_cost_resolves_flight_category_and_infers_departure_date(self):
         client = FakeTripletexClient()

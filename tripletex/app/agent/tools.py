@@ -70,9 +70,14 @@ class EntityContext:
     last_rate_category_id: int | None = None
     last_cost_category_id: int | None = None
     last_cost_categories: list[dict] | None = None
+    last_travel_payment_type_id: int | None = None
+    last_travel_payment_types: list[dict] | None = None
     last_payment_type_id: int | None = None
     last_customer_payment_type_id: int | None = None
     last_supplier_payment_type_id: int | None = None
+    travel_per_diem_action_count: int = 0
+    travel_cost_action_count: int = 0
+    travel_delivery_action_count: int = 0
     invoice_payment_action_count: int = 0
     customer_invoice_payment_action_count: int = 0
     supplier_invoice_payment_action_count: int = 0
@@ -118,6 +123,8 @@ class EntityContext:
             self.account_cache = {}
         if self.last_cost_categories is None:
             self.last_cost_categories = []
+        if self.last_travel_payment_types is None:
+            self.last_travel_payment_types = []
         if self.project_start_dates is None:
             self.project_start_dates = {}
         if self.linked_project_activity_pairs is None:
@@ -128,6 +135,18 @@ class EntityContext:
     def track(self, name: str, result: dict, request_args: dict | None = None) -> None:
         """Extract and store the entity ID from a creation response."""
         value = result.get("value", {})
+        if name == "create_per_diem_compensation":
+            self.travel_per_diem_action_count += 1
+            logger.info(
+                "EntityContext: travel_per_diem_action_count = %s",
+                self.travel_per_diem_action_count,
+            )
+        elif name == "create_travel_cost":
+            self.travel_cost_action_count += 1
+            logger.info(
+                "EntityContext: travel_cost_action_count = %s",
+                self.travel_cost_action_count,
+            )
         entity_id = value.get("id")
         if name == "create_salary_transaction":
             self.salary_transaction_action_count += 1
@@ -299,7 +318,13 @@ def _track_lookup_context(ctx: EntityContext | None, path: str, result: dict) ->
         ctx.last_cost_category_id = first_id
         ctx.last_cost_categories = [item for item in values if isinstance(item, dict)]
     elif path.startswith("/travelExpense/paymentType"):
-        ctx.last_payment_type_id = first_id
+        ctx.last_travel_payment_types = [item for item in values if isinstance(item, dict)]
+        selected_payment_type = _select_travel_payment_type(ctx.last_travel_payment_types, ctx)
+        selected_payment_type_id = _extract_reference_id(selected_payment_type) if selected_payment_type else None
+        if selected_payment_type_id is None:
+            selected_payment_type_id = first_id
+        ctx.last_travel_payment_type_id = selected_payment_type_id
+        ctx.last_payment_type_id = selected_payment_type_id
     elif path.startswith("/invoice/paymentType"):
         ctx.last_payment_type_id = first_id
         ctx.last_customer_payment_type_id = first_id
@@ -3016,6 +3041,87 @@ def _infer_travel_destination(args: dict, ctx: EntityContext | None) -> str | No
     return None
 
 
+def _prompt_likely_describes_employee_paid_travel_expense(ctx: EntityContext | None) -> bool:
+    text = ((ctx.prompt_text if ctx else None) or "").strip()
+    if not text:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "", _normalize_occupation_name(text))
+    travel_markers = (
+        "travelexpense",
+        "travelreport",
+        "reiseregning",
+        "reiserekning",
+        "notedefrais",
+        "despesadeviagem",
+        "gastodeviaje",
+    )
+    company_paid_markers = (
+        "companycard",
+        "corporatecard",
+        "firmacard",
+        "firmakort",
+        "bedriftskort",
+        "companypaid",
+        "directbilled",
+        "direktefakturert",
+    )
+    if any(marker in normalized for marker in company_paid_markers):
+        return False
+    return any(marker in normalized for marker in travel_markers)
+
+
+def _travel_payment_type_text(payment_type: dict) -> str:
+    account = payment_type.get("account") or {}
+    parts = [
+        payment_type.get("description"),
+        payment_type.get("displayName"),
+        account.get("name"),
+        account.get("number"),
+    ]
+    return _normalize_occupation_name(" ".join(str(part) for part in parts if part not in (None, "")))
+
+
+def _select_travel_payment_type(payment_types: list[dict], ctx: EntityContext | None) -> dict | None:
+    if not payment_types:
+        return None
+    prefer_employee_paid = _prompt_likely_describes_employee_paid_travel_expense(ctx)
+    employee_paid_markers = (
+        "employee",
+        "ansatt",
+        "private",
+        "privat",
+        "utlegg",
+        "egen",
+        "cash",
+        "kontant",
+        "reimbursement",
+        "refund",
+    )
+    company_paid_markers = (
+        "companycard",
+        "corporatecard",
+        "firmacard",
+        "firmakort",
+        "bedriftskort",
+        "creditcard",
+        "kredittkort",
+    )
+    best: tuple[int, dict] | None = None
+    for payment_type in payment_types:
+        if not isinstance(payment_type, dict) or _extract_reference_id(payment_type) is None:
+            continue
+        text = _travel_payment_type_text(payment_type)
+        score = 0
+        if prefer_employee_paid and any(marker in text for marker in employee_paid_markers):
+            score += 100
+        if prefer_employee_paid and any(marker in text for marker in company_paid_markers):
+            score -= 50
+        candidate = (score, payment_type)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    return best[1] if best is not None else None
+
+
 def _prompt_mentions_per_diem(ctx: EntityContext | None) -> bool:
     text = ((ctx.prompt_text if ctx else None) or "").strip()
     if not text:
@@ -5437,6 +5543,18 @@ async def _execute(
         if "costCategory" not in args and ctx and ctx.last_cost_category_id:
             args["costCategory"] = {"id": ctx.last_cost_category_id}
             logger.info(f"Auto-injected cost category id={ctx.last_cost_category_id} into travel cost")
+        if "paymentType" not in args and ctx and ctx.last_travel_payment_types:
+            resolved_payment_type = _select_travel_payment_type(ctx.last_travel_payment_types, ctx)
+            resolved_payment_type_id = _extract_reference_id(resolved_payment_type)
+            if resolved_payment_type_id is not None:
+                args["paymentType"] = {"id": resolved_payment_type_id}
+                logger.info(
+                    "Resolved travel payment type id=%s from prompt context",
+                    resolved_payment_type_id,
+                )
+        if "paymentType" not in args and ctx and ctx.last_travel_payment_type_id is not None:
+            args["paymentType"] = {"id": ctx.last_travel_payment_type_id}
+            logger.info(f"Auto-injected travel payment type id={ctx.last_travel_payment_type_id} into travel cost")
         if "paymentType" not in args and ctx and ctx.last_payment_type_id:
             args["paymentType"] = {"id": ctx.last_payment_type_id}
             logger.info(f"Auto-injected payment type id={ctx.last_payment_type_id} into travel cost")
@@ -6043,6 +6161,16 @@ async def _execute(
         if method == "GET" and path == "/supplierInvoice/paymentType":
             path = "/ledger/paymentTypeOut"
             logger.info("Normalized unsupported /supplierInvoice/paymentType lookup to /ledger/paymentTypeOut")
+        travel_expense_action_match = re.fullmatch(r"/travelExpense/(\d+)/:(deliver|approve)", path)
+        if method == "PUT" and travel_expense_action_match:
+            travel_expense_id, action_name = travel_expense_action_match.groups()
+            path = f"/travelExpense/:{action_name}"
+            params.setdefault("id", travel_expense_id)
+            logger.info(
+                "Normalized travel expense action path to %s with id=%s",
+                path,
+                travel_expense_id,
+            )
         if parsed.query:
             embedded = parse_qs(parsed.query, keep_blank_values=True)
             for k, v in embedded.items():
@@ -6317,6 +6445,15 @@ async def _execute(
                 ctx.invoice_payment_action_count += 1
                 ctx.supplier_invoice_payment_action_count += 1
                 logger.info(f"Tracked supplier invoice payment action for invoice id={invoice_id}")
+            elif ctx and path == "/travelExpense/:deliver":
+                delivered_id = _extract_reference_id(params.get("id"))
+                ctx.travel_delivery_action_count += 1
+                if delivered_id is not None:
+                    ctx.last_travel_expense_id = delivered_id
+                logger.info(
+                    "Tracked travel expense deliver action for id=%s",
+                    delivered_id,
+                )
             return result
         if method == "DELETE":
             return await client.delete(path)
