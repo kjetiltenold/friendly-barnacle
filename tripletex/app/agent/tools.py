@@ -1380,18 +1380,6 @@ def _classify_exchange_difference_direction(
     if any(
         token in combined_text
         for token in (
-            "agio",
-            "valutagevinst",
-            "exchangegain",
-            "gainonexchange",
-            "gaindechange",
-            "gainendevise",
-        )
-    ):
-        return "gain"
-    if any(
-        token in combined_text
-        for token in (
             "disagio",
             "valutatap",
             "exchangeloss",
@@ -1401,6 +1389,18 @@ def _classify_exchange_difference_direction(
         )
     ):
         return "loss"
+    if any(
+        token in combined_text
+        for token in (
+            "agio",
+            "valutagevinst",
+            "exchangegain",
+            "gainonexchange",
+            "gaindechange",
+            "gainendevise",
+        )
+    ):
+        return "gain"
     if details is None:
         return None
     return "gain" if details["settledRate"] > details["bookedRate"] else "loss"
@@ -1995,6 +1995,7 @@ async def _prepare_voucher_postings(client: TripletexClient, args: dict, ctx: En
     await _normalize_supplier_invoice_software_account(client, args["postings"], ctx, args.get("description"))
     await _normalize_supplier_invoice_network_account(client, args["postings"], ctx, args.get("description"))
     await _normalize_supplier_invoice_office_supplies_account(client, args["postings"], ctx, args.get("description"))
+    await _normalize_supplier_invoice_office_service_account(client, args["postings"], ctx, args.get("description"))
     _normalize_simple_supplier_invoice_amounts(args["postings"], ctx)
     await _expand_simple_supplier_invoice_vat_split(client, args["postings"], ctx)
     total = sum(
@@ -3687,6 +3688,25 @@ def _looks_like_office_supplies_text(*parts) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _looks_like_office_service_text(*parts) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    keywords = (
+        "kontortjenester",
+        "office service",
+        "office services",
+        "bureau service",
+        "bureau services",
+        "administrative service",
+        "administrative services",
+        "admin service",
+        "admin services",
+        "backoffice service",
+        "backoffice services",
+        "fremmed tjeneste",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
 async def _resolve_vat_type(
     client: TripletexClient,
     ctx: EntityContext | None,
@@ -4154,6 +4174,55 @@ async def _normalize_supplier_invoice_office_supplies_account(
         return False
     expense_posting["account"] = {"id": office_account["id"]}
     logger.info("Normalized supplier invoice office-supplies expense account from 6500 to 6800")
+    return True
+
+
+async def _normalize_supplier_invoice_office_service_account(
+    client: TripletexClient,
+    postings: list[dict] | None,
+    ctx: EntityContext | None,
+    voucher_description: str | None = None,
+) -> bool:
+    if not isinstance(postings, list):
+        return False
+    positive_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) > 0]
+    negative_postings = [p for p in postings if isinstance(p, dict) and _coerce_number(p.get("amountGross")) < 0]
+    if len(positive_postings) != 1 or len(negative_postings) != 1:
+        return False
+    expense_posting = positive_postings[0]
+    payable_posting = negative_postings[0]
+    payable_account = _get_cached_account(ctx, payable_posting) or {}
+    is_supplier_liability = "supplier" in payable_posting or str(payable_account.get("number")) == "2400"
+    if not is_supplier_liability:
+        return False
+    expense_account = _get_cached_account(ctx, expense_posting) or {}
+    if str(expense_account.get("number")) != "6340":
+        return False
+    if not _looks_like_office_service_text(
+        voucher_description,
+        expense_posting.get("description"),
+        payable_posting.get("description"),
+        ctx.prompt_text if ctx else None,
+    ):
+        return False
+    office_service_account = _find_cached_account_by_number(ctx, "6790")
+    if office_service_account is None:
+        result = await client.get(
+            "/ledger/account",
+            params={
+                "number": "6790",
+                "fields": "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount",
+            },
+        )
+        values = result.get("values", [])
+        if values:
+            office_service_account = values[0]
+            if ctx is not None:
+                ctx.account_cache[office_service_account["id"]] = office_service_account
+    if office_service_account is None:
+        return False
+    expense_posting["account"] = {"id": office_service_account["id"]}
+    logger.info("Normalized supplier invoice office-services expense account from 6340 to 6790")
     return True
 
 

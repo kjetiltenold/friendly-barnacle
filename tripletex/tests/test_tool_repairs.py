@@ -3885,6 +3885,46 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voucher_call[2]["postings"][1]["account"], {"id": 8060})
         self.assertEqual(voucher_call[2]["postings"][0]["customer"], {"id": 108406776})
 
+    async def test_create_voucher_normalizes_exchange_loss_disagio_to_8160_and_1500(self):
+        client = FakeTripletexClient()
+        ctx = EntityContext(
+            last_customer_id=108561301,
+            prompt_text=(
+                "Wir haben eine Rechnung über 6073 EUR an Flussgold GmbH gesendet, als der Wechselkurs 11.50 NOK/EUR betrug. "
+                "Der Kunde hat nun bezahlt, aber der Kurs liegt bei 10.85 NOK/EUR. Erfassen Sie die Zahlung und buchen Sie "
+                "die Wechselkursdifferenz (disagio) auf das korrekte Konto."
+            ),
+        )
+        ctx.account_cache = {
+            1500: {"id": 1500, "number": 1500, "name": "Kundefordringer"},
+            8160: {"id": 8160, "number": 8160, "name": "Valutatap"},
+        }
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-22",
+                "description": "Wechselkursdifferenz/disagio Flussgold GmbH",
+                "year": 2026,
+                "postings": [
+                    {"amountGross": 3946.8, "amountGrossCurrency": 3946.8},
+                    {"amountGross": -3946.8, "amountGrossCurrency": -3946.8, "customer": {"id": 108561301}},
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        voucher_call = client.calls[0]
+        self.assertEqual(voucher_call[0:2], ("POST", "/ledger/voucher"))
+        self.assertAlmostEqual(voucher_call[2]["postings"][0]["amountGross"], 3947.45)
+        self.assertAlmostEqual(voucher_call[2]["postings"][1]["amountGross"], -3947.45)
+        self.assertEqual(voucher_call[2]["postings"][0]["account"], {"id": 8160})
+        self.assertEqual(voucher_call[2]["postings"][1]["account"], {"id": 1500})
+        self.assertEqual(voucher_call[2]["postings"][1]["customer"], {"id": 108561301})
+
     async def test_create_voucher_allows_supplier_invoice_auto_vat_balance(self):
         client = FakeTripletexClient()
         ctx = EntityContext()
@@ -4219,6 +4259,84 @@ class ToolRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voucher_postings[1]["account"], {"id": 30})
         self.assertEqual(voucher_postings[1]["amountGross"], 18550)
         self.assertEqual(voucher_postings[2]["amountGross"], -92750)
+
+    async def test_create_voucher_normalizes_office_service_supplier_invoice_account_from_6340_to_6790(self):
+        client = FakeTripletexClient(
+            get_responses={
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "6790"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 60, "number": 6790, "name": "Annen fremmed tjeneste"}],
+                },
+                (
+                    "/ledger/account",
+                    (
+                        ("fields", "id,number,name,vatType,vatLocked,requiresDepartment,legalVatTypes,isApplicableForSupplierInvoice,isBankAccount"),
+                        ("number", "2710"),
+                    ),
+                ): {
+                    "fullResultSize": 1,
+                    "values": [{"id": 30, "number": 2710, "name": "Inngaaende mva"}],
+                },
+            }
+        )
+        ctx = EntityContext(prompt_text="Vi har mottatt en leverandørfaktura for kontortjenester.")
+        ctx.account_cache = {
+            10: {
+                "id": 10,
+                "number": 6340,
+                "name": "Lys og varme",
+                "vatType": {"id": 1},
+                "legalVatTypes": [{"id": 1}],
+                "vatLocked": False,
+            },
+            20: {
+                "id": 20,
+                "number": 2400,
+                "name": "Leverandorgjeld",
+            },
+        }
+        ctx.vat_type_cache = {(25.0, "incoming"): 1}
+
+        result = await _execute(
+            client,
+            "create_voucher",
+            {
+                "date": "2026-03-22",
+                "description": "Leverandørfaktura INV-2026-9382 Stormberg AS",
+                "postings": [
+                    {
+                        "account": {"id": 10},
+                        "amountGross": 61600,
+                        "amountGrossCurrency": 61600,
+                        "vatType": {"id": 1},
+                        "description": "Kontortjenester faktura INV-2026-9382",
+                    },
+                    {
+                        "account": {"id": 20},
+                        "amountGross": -61600,
+                        "amountGrossCurrency": -61600,
+                        "supplier": {"id": 108564167},
+                        "description": "Leverandørfaktura INV-2026-9382",
+                    },
+                ],
+            },
+            endpoint_search=None,
+            ctx=ctx,
+        )
+
+        self.assertEqual(result["value"]["id"], 999)
+        voucher_postings = client.calls[-1][2]["postings"]
+        self.assertEqual(voucher_postings[0]["account"], {"id": 60})
+        self.assertEqual(voucher_postings[0]["amountGross"], 49280)
+        self.assertEqual(voucher_postings[1]["account"], {"id": 30})
+        self.assertEqual(voucher_postings[1]["amountGross"], 12320)
+        self.assertEqual(voucher_postings[2]["amountGross"], -61600)
 
     async def test_create_voucher_skips_prefetched_department_for_generic_supplier_invoice(self):
         client = FakeTripletexClient()
